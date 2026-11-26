@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
-use cdk::mint::QuoteId;
+use cdk::mint::{ConnectionGuard, QuoteId};
 use cdk::nuts::nut17::ws::{WsErrorResponse, JSON_RPC_VERSION};
 use cdk::nuts::nut17::NotificationPayload;
 use cdk::subscription::SubId;
@@ -23,6 +23,9 @@ mod unsubscribe;
 
 pub(crate) const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 100;
 pub(crate) const MAX_FILTERS_PER_SUBSCRIPTION: usize = 1000;
+
+/// How long a stopping mint waits for a client to take its close frame.
+const CLOSE_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 async fn process(
     context: &mut WsContext,
@@ -161,7 +164,28 @@ impl Drop for WsContext {
 ///
 /// For simplicity sake this function will spawn tasks for each subscription and
 /// keep them in a hashmap, and will have a single subscriber for all of them.
-pub async fn main_websocket(mut socket: WebSocket, state: MintState) {
+///
+/// The connection ends when `connection` reports that the mint is stopping:
+/// the client is sent a "going away" close frame and the loop exits, which
+/// drops the guard and lets the mint finish stopping.
+pub async fn main_websocket(mut socket: WebSocket, state: MintState, connection: ConnectionGuard) {
+    tokio::select! {
+        biased;
+        _ = connection.closed() => {}
+        _ = serve_messages(&mut socket, state) => return,
+    }
+    tracing::debug!("Mint is stopping, closing ws");
+    let _ = tokio::time::timeout(
+        CLOSE_FRAME_TIMEOUT,
+        socket.send(Message::Close(Some(CloseFrame {
+            code: axum::extract::ws::close_code::AWAY,
+            reason: "mint is shutting down".into(),
+        }))),
+    )
+    .await;
+}
+
+async fn serve_messages(socket: &mut WebSocket, state: MintState) {
     let (publisher, mut subscriber) = mpsc::channel(100);
     let mut context = WsContext {
         state,

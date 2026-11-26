@@ -53,6 +53,7 @@ pub use cdk_common::mint_quote::{MintQuoteRequest, MintQuoteResponse};
 pub use issue::MintInput;
 pub use melt::PendingMelt;
 pub use server::MintServer;
+pub use tasks::ConnectionGuard;
 pub use verification::Verification;
 
 const CDK_MINT_PRIMARY_NAMESPACE: &str = "cdk_mint";
@@ -98,6 +99,8 @@ pub struct Mint {
     task_state: Arc<Mutex<TaskState>>,
     /// Owner of the swaps and melts that run in their own tasks
     operations: tasks::Operations,
+    /// Owner of the long-lived client connections served for this mint
+    connections: tasks::Operations,
     /// Maximum number of inputs allowed per transaction
     max_inputs: usize,
     /// Maximum number of outputs allowed per transaction
@@ -438,6 +441,7 @@ impl Mint {
                 ..Default::default()
             })),
             operations: tasks::Operations::new(),
+            connections: tasks::Operations::new(),
             max_inputs,
             max_outputs,
         })
@@ -605,6 +609,7 @@ impl Mint {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
         self.operations.open();
+        self.connections.open();
 
         tracing::info!("Mint background services started");
         Ok(())
@@ -658,10 +663,14 @@ impl Mint {
     /// 3. Operations still running after `timeout` are aborted. An aborted
     ///    operation stops where it is, as if the process had died there, and
     ///    the saga recovery of the next `start()` resolves it.
-    /// 4. The background services are signalled and joined, then the payment
+    /// 4. Client connections registered with
+    ///    [`track_connection`](Self::track_connection) are told to close. They
+    ///    stay open through the drain, so subscribers see how the drained
+    ///    operations ended.
+    /// 5. The background services are signalled and joined, then the payment
     ///    processors are stopped.
     ///
-    /// The whole call is bounded: steps 3 and 4 wait at most a few seconds
+    /// The whole call is bounded: steps 3 to 5 wait at most a few seconds
     /// each for work that does not react. When it returns, none of the mint's
     /// tasks is using the database, so the caller may close it.
     ///
@@ -683,7 +692,11 @@ impl Mint {
         // task even if the caller drops its future.
         task_state.stopping = true;
         tokio::spawn(Self::drain_and_stop(
-            task_state, operations, processors, timeout,
+            task_state,
+            operations,
+            self.connections.clone(),
+            processors,
+            timeout,
         ))
         .await
         .map_err(|_| Error::Internal)?
@@ -692,6 +705,7 @@ impl Mint {
     async fn drain_and_stop(
         mut task_state: tokio::sync::OwnedMutexGuard<TaskState>,
         operations: tasks::Operations,
+        connections: tasks::Operations,
         processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
         timeout: Duration,
     ) -> Result<StopReport, Error> {
@@ -740,7 +754,20 @@ impl Mint {
             false => Err(Error::Internal),
         };
 
-        // Take the handles out of the state
+        connections.close();
+        if tokio::time::timeout(STOP_GRACE, connections.wait_idle())
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                "{} client connection(s) did not close during shutdown",
+                connections.active()
+            );
+            // A connection that stays open fails the stop, but must not keep
+            // the services and the payment processors running.
+            result = Err(Error::Internal);
+        }
+
         let shutdown = task_state.shutdown.take();
         let supervisor_handle = task_state.supervisor_handle.take();
         let keyset_drain_handle = task_state.keyset_drain_handle.take();
@@ -802,6 +829,18 @@ impl Mint {
         task_state.stopping = result.is_err();
 
         result
+    }
+
+    /// Register a long-lived client connection, such as a WebSocket
+    ///
+    /// The task serving the connection keeps the returned guard and ends
+    /// when [`ConnectionGuard::closed`] resolves, which happens when the mint
+    /// stops. `stop()` waits for registered connections to end.
+    ///
+    /// Returns [`Error::ShuttingDown`] once the mint has closed its
+    /// connections, until the next `start()`.
+    pub fn track_connection(&self) -> Result<ConnectionGuard, Error> {
+        self.connections.admit().map(ConnectionGuard::new)
     }
 
     fn unique_payment_processors(
@@ -3027,6 +3066,104 @@ mod tests {
         assert_eq!(mint.operations.active(), 0);
 
         mint.stop().await.expect("mint should stop");
+    }
+
+    /// Repeated stop/start cycles leave the mint fully usable each time, and
+    /// no cycle leaves an operation or a connection tracked.
+    #[tokio::test]
+    async fn stop_start_cycles_keep_the_mint_usable() {
+        let mint = create_test_mint().await.unwrap();
+
+        let amount = Amount::from(64);
+        for cycle in 0..3 {
+            let inputs = mint_test_proofs(&mint, amount).await.unwrap();
+            let (outputs, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+            let request = SwapRequest::new(inputs, outputs);
+            let connection = mint
+                .track_connection()
+                .expect("running mint accepts connections");
+
+            let stop = tokio::spawn({
+                let mint = Arc::clone(&mint);
+                async move { mint.stop_with_timeout(Duration::from_secs(60)).await }
+            });
+
+            // The stop tells the connection to close and waits for its guard.
+            connection.closed().await;
+            drop(connection);
+            let report = stop.await.expect("stop joins").expect("stop succeeds");
+            // The issuance above may still be publishing its notification,
+            // which the stop drains. Nothing may need aborting.
+            assert_eq!(report.aborted, 0, "cycle {cycle}");
+
+            assert!(matches!(
+                mint.process_swap_request(request.clone()).await,
+                Err(Error::ShuttingDown)
+            ));
+            assert!(matches!(mint.track_connection(), Err(Error::ShuttingDown)));
+            assert_eq!(mint.operations.active(), 0);
+            assert_eq!(mint.connections.active(), 0);
+
+            mint.start().await.expect("mint restarts");
+            mint.process_swap_request(request)
+                .await
+                .expect("restarted mint accepts the swap");
+        }
+
+        mint.stop().await.expect("mint stops");
+    }
+
+    /// A connection whose guard outlives the close signal fails the stop, but
+    /// the payment processors are stopped all the same, and a retry succeeds
+    /// once the guard is dropped.
+    #[tokio::test]
+    async fn stop_with_lingering_connection_still_stops_payment_processors() {
+        let backend = Arc::new(LifecycleBackend::default());
+        let mut payment_processors: HashMap<PaymentProcessorKey, DynMintPayment> = HashMap::new();
+        payment_processors.insert(
+            PaymentProcessorKey::new(CurrencyUnit::Sat, PaymentMethod::Known(KnownMethod::Bolt11)),
+            backend.clone(),
+        );
+        let mint = create_mint(MintConfig {
+            payment_processors,
+            ..Default::default()
+        })
+        .await;
+        mint.start().await.unwrap();
+        let supervisor = mint.task_state.lock().await.shutdown.clone().unwrap();
+        let connection = mint.track_connection().unwrap();
+
+        tokio::time::pause();
+        assert!(mint.stop().await.is_err());
+        assert!(supervisor.is_cancelled());
+        assert_eq!(backend.stops.load(Ordering::SeqCst), 1);
+        assert!(mint.start().await.is_err());
+
+        drop(connection);
+        mint.stop().await.unwrap();
+        tokio::time::resume();
+        mint.start().await.unwrap();
+        mint.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stop_finishes_after_caller_cancellation() {
+        let mint = create_test_mint().await.unwrap();
+        let old_supervisor = mint.task_state.lock().await.shutdown.clone().unwrap();
+        let connection = mint.track_connection().unwrap();
+        let stop = tokio::spawn({
+            let mint = mint.clone();
+            async move { mint.stop().await }
+        });
+        connection.closed().await;
+        stop.abort();
+        assert!(stop.await.unwrap_err().is_cancelled());
+        drop(connection);
+
+        // start waits on the shutdown worker's lifecycle lock.
+        mint.start().await.unwrap();
+        assert!(old_supervisor.is_cancelled());
+        mint.stop().await.unwrap();
     }
 
     #[derive(Default)]

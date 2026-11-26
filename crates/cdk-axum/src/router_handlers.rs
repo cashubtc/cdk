@@ -101,7 +101,11 @@ pub(crate) async fn ws_handler(
         .await
         .map_err(into_response)?;
 
-    Ok(ws.on_upgrade(|ws| main_websocket(ws, state)))
+    // Tie the connection to the mint's lifecycle before upgrading, so a
+    // stopped mint refuses it and a stopping mint can close it.
+    let connection = state.mint.track_connection().map_err(into_response)?;
+
+    Ok(ws.on_upgrade(|ws| main_websocket(ws, state, connection)))
 }
 
 /// Check whether a proof is spent already or is pending in a transaction
