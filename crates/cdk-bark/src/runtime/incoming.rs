@@ -166,7 +166,6 @@ impl FederatedBarkRuntime {
         prepared: &FederationBarkReceivePrepared,
         observation_epoch: u64,
         prepare_if_accepted: bool,
-        wait_for_update: bool,
     ) -> Result<
         Option<(
             FederationBarkMemberObservation,
@@ -178,27 +177,18 @@ impl FederatedBarkRuntime {
             return Err(Error::ReceiveObservationFailed);
         }
         let receive = self.receive_plan(intent, prepared)?;
-        let observation = if wait_for_update {
-            match tokio::time::timeout(
-                BARK_PAYMENT_UPDATE_WAIT,
-                self.wallet.wait_lightning_receive(&receive),
-            )
+        let observation = self
+            .wallet
+            .poll_lightning_receive(&receive)
             .await
-            {
-                Ok(observation) => observation,
-                Err(_) => self.wallet.poll_lightning_receive(&receive).await,
-            }
-        } else {
-            self.wallet.poll_lightning_receive(&receive).await
-        }
-        .map_err(|error| {
-            tracing::warn!(
-                action_id = %intent.action_id,
-                error = %error,
-                "Federated Bark receive status observation failed"
-            );
-            Error::ReceiveObservationFailed
-        })?;
+            .map_err(|error| {
+                tracing::warn!(
+                    action_id = %intent.action_id,
+                    error = %error,
+                    "Federated Bark receive status observation failed"
+                );
+                Error::ReceiveObservationFailed
+            })?;
         let evidence = match observation.status {
             FederationLightningReceiveStatus::AwaitingPayment
             | FederationLightningReceiveStatus::Canceled => return Ok(None),
@@ -250,6 +240,37 @@ impl FederatedBarkRuntime {
             result_hash: transition.result_hash,
         };
         Ok(Some((member_observation, transition)))
+    }
+
+    /// Wait up to the backend update window for the Ark server to report a
+    /// change to one accepted receive.
+    ///
+    /// This only waits: it neither prepares HTLCs nor records evidence, so
+    /// callers run it without holding the member's incoming Bark lock and then
+    /// observe the receive with [`Self::observe_receive_htlcs`] under that
+    /// lock. An elapsed window is not an error.
+    pub async fn wait_for_receive_update(
+        &self,
+        intent: &FederationBarkReceiveIntent,
+        prepared: &FederationBarkReceivePrepared,
+    ) -> Result<(), Error> {
+        let receive = self.receive_plan(intent, prepared)?;
+        match tokio::time::timeout(
+            BARK_PAYMENT_UPDATE_WAIT,
+            self.wallet.wait_lightning_receive(&receive),
+        )
+        .await
+        {
+            Ok(Ok(_)) | Err(_) => Ok(()),
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    action_id = %intent.action_id,
+                    error = %error,
+                    "Federated Bark receive status wait failed"
+                );
+                Err(Error::ReceiveObservationFailed)
+            }
+        }
     }
 
     /// Rebuild an HTLC-ready transition from this member's durable evidence.

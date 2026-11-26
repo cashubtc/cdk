@@ -147,22 +147,120 @@ fn receive_claim_proposal(
     })
 }
 
+/// How one incoming advancement waits for the Ark server to report a change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiveBackendWait {
+    /// Poll once; an unchanged receive awaits external evidence.
+    Poll,
+    /// Stop before observing the receive and record what to wait for, so the
+    /// caller can wait for an Ark update after releasing the incoming lock.
+    Defer,
+    /// The caller already waited without the incoming lock: poll once and
+    /// report an unchanged receive as awaiting a backend notification.
+    Waited,
+}
+
+/// The accepted receive a deferred advancement waits on.
+#[derive(Debug)]
+struct ReceiveWaitTarget {
+    action_id: FederationBarkActionId,
+    intent: FederationBarkReceiveIntent,
+    prepared: FederationBarkReceivePrepared,
+}
+
 /// Poll and advance one already-created federated Bark quote. Mailbox events
 /// call the same function; they never supply settlement truth themselves.
+///
+/// With `wait_for_backend_update`, the Ark long-poll runs after the member's
+/// incoming lock is released. That lock serializes every incoming quote on the
+/// member, including new quote creation, so holding it across a multi-second
+/// server wait for each unpaid invoice starves everything else.
 pub async fn advance_federated_bark_mint_quote(
     state: &dyn FederatedBarkNode,
     quote_id: &QuoteId,
     observer_fallback_round: u32,
     wait_for_backend_update: bool,
 ) -> Result<FederationPaymentAdvancement, cdk::Error> {
-    advance_federated_bark_mint_quote_inner(
-        state,
-        quote_id,
-        observer_fallback_round,
-        None,
+    advance_with_unlocked_backend_wait(
+        state.bark_incoming_lock(),
         wait_for_backend_update,
+        |backend_wait| async move {
+            let mut wait_target = None;
+            let advancement = advance_federated_bark_mint_quote_inner(
+                state,
+                quote_id,
+                observer_fallback_round,
+                None,
+                backend_wait,
+                &mut wait_target,
+            )
+            .await?;
+            Ok((advancement, wait_target))
+        },
+        |wait_target: ReceiveWaitTarget| async move {
+            let runtime = state.bark_runtime().ok_or_else(bark_unavailable)?;
+            let wait_timer = super::latency::FederationLatencyTimer::start(
+                super::latency::FederationLatencyCorrelation::Action,
+                wait_target.action_id.to_string(),
+                super::latency::FederationLatencyBackend::Bark,
+                super::latency::FederationLatencyDirection::Incoming,
+                super::latency::FederationLatencyPhase::BarkReceiveServerWait,
+            );
+            let wait_result = runtime
+                .wait_for_receive_update(&wait_target.intent, &wait_target.prepared)
+                .await;
+            wait_timer.finish(super::latency::FederationLatencyOutcome::from_success(
+                wait_result.is_ok(),
+            ));
+            wait_result.map_err(|error| {
+                error
+                    .into_federation_error(
+                        "wait for incoming HTLCs",
+                        Some(wait_target.prepared.intent_operation_id),
+                    )
+                    .into()
+            })
+        },
     )
     .await
+}
+
+/// Run one incoming advancement under `lock`, waiting for a backend update
+/// between two locked passes instead of inside one.
+///
+/// The first pass runs with [`ReceiveBackendWait::Defer`] when a wait is
+/// wanted. If it reports a receive to wait on, the lock is released for the
+/// wait and a second pass observes the receive with
+/// [`ReceiveBackendWait::Waited`], re-reading every state the wait may have
+/// outdated.
+async fn advance_with_unlocked_backend_wait<T, Pass, PassFuture, Wait, WaitFuture>(
+    lock: &tokio::sync::Mutex<()>,
+    wait_for_backend_update: bool,
+    mut pass: Pass,
+    wait: Wait,
+) -> Result<FederationPaymentAdvancement, cdk::Error>
+where
+    Pass: FnMut(ReceiveBackendWait) -> PassFuture,
+    PassFuture:
+        std::future::Future<Output = Result<(FederationPaymentAdvancement, Option<T>), cdk::Error>>,
+    Wait: FnOnce(T) -> WaitFuture,
+    WaitFuture: std::future::Future<Output = Result<(), cdk::Error>>,
+{
+    let backend_wait = match wait_for_backend_update {
+        true => ReceiveBackendWait::Defer,
+        false => ReceiveBackendWait::Poll,
+    };
+    let (advancement, wait_target) = {
+        let _guard = lock.lock().await;
+        pass(backend_wait).await?
+    };
+    let Some(wait_target) = wait_target else {
+        return Ok(advancement);
+    };
+    wait(wait_target).await?;
+    let _guard = lock.lock().await;
+    let (advancement, _) = pass(ReceiveBackendWait::Waited).await?;
+    Ok(advancement)
 }
 
 /// Advance a mint quote after a peer delivered Bark evidence, without waiting
@@ -172,24 +270,32 @@ pub async fn advance_federated_bark_mint_quote_from_evidence_delivery(
     quote_id: &QuoteId,
     collector_fallback_round: u32,
 ) -> Result<FederationPaymentAdvancement, cdk::Error> {
+    let _guard = state.bark_incoming_lock().lock().await;
     advance_federated_bark_mint_quote_inner(
         state,
         quote_id,
         collector_fallback_round,
         Some(collector_fallback_round),
-        false,
+        ReceiveBackendWait::Poll,
+        &mut None,
     )
     .await
 }
 
+/// Advance one incoming quote. The caller holds the member's incoming Bark
+/// lock.
+///
+/// With [`ReceiveBackendWait::Defer`], a receive that would be observed is
+/// recorded in `wait_target` instead, and the returned advancement is only a
+/// placeholder for the caller's second pass.
 async fn advance_federated_bark_mint_quote_inner(
     state: &dyn FederatedBarkNode,
     quote_id: &QuoteId,
     observer_fallback_round: u32,
     collector_fallback_round_override: Option<u32>,
-    wait_for_backend_update: bool,
+    backend_wait: ReceiveBackendWait,
+    wait_target: &mut Option<ReceiveWaitTarget>,
 ) -> Result<FederationPaymentAdvancement, cdk::Error> {
-    let _guard = state.bark_incoming_lock().lock().await;
     let federation = state
         .mint()
         .federation_config()
@@ -338,16 +444,20 @@ async fn advance_federated_bark_mint_quote_inner(
                     (observation, transition)
                 }
                 None => {
+                    if backend_wait == ReceiveBackendWait::Defer {
+                        *wait_target = Some(ReceiveWaitTarget {
+                            action_id: action.action_id,
+                            intent,
+                            prepared: prepared.clone(),
+                        });
+                        return Ok(FederationPaymentAdvancement::AwaitingBackendNotification);
+                    }
                     let observation_timer = super::latency::FederationLatencyTimer::start(
                         super::latency::FederationLatencyCorrelation::Action,
                         action.action_id.to_string(),
                         super::latency::FederationLatencyBackend::Bark,
                         super::latency::FederationLatencyDirection::Incoming,
-                        if wait_for_backend_update {
-                            super::latency::FederationLatencyPhase::BarkReceiveServerWait
-                        } else {
-                            super::latency::FederationLatencyPhase::BarkReceiveHtlcObservation
-                        },
+                        super::latency::FederationLatencyPhase::BarkReceiveHtlcObservation,
                     );
                     let observation_result = runtime
                         .observe_receive_htlcs(
@@ -356,7 +466,6 @@ async fn advance_federated_bark_mint_quote_inner(
                             prepared,
                             1,
                             is_receive_actor,
-                            wait_for_backend_update,
                         )
                         .await;
                     let observation_outcome = match &observation_result {
@@ -372,7 +481,7 @@ async fn advance_federated_bark_mint_quote_inner(
                         )
                     })?
                     else {
-                        return Ok(if wait_for_backend_update {
+                        return Ok(if backend_wait == ReceiveBackendWait::Waited {
                             FederationPaymentAdvancement::AwaitingBackendNotification
                         } else {
                             FederationPaymentAdvancement::AwaitingExternalEvidence
@@ -1351,9 +1460,10 @@ mod tests {
     use cdk::{Amount, Error};
 
     use super::{
-        bark_evidence_collector, bark_evidence_retry_collector, federated_bark_quote_id,
-        receive_is_automatically_terminal, scheduled_bark_evidence_collector_round, FederationId,
-        FEDERATION_BARK_RECEIVE_EXPIRY_GRACE_SECONDS,
+        advance_with_unlocked_backend_wait, bark_evidence_collector, bark_evidence_retry_collector,
+        federated_bark_quote_id, receive_is_automatically_terminal,
+        scheduled_bark_evidence_collector_round, FederationId, FederationPaymentAdvancement,
+        ReceiveBackendWait, FEDERATION_BARK_RECEIVE_EXPIRY_GRACE_SECONDS,
     };
 
     fn request(pubkey: Option<PublicKey>, amount: u64) -> MintQuoteRequest {
@@ -1472,5 +1582,92 @@ mod tests {
             true,
             terminal_at,
         ));
+    }
+
+    /// Every unpaid invoice is polled with a multi-second Ark wait. Quote
+    /// creation and every other incoming quote need the same member-wide
+    /// lock, so the wait must run while that lock is free.
+    #[tokio::test]
+    async fn backend_wait_runs_without_the_incoming_lock() {
+        let lock = tokio::sync::Mutex::new(());
+        let passes = std::sync::Mutex::new(Vec::new());
+
+        let advancement = advance_with_unlocked_backend_wait(
+            &lock,
+            true,
+            |backend_wait| {
+                passes
+                    .lock()
+                    .expect("pass log")
+                    .push((backend_wait, lock.try_lock().is_err()));
+                async move {
+                    Ok(match backend_wait {
+                        ReceiveBackendWait::Defer => (
+                            FederationPaymentAdvancement::AwaitingBackendNotification,
+                            Some("receive"),
+                        ),
+                        ReceiveBackendWait::Waited => (
+                            FederationPaymentAdvancement::AwaitingBackendNotification,
+                            None,
+                        ),
+                        ReceiveBackendWait::Poll => {
+                            panic!("a waiting advancement never polls first")
+                        }
+                    })
+                }
+            },
+            |target| {
+                assert_eq!(target, "receive");
+                let lock_free = lock.try_lock().is_ok();
+                async move {
+                    assert!(lock_free, "the Ark wait must not hold the incoming lock");
+                    Ok(())
+                }
+            },
+        )
+        .await
+        .expect("advancement");
+
+        assert_eq!(
+            advancement,
+            FederationPaymentAdvancement::AwaitingBackendNotification
+        );
+        assert_eq!(
+            *passes.lock().expect("pass log"),
+            vec![
+                (ReceiveBackendWait::Defer, true),
+                (ReceiveBackendWait::Waited, true),
+            ],
+            "both passes run under the lock, the second after the wait"
+        );
+    }
+
+    #[tokio::test]
+    async fn advancement_without_a_receive_to_wait_on_returns_after_one_pass() {
+        let lock = tokio::sync::Mutex::new(());
+        let passes = std::sync::Mutex::new(Vec::new());
+
+        for (wait_for_backend_update, expected_mode) in [
+            (true, ReceiveBackendWait::Defer),
+            (false, ReceiveBackendWait::Poll),
+        ] {
+            let advancement =
+                advance_with_unlocked_backend_wait(
+                    &lock,
+                    wait_for_backend_update,
+                    |backend_wait| {
+                        passes.lock().expect("pass log").push(backend_wait);
+                        async move {
+                            Ok::<_, Error>((FederationPaymentAdvancement::Progressed, None::<()>))
+                        }
+                    },
+                    |()| async move { panic!("nothing to wait on") },
+                )
+                .await
+                .expect("advancement");
+            assert_eq!(advancement, FederationPaymentAdvancement::Progressed);
+            assert_eq!(passes.lock().expect("pass log").pop(), Some(expected_mode));
+        }
+        assert!(passes.lock().expect("pass log").is_empty());
     }
 }
