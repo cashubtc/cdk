@@ -490,7 +490,7 @@ impl RbfFederation {
         let entries = self.states[source]
             .mint
             .localstore()
-            .get_federation_journal_entries()
+            .get_federation_journal_entries(FederationIndexRange::ALL)
             .await
             .expect("journal");
         for (index, state) in self.states.iter().enumerate() {
@@ -500,7 +500,7 @@ impl RbfFederation {
             let retained = state
                 .mint
                 .localstore()
-                .get_federation_journal_entries()
+                .get_federation_journal_entries(FederationIndexRange::ALL)
                 .await
                 .expect("replica journal");
             assert!(retained.len() <= entries.len());

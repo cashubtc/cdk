@@ -230,8 +230,8 @@ mod tests {
         FederationSetupBitcoinNetwork, FederationSetupFrostApplication, FederationSetupFrostPolicy,
         FederationSetupInvitationCapability, FederationSetupLocalRole,
         FederationSetupParticipantPhase, FederationSetupProposalBody,
-        FederationSetupProtocolVersions, MemberId, ThresholdParams,
-        FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
+        FederationSetupProtocolVersions, FederationSetupRecord, FederationSetupStep, MemberId,
+        ThresholdParams, FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
     };
     use cdk_common::mint_url::MintUrl;
     use cdk_common::{Amount, CurrencyUnit};
