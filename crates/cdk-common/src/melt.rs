@@ -317,7 +317,7 @@ where
                     selected_fee_index: value.selected_fee_index,
                     outpoint: value.payment_proof.clone(),
                     change: None,
-                    payjoin: None,
+                    payjoin: crate::payjoin::payjoin_v2_from_extra_json(value.extra_json.as_ref()),
                 })
             }
             ref method => Self::Custom((
@@ -413,6 +413,50 @@ mod tests {
             unit: Some(CurrencyUnit::Sat),
             extra: serde_json::Value::Null,
         }
+    }
+
+    #[cfg(feature = "mint")]
+    #[test]
+    fn onchain_quote_conversions_preserve_payjoin() {
+        use crate::mint::{MeltPaymentRequest, MeltQuote};
+        use crate::nuts::nut31::PayjoinV2;
+
+        let payjoin = PayjoinV2::new(
+            "https://payjoin.example/pj".to_string(),
+            "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ",
+            "QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG",
+            4_000_000_000,
+        )
+        .expect("valid Payjoin parameters");
+        let quote = MeltQuote::new_onchain(
+            None,
+            MeltPaymentRequest::Onchain {
+                address: "bc1qonchainaddress".to_string(),
+            },
+            CurrencyUnit::Sat,
+            Amount::new(400, CurrencyUnit::Sat),
+            4_000_000_000,
+            None,
+            Some(serde_json::json!({ "payjoin": payjoin.clone() })),
+            vec![MeltQuoteOnchainFeeOption {
+                fee_index: 0,
+                fee_reserve: Amount::from(4),
+                estimated_blocks: 6,
+            }],
+        )
+        .expect("valid onchain quote");
+
+        let concrete: MeltQuoteOnchainResponse<crate::QuoteId> = quote.clone().into();
+        let generic: MeltQuoteResponse<crate::QuoteId> = quote.clone().into();
+        let MeltQuoteResponse::Onchain(generic) = generic else {
+            panic!("expected onchain response");
+        };
+        assert_eq!(generic.payjoin, Some(payjoin));
+        assert_eq!(generic, concrete);
+        assert_eq!(
+            quote.into_response(None),
+            MeltQuoteResponse::Onchain(generic)
+        );
     }
 
     #[test]
