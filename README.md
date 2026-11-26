@@ -23,7 +23,7 @@ nix develop .#regtest
 
 For more details on available environments, see the [Development Guide](DEVELOPMENT.md).
 
-For the BLS federation branch, see the [federation architecture and operator guide](docs/federation.md).
+For the BLS federation branch, see the [federation overview](docs/federation.md), which links the design, operator and maintainer documents under `docs/federation/`.
 
 ## Project structure
 

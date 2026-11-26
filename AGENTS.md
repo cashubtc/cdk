@@ -314,3 +314,12 @@ Conventional commits: `feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`.
 | LDK Node networking | `crates/cdk-ldk-node/NETWORK_GUIDE.md` |
 | TLS/certificate setup | `crates/cdk-mint-rpc/CERTIFICATES.md` |
 | Wallet SDK examples (23) | `crates/cdk/examples/` |
+| Federation overview and document index | `docs/federation.md` |
+| Federation design decisions | `docs/federation/design-decisions.md` |
+| Federation consensus and checkpoints | `docs/federation/consensus-and-checkpoints.md` |
+| Federation storage contract and retention | `docs/federation/storage-and-retention.md` |
+| Federation payment trust model | `docs/federation/payment-trust-model.md` |
+| Federation custody (FROST, on-chain, Bark) | `docs/federation/custody.md` |
+| Federation setup ceremony | `docs/federation/setup-ceremony.md` |
+| Federation operator workflow | `docs/federation/operations.md` |
+| Federation maintainer guide | `docs/federation/maintainer-guide.md` |

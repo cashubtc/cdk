@@ -802,9 +802,10 @@
             "-p cdk -p cdk-http-client --no-default-features --features cdk/mint,cdk-http-client/reqwest"
           ];
 
-          # Supported federation feature combinations. The list is recorded in
-          # docs/bls-federation-architecture-review-plan-2026-11-23.md
-          # (package 8, feature matrix); keep the two in step.
+          # Supported federation feature combinations. This list is the
+          # authoritative matrix; docs/federation/maintainer-guide.md
+          # ("Supported feature combinations") describes the groups and the
+          # combinations deliberately left out. Keep the two in step.
           "federation-domain" = [
             "-p cdk-common --features federation,test"
             "-p cdk-federation-bark"

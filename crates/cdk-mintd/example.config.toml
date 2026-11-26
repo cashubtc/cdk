@@ -466,7 +466,8 @@ max_delay_time = 3
 # federation consensus config and intentionally has no mnemonic/private key.
 # Enable it once the shared public config activates a CDK on-chain application.
 # The network, confirmation depth and fee policy come from that application.
-# Deployment and privacy guidance: docs/federated-bdk-chain-sources.md
+# Deployment and privacy guidance: docs/federation/operations.md
+# ("Joint on-chain wallet").
 # [federation.onchain_wallet]
 # enabled = false
 # chain_source_type = "bitcoinrpc" # or "esplora"
