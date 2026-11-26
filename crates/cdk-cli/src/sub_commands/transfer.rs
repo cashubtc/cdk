@@ -11,7 +11,7 @@ use cdk::Amount;
 use cdk_common::wallet::WalletKey;
 use clap::Args;
 
-use crate::utils::{get_number_input, get_or_create_wallet};
+use crate::utils::{get_number_input, get_or_create_wallet, resolve_mint_url};
 
 #[derive(Args)]
 pub struct TransferSubCommand {
@@ -172,6 +172,11 @@ pub async fn transfer(
         )
         .await?
     };
+
+    // A federation member URL and the federation's local mint URL name the
+    // same wallet; compare and look up balances by the URL that keys it.
+    let source_mint_url = resolve_mint_url(wallet_repository, &source_mint_url).await?;
+    let target_mint_url = resolve_mint_url(wallet_repository, &target_mint_url).await?;
 
     // Ensure source and target are different
     if source_mint_url == target_mint_url {

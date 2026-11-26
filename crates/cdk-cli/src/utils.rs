@@ -50,6 +50,10 @@ where
 }
 
 /// Helper function to get an existing wallet or create one if it doesn't exist
+///
+/// A mint URL of an imported federation (its local mint URL or any member's
+/// public mint URL) returns the federation wallet keyed by the local mint URL,
+/// which accepts tokens and payment requests that name any member.
 pub async fn get_or_create_wallet(
     wallet_repository: &WalletRepository,
     mint_url: &MintUrl,
@@ -57,8 +61,7 @@ pub async fn get_or_create_wallet(
 ) -> Result<cdk::wallet::Wallet> {
     #[cfg(feature = "federation")]
     if let Some(federation) = federation_wallet_for_mint_url(mint_url)? {
-        return create_or_replace_federation_wallet(wallet_repository, mint_url, unit, &federation)
-            .await;
+        return create_or_replace_federation_wallet(wallet_repository, unit, &federation).await;
     }
 
     match wallet_repository.get_wallet(mint_url, unit).await {
@@ -68,6 +71,21 @@ pub async fn get_or_create_wallet(
             .await
             .map_err(Into::into),
     }
+}
+
+/// The mint URL that keys the wallets `mint_url` names: an imported
+/// federation's local mint URL for any of its member URLs, otherwise the
+/// repository's own alias resolution.
+pub async fn resolve_mint_url(
+    wallet_repository: &WalletRepository,
+    mint_url: &MintUrl,
+) -> Result<MintUrl> {
+    #[cfg(feature = "federation")]
+    if let Some(federation) = federation_wallet_for_mint_url(mint_url)? {
+        return Ok(federation.local_mint_url().clone());
+    }
+
+    Ok(wallet_repository.resolve_mint_url(mint_url).await)
 }
 
 #[cfg(feature = "federation")]
@@ -155,7 +173,7 @@ pub fn federation_mint_connector(
 
 #[cfg(feature = "federation")]
 fn federation_wallet_config(federation: &RegisteredFederation) -> Result<WalletConfig> {
-    Ok(WalletConfig::new().with_mint_connector(federation_mint_connector(federation)?))
+    Ok(federation.wallet_config()?)
 }
 
 #[cfg(feature = "federation")]
@@ -172,7 +190,6 @@ fn federation_registry() -> Result<Option<Arc<Vec<RegisteredFederation>>>> {
 #[cfg(feature = "federation")]
 async fn create_or_replace_federation_wallet(
     wallet_repository: &WalletRepository,
-    mint_url: &MintUrl,
     unit: &CurrencyUnit,
     federation: &RegisteredFederation,
 ) -> Result<Wallet> {
@@ -186,7 +203,7 @@ async fn create_or_replace_federation_wallet(
 
     let config = federation_wallet_config(federation)?;
     wallet_repository
-        .set_mint_config(mint_url.clone(), unit.clone(), config)
+        .set_mint_config(federation.local_mint_url().clone(), unit.clone(), config)
         .await
         .map_err(Into::into)
 }
@@ -338,12 +355,28 @@ mod federation_tests {
             .await
             .expect("pre-activated local federation wallet");
         assert!(connector_debug(&local_wallet).contains("FederatedMintConnector"));
+        assert!(local_wallet.accepts_mint_url(&member_two_url));
 
         let member_wallet = get_or_create_wallet(&repository, &member_two_url, &CurrencyUnit::Sat)
             .await
             .expect("member url federation wallet");
-        assert_eq!(member_wallet.mint_url, member_two_url);
+        assert_eq!(member_wallet.mint_url, local_mint_url);
+        assert!(member_wallet.accepts_mint_url(&member_two_url));
         assert!(connector_debug(&member_wallet).contains("FederatedMintConnector"));
+        assert!(
+            !repository
+                .get_wallets()
+                .await
+                .iter()
+                .any(|wallet| wallet.mint_url == member_two_url),
+            "no separate wallet is keyed by the member URL"
+        );
+        assert_eq!(
+            resolve_mint_url(&repository, &member_two_url)
+                .await
+                .expect("resolve member url"),
+            local_mint_url
+        );
 
         let unsupported_unit_err =
             get_or_create_wallet(&repository, &local_mint_url, &CurrencyUnit::Usd)

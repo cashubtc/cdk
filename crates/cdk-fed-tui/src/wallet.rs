@@ -258,6 +258,7 @@ impl WalletRuntime {
             .localstore(localstore.clone())
             .seed(seed)
             .shared_client(Arc::new(connector))
+            .with_mint_url_aliases(federation.aliases())
             .build()?;
 
         wallet.recover_incomplete_sagas().await?;

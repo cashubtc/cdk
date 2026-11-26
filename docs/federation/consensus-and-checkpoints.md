@@ -181,6 +181,13 @@ member, and checks that member's `GET /v1/info` advertisement (member ID,
 federation ID, wallet protocol version, config digest) before storing. Entries
 are keyed by federation ID; every member URL and the wallet's local mint URL
 are aliases, and an alias belongs to at most one federation.
+`RegisteredFederation::wallet_config` builds the wallet for the local mint URL
+with the federated connector and the other aliases as mint URL aliases
+(`WalletConfig::with_mint_url_aliases`). `Wallet::accepts_mint_url` admits a
+token or NUT-18 request that names any member, a NUT-18 payment names the
+alias the request lists, and `WalletRepository` lookups resolve an alias to
+the wallet that owns it. Removing a federation (FFI `remove_federation`)
+deletes the registry entry and its in-memory wallets but keeps its proofs.
 
 ## Checkpoints
 

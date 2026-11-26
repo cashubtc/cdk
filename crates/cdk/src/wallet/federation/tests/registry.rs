@@ -473,6 +473,55 @@ async fn registry_maps_every_member_url_to_one_federation() {
         .expect("other federation after removal");
 }
 
+/// A repository wallet built from a federation's wallet config is keyed by
+/// the local mint URL and owns every member URL, so a lookup, token or
+/// payment request through any member reaches it.
+#[tokio::test]
+async fn wallet_config_makes_every_member_url_an_alias_of_the_local_wallet() {
+    let public_config = threshold_rotation_bundle().public_config;
+    let store = memory_store().await;
+    let registry = FederationRegistry::new(store.clone());
+    let local = member_url(&public_config, 1);
+    let entry = registry
+        .import(
+            FederationSource::PublicConfig(Box::new(public_config.clone())),
+            FederationImportOptions {
+                local_mint_url: Some(local.clone()),
+                ..FederationImportOptions::default()
+            },
+        )
+        .await
+        .expect("import");
+    let repository = crate::wallet::WalletRepositoryBuilder::new()
+        .localstore(store)
+        .seed([7u8; 64])
+        .build()
+        .await
+        .expect("repository");
+
+    let wallet = repository
+        .create_wallet(
+            local.clone(),
+            CurrencyUnit::Sat,
+            Some(entry.wallet_config().expect("wallet config")),
+        )
+        .await
+        .expect("federation wallet");
+
+    assert!(!wallet.mint_url_aliases().contains(&local));
+    assert_eq!(wallet.mint_url_aliases().len(), 2);
+    for id in 1..=3 {
+        let member = member_url(&public_config, id);
+        assert!(wallet.accepts_mint_url(&member));
+        let found = repository
+            .get_wallet(&member, &CurrencyUnit::Sat)
+            .await
+            .expect("member URL resolves");
+        assert_eq!(found.mint_url, local);
+    }
+    assert!(format!("{:?}", wallet.mint_connector()).contains("FederatedMintConnector"));
+}
+
 #[tokio::test]
 async fn registry_survives_a_wallet_restart() {
     let public_config = threshold_rotation_bundle().public_config;

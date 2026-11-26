@@ -32,7 +32,7 @@ use super::{FederatedMintConnector, FederatedMintConnectorConfig};
 use crate::mint_url::MintUrl;
 use crate::nuts::{CurrencyUnit, MintInfo};
 use crate::wallet::mint_connector::DefaultTransport;
-use crate::wallet::HttpTransport;
+use crate::wallet::{HttpTransport, WalletConfig};
 
 /// Primary key-value namespace that holds wallet federation state.
 pub const FEDERATION_KV_NAMESPACE: &str = "federation";
@@ -410,6 +410,27 @@ impl RegisteredFederation {
     /// Build a connector over the default HTTP transport.
     pub fn connector(&self) -> Result<FederatedMintConnector, FederationRegistryError> {
         self.connector_with_transport(DefaultTransport::default())
+    }
+
+    /// Wallet configuration for a wallet keyed by [`Self::local_mint_url`]:
+    /// a federated connector over the default HTTP transport, and every other
+    /// [alias](Self::aliases) as a mint URL alias, so the wallet accepts
+    /// tokens and payment requests that name any member.
+    pub fn wallet_config(&self) -> Result<WalletConfig, FederationRegistryError> {
+        self.wallet_config_with_transport(DefaultTransport::default())
+    }
+
+    /// Like [`Self::wallet_config`], with member clients sharing `transport`.
+    pub fn wallet_config_with_transport<T>(
+        &self,
+        transport: T,
+    ) -> Result<WalletConfig, FederationRegistryError>
+    where
+        T: HttpTransport + 'static,
+    {
+        Ok(WalletConfig::new()
+            .with_mint_connector(Arc::new(self.connector_with_transport(transport)?))
+            .with_mint_url_aliases(self.aliases()))
     }
 
     /// Build a connector whose member clients share `transport`.

@@ -152,20 +152,20 @@ impl WalletRepository {
         ttl_secs: Option<u64>,
     ) -> Result<(), FfiError> {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
-        #[cfg(feature = "federation")]
-        let cdk_mint_url = self.resolve_federation_mint_url(cdk_mint_url).await;
-        let wallets = self.inner.get_wallets().await;
+        let wallets = self.inner.get_wallets_for_mint(&cdk_mint_url).await;
 
-        if let Some(wallet) = wallets.iter().find(|w| w.mint_url == cdk_mint_url) {
-            let ttl = ttl_secs.map(std::time::Duration::from_secs);
-            wallet.set_metadata_cache_ttl(ttl);
-            Ok(())
-        } else {
-            Err(FfiError::internal(format!(
+        if wallets.is_empty() {
+            return Err(FfiError::internal(format!(
                 "Mint not found: {}",
                 cdk_mint_url
-            )))
+            )));
         }
+
+        let ttl = ttl_secs.map(std::time::Duration::from_secs);
+        for wallet in wallets {
+            wallet.set_metadata_cache_ttl(ttl);
+        }
+        Ok(())
     }
 
     /// Set metadata cache TTL (time-to-live) in seconds for all mints
@@ -186,40 +186,19 @@ impl WalletRepository {
     }
 
     /// Add a mint to this WalletRepository
+    ///
+    /// A mint URL of an imported federation (its local mint URL or any
+    /// member's public mint URL) creates the federation's wallet under its
+    /// local mint URL.
     pub async fn create_wallet(
         &self,
         mint_url: MintUrl,
         unit: Option<CurrencyUnit>,
         target_proof_count: Option<u32>,
     ) -> Result<(), FfiError> {
-        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
-
-        let config = target_proof_count.map(|count| {
-            cdk::wallet::wallet_repository::WalletConfig::new()
-                .with_target_proof_count(count as usize)
-        });
-
-        #[cfg(feature = "federation")]
-        let federation = self.federations.find_by_mint_url(&cdk_mint_url).await?;
-
-        #[cfg(feature = "federation")]
-        let config = match &federation {
-            Some(federation) => {
-                let connector =
-                    federation.connector_with_transport(FederationTransport::default())?;
-                Some(
-                    config
-                        .unwrap_or_default()
-                        .with_mint_connector(Arc::new(connector)),
-                )
-            }
-            None => config,
-        };
-
-        #[cfg(feature = "federation")]
-        let cdk_mint_url = federation
-            .map(|federation| federation.local_mint_url().clone())
-            .unwrap_or(cdk_mint_url);
+        let (cdk_mint_url, config) = self
+            .wallet_target(mint_url.try_into()?, target_proof_count)
+            .await?;
 
         let unit_enum = unit.unwrap_or(CurrencyUnit::Sat);
 
@@ -233,19 +212,20 @@ impl WalletRepository {
     /// Get the wallet for a mint URL and unit, creating it if it does not exist
     ///
     /// Unlike `create_wallet`, an existing wallet is returned untouched: its
-    /// configuration is not replaced.
+    /// configuration is not replaced. A mint URL that names an existing
+    /// wallet through an alias (such as a federation member's public mint
+    /// URL) returns that wallet, and a missing wallet for an imported
+    /// federation is created under its local mint URL with the federation's
+    /// connector.
     pub async fn get_or_create_wallet(
         &self,
         mint_url: MintUrl,
         unit: CurrencyUnit,
         target_proof_count: Option<u32>,
     ) -> Result<Arc<crate::wallet::Wallet>, FfiError> {
-        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
-
-        let config = target_proof_count.map(|count| {
-            cdk::wallet::wallet_repository::WalletConfig::new()
-                .with_target_proof_count(count as usize)
-        });
+        let (cdk_mint_url, config) = self
+            .wallet_target(mint_url.try_into()?, target_proof_count)
+            .await?;
 
         let wallet = self
             .inner
@@ -258,6 +238,10 @@ impl WalletRepository {
     }
 
     /// Remove mint from WalletRepository
+    ///
+    /// `mint_url` may be an alias of the wallet's mint URL, such as a
+    /// federation member's public mint URL. Only the in-memory wallet is
+    /// removed; its proofs, quotes and transactions stay in the database.
     pub async fn remove_wallet(
         &self,
         mint_url: MintUrl,
@@ -267,8 +251,6 @@ impl WalletRepository {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url
             .try_into()
             .map_err(|_| FfiError::internal("invalid mint url"))?; // Map the error to your FfiError type
-        #[cfg(feature = "federation")]
-        let cdk_mint_url = self.resolve_federation_mint_url(cdk_mint_url).await;
 
         // 2. Await the inner call and propagate its result with '?'
         self.inner
@@ -311,13 +293,13 @@ impl WalletRepository {
     }
 
     /// Check if mint is in wallet
+    ///
+    /// True as well for an alias of a wallet's mint URL, such as a federation
+    /// member's public mint URL.
     pub async fn has_mint(&self, mint_url: MintUrl) -> bool {
-        if let Ok(cdk_mint_url) = mint_url.try_into() {
-            #[cfg(feature = "federation")]
-            let cdk_mint_url = self.resolve_federation_mint_url(cdk_mint_url).await;
-            self.inner.has_mint(&cdk_mint_url).await
-        } else {
-            false
+        match cdk::mint_url::MintUrl::try_from(mint_url) {
+            Ok(cdk_mint_url) => self.inner.has_mint(&cdk_mint_url).await,
+            Err(_) => false,
         }
     }
 
@@ -396,15 +378,15 @@ impl WalletRepository {
 
     /// Get a specific wallet from WalletRepository by mint URL
     ///
-    /// Returns an error if no wallet exists for the given mint URL.
+    /// `mint_url` may be an alias of the wallet's mint URL, such as a
+    /// federation member's public mint URL. Returns an error if no wallet
+    /// exists for the given mint URL.
     pub async fn get_wallet(
         &self,
         mint_url: MintUrl,
         unit: CurrencyUnit,
     ) -> Result<Arc<crate::wallet::Wallet>, FfiError> {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
-        #[cfg(feature = "federation")]
-        let cdk_mint_url = self.resolve_federation_mint_url(cdk_mint_url).await;
         let unit_cdk: cdk::nuts::CurrencyUnit = unit.into();
         let wallet = self.inner.get_wallet(&cdk_mint_url, &unit_cdk).await?;
         Ok(Arc::new(crate::wallet::Wallet::from_inner(Arc::new(
@@ -413,6 +395,10 @@ impl WalletRepository {
     }
 
     /// Get token data, including the expected redemption fee, without redeeming it.
+    ///
+    /// A token that names an alias of a wallet's mint URL, such as a
+    /// federation member's public mint URL, is decoded by that wallet; the
+    /// returned `mint_url` is still the token's own.
     pub async fn get_token_data(
         &self,
         token: Arc<crate::token::Token>,
@@ -421,43 +407,70 @@ impl WalletRepository {
     }
 }
 
-#[cfg(feature = "federation")]
 impl WalletRepository {
-    /// Map a federation member URL to the federation's local mint URL.
-    async fn resolve_federation_mint_url(
+    /// The mint URL and configuration a wallet for `mint_url` is created
+    /// with: for an alias of an imported federation, the federation's local
+    /// mint URL and federated configuration; otherwise `mint_url` itself.
+    #[cfg_attr(not(feature = "federation"), allow(clippy::unused_async))]
+    async fn wallet_target(
         &self,
         mint_url: cdk::mint_url::MintUrl,
-    ) -> cdk::mint_url::MintUrl {
-        match self.federations.find_by_mint_url(&mint_url).await {
-            Ok(Some(federation)) => federation.local_mint_url().clone(),
-            Ok(None) => mint_url,
-            Err(err) => {
-                tracing::warn!(
-                    "Federation registry lookup for {} failed: {}",
-                    mint_url,
-                    err
-                );
-                mint_url
-            }
+        target_proof_count: Option<u32>,
+    ) -> Result<
+        (
+            cdk::mint_url::MintUrl,
+            Option<cdk::wallet::wallet_repository::WalletConfig>,
+        ),
+        FfiError,
+    > {
+        #[cfg(feature = "federation")]
+        if let Some(federation) = self.federations.find_by_mint_url(&mint_url).await? {
+            return Ok((
+                federation.local_mint_url().clone(),
+                Some(federation_wallet_config(&federation, target_proof_count)?),
+            ));
         }
-    }
 
-    /// Install a federated connector for every active unit of a registered federation.
+        let config = target_proof_count.map(|count| {
+            cdk::wallet::wallet_repository::WalletConfig::new()
+                .with_target_proof_count(count as usize)
+        });
+        Ok((mint_url, config))
+    }
+}
+
+/// Wallet configuration for a federation: its federated connector, its
+/// member URLs as mint URL aliases and an optional target proof count.
+#[cfg(feature = "federation")]
+fn federation_wallet_config(
+    federation: &cdk::wallet::RegisteredFederation,
+    target_proof_count: Option<u32>,
+) -> Result<cdk::wallet::wallet_repository::WalletConfig, FfiError> {
+    let config = federation.wallet_config_with_transport(FederationTransport::default())?;
+    Ok(match target_proof_count {
+        Some(count) => config.with_target_proof_count(count as usize),
+        None => config,
+    })
+}
+
+#[cfg(feature = "federation")]
+impl WalletRepository {
+    /// Install a federated connector, with every member URL as a mint URL
+    /// alias, for every active unit of a registered federation.
     async fn activate_federation(
         &self,
         federation: &cdk::wallet::RegisteredFederation,
         target_proof_count: Option<u32>,
     ) -> Result<FederationWalletInfo, FfiError> {
         let info = FederationWalletInfo::try_from(federation)?;
-        let connector =
-            Arc::new(federation.connector_with_transport(FederationTransport::default())?);
-        let target_proof_count = target_proof_count.unwrap_or(3) as usize;
+        let wallet_config = federation_wallet_config(federation, target_proof_count)?;
         for unit in federation.active_units() {
-            let wallet_config = cdk::wallet::wallet_repository::WalletConfig::new()
-                .with_target_proof_count(target_proof_count)
-                .with_mint_connector(connector.clone());
             self.inner
-                .set_mint_config(federation.local_mint_url().clone(), unit, wallet_config)
+                .set_mint_config(
+                    federation.local_mint_url().clone(),
+                    unit,
+                    wallet_config.clone(),
+                )
                 .await?;
         }
         Ok(info)
@@ -783,6 +796,105 @@ mod tests {
             .expect("federation wallet reactivated");
         assert_eq!(wallet.mint_url(), local_mint_url);
     }
+
+    #[cfg(feature = "federation")]
+    async fn repository_with_federation(
+        db: Arc<WalletSqliteDatabase>,
+    ) -> (WalletRepository, FederationWalletInfo) {
+        let repo = WalletRepository::new(MNEMONIC.to_string(), custom_wallet_store(db))
+            .expect("repository should be created");
+        let info = repo
+            .add_federation_config(
+                FederationWalletConfig {
+                    local_mint_url: MintUrl::new("https://ffi-mint1.example.com".to_string())
+                        .expect("local mint url"),
+                    public_config_json: serde_json::to_string(&federation_config())
+                        .expect("config json"),
+                },
+                None,
+            )
+            .await
+            .expect("import federation");
+        (repo, info)
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn federation_wallet_accepts_every_member_url() {
+        let db = WalletSqliteDatabase::new_in_memory().expect("in-memory wallet db should open");
+        let (repo, info) = repository_with_federation(db).await;
+        let local_mint_url = info.wallet_config.local_mint_url.clone();
+        let member_two_url =
+            MintUrl::new("https://ffi-mint2.example.com".to_string()).expect("member url");
+
+        let wallet = repo
+            .get_or_create_wallet(member_two_url.clone(), CurrencyUnit::Sat, None)
+            .await
+            .expect("member url resolves to the federation wallet");
+        assert_eq!(wallet.mint_url(), local_mint_url);
+        assert_eq!(wallet.mint_url_aliases().len(), 2);
+        assert!(!wallet.mint_url_aliases().contains(&local_mint_url));
+        for member in &info.member_mint_urls {
+            assert!(wallet.accepts_mint_url(member.clone()));
+        }
+        assert!(!wallet.accepts_mint_url(
+            MintUrl::new("https://unrelated.example.com".to_string()).expect("url")
+        ));
+        assert_eq!(repo.get_wallets().await.len(), 1, "no member-keyed wallet");
+        assert!(repo.has_mint(member_two_url).await);
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn removed_federation_is_not_reactivated_after_restart() {
+        let db = WalletSqliteDatabase::new_in_memory().expect("in-memory wallet db should open");
+        let (repo, info) = repository_with_federation(db.clone()).await;
+        let member_two_url =
+            MintUrl::new("https://ffi-mint2.example.com".to_string()).expect("member url");
+        assert!(repo.has_mint(member_two_url.clone()).await);
+
+        assert!(repo
+            .remove_federation(info.federation_id.clone())
+            .await
+            .expect("remove federation"));
+        assert!(!repo
+            .remove_federation(info.federation_id.clone())
+            .await
+            .expect("second removal is a no-op"));
+        assert!(repo.list_federations().await.expect("list").is_empty());
+        assert!(repo.get_wallets().await.is_empty());
+        assert!(!repo.has_mint(member_two_url.clone()).await);
+        assert!(
+            !repo
+                .has_mint(info.wallet_config.local_mint_url.clone())
+                .await
+        );
+        drop(repo);
+
+        let restarted = WalletRepository::new(MNEMONIC.to_string(), custom_wallet_store(db))
+            .expect("repository should be recreated");
+        assert!(restarted.list_federations().await.expect("list").is_empty());
+        assert!(restarted
+            .get_wallet(member_two_url.clone(), CurrencyUnit::Sat)
+            .await
+            .is_err());
+        assert!(!restarted.has_mint(member_two_url.clone()).await);
+
+        // Without the federation a member URL is an ordinary mint URL again.
+        let standalone = restarted
+            .get_or_create_wallet(member_two_url.clone(), CurrencyUnit::Sat, None)
+            .await
+            .expect("standalone wallet");
+        assert_eq!(standalone.mint_url(), member_two_url);
+        assert!(standalone.mint_url_aliases().is_empty());
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn remove_federation_rejects_an_invalid_id() {
+        let repo = test_repository();
+        assert!(repo.remove_federation("not hex".to_string()).await.is_err());
+    }
 }
 
 #[cfg(feature = "federation")]
@@ -845,6 +957,33 @@ impl WalletRepository {
             .iter()
             .map(FederationWalletInfo::try_from)
             .collect()
+    }
+
+    /// Remove an imported federation.
+    ///
+    /// Deletes the federation from the wallet's federation registry, so it is
+    /// not reactivated when the repository is constructed again, and removes
+    /// its wallets (every unit under its local mint URL) from this repository.
+    /// Its member URLs no longer resolve to any wallet. Returns false when no
+    /// federation with this ID is imported.
+    ///
+    /// Like `remove_wallet`, this never deletes funds: the federation's
+    /// proofs, quotes and transactions stay in the database under its local
+    /// mint URL. Importing the federation again under the same local mint URL
+    /// brings its balance back. A mint record that the wallet stored for the
+    /// local mint URL also stays, so a later repository construction loads it
+    /// as an ordinary, non-federated wallet, as it does for any mint removed
+    /// with `remove_wallet`.
+    pub async fn remove_federation(&self, federation_id: String) -> Result<bool, FfiError> {
+        let federation_id = cdk::federation::FederationId::from_hex(&federation_id)?;
+        let Some(federation) = self.federations.get(&federation_id).await? else {
+            return Ok(false);
+        };
+        self.federations.remove(federation_id).await?;
+        self.inner
+            .remove_wallets_for_mint(federation.local_mint_url())
+            .await;
+        Ok(true)
     }
 
     /// Rediscover an imported federation through its members and store the
