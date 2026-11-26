@@ -556,6 +556,7 @@ async fn status_poll_replays_finalizing_handoff_after_lease_expires() {
             total_spent: Amount::from(9_250).with_unit(CurrencyUnit::Sat),
             payment_lookup_id: PaymentIdentifier::CustomId("saved-payment".to_string()),
             payment_proof: Some("saved-preimage".to_string()),
+            bolt12_payer_proof_inputs: None,
         };
         let mut tx = mint.localstore().begin_transaction().await.unwrap();
         let mut saga = tx
