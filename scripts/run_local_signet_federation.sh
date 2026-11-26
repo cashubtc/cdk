@@ -24,9 +24,13 @@ CHAIN_SOURCE_ID="${CHAIN_SOURCE_ID:-2nddev-signet-esplora}"
 BARK_SERVER_ADDRESS="${BARK_SERVER_ADDRESS:-https://ark.signet.2nd.dev/}"
 BARK_ARK_SERVER_PUBLIC_KEY="${BARK_ARK_SERVER_PUBLIC_KEY:-03244a5a493e5f0c7b2ff513575715c036100ae219e5765ea688eb542a06f85aed}"
 RUST_LOG="${RUST_LOG:-info}"
+# Public mint URL for each member; {member} and {port} are substituted. A
+# deployment behind a TLS proxy sets it to, for example, https://cdk-{member}.example.com.
+DEFAULT_PUBLIC_URL_TEMPLATE='http://localhost:{port}'
+PUBLIC_URL_TEMPLATE="${PUBLIC_URL_TEMPLATE:-$DEFAULT_PUBLIC_URL_TEMPLATE}"
+MINT_NAME="${MINT_NAME:-Local signet federation}"
 
-MINTD="$REPO_ROOT/target/release/cdk-mintd"
-CLI="$REPO_ROOT/target/release/cdk-cli"
+MINTD="${MINTD:-$REPO_ROOT/target/release/cdk-mintd}"
 SETUP_PIDS=()
 
 usage() {
@@ -40,7 +44,8 @@ Usage:
   scripts/run_local_signet_federation.sh status|wallet-status|urls
 
 State lives in target/local-signet-federation (RUN_DIR). BUILD=0 reuses the
-release binaries. Logs are in member-N/work/mintd.log.
+release binaries (MINTD overrides the binary path). PUBLIC_URL_TEMPLATE sets
+the members' public mint URLs. Logs are in member-N/work/mintd.log.
 EOF
 }
 
@@ -60,8 +65,11 @@ activated_public() { printf '%s/activated/federation-public.json' "$(setup_state
 activated_private() { printf '%s/activated/federation-private.json' "$(setup_state_dir "$1")"; }
 member_port() { printf '%s' "$((PORT_START + $1 - 1))"; }
 # The mint and federation API share one listener; setup requires the two URLs
-# to differ, so wallets use localhost and peers use 127.0.0.1.
-member_url() { printf 'http://localhost:%s' "$(member_port "$1")"; }
+# to differ, so wallets use the public URL and peers use 127.0.0.1.
+member_url() {
+    local url="${PUBLIC_URL_TEMPLATE//\{member\}/$1}"
+    printf '%s' "${url//\{port\}/$(member_port "$1")}"
+}
 federation_url() { printf 'http://127.0.0.1:%s' "$(member_port "$1")"; }
 pid_file() { printf '%s/mintd.pid' "$(work_dir "$1")"; }
 
@@ -150,7 +158,7 @@ ttl = 60
 tti = 60
 
 [mint_info]
-name = "Local signet federation member $member"
+name = "$MINT_NAME member $member"
 description = "Five-member CDK federation on Second signet (Bark Lightning, FROST on-chain)"
 
 [prometheus]
@@ -365,7 +373,9 @@ urls() {
 
 fresh() {
     local member
-    [[ "$RUN_DIR" == "$REPO_ROOT"/target/* ]] || die "RUN_DIR must be under target/"
+    case "$RUN_DIR" in
+        "" | / | "$HOME" | "$REPO_ROOT") die "refusing to wipe RUN_DIR=$RUN_DIR" ;;
+    esac
     stop_members
     rm -rf -- "$RUN_DIR"
     mkdir -p "$RUN_DIR"
