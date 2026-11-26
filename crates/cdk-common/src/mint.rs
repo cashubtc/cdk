@@ -1255,6 +1255,7 @@ impl From<MeltQuote> for MeltQuoteOnchainResponse<QuoteId> {
             selected_fee_index: quote.selected_fee_index,
             outpoint: quote.payment_proof.clone(),
             change: None,
+            payjoin: None,
         }
     }
 }
@@ -1272,6 +1273,7 @@ impl TryFrom<MintQuote> for MintQuoteOnchainResponse<QuoteId> {
             amount_paid: quote.amount_paid().into(),
             amount_issued: quote.amount_issued().into(),
             updated_at: quote.updated_at(),
+            payjoin: None,
         })
     }
 }

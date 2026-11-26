@@ -220,6 +220,7 @@ fn onchain_melt_request() -> MeltQuoteRequest {
         request: "bcrt1qexampleaddr0000000000000000000000000000".to_string(),
         unit: CurrencyUnit::Sat,
         amount: Amount::from(1_000),
+        payjoin: None,
     })
 }
 
