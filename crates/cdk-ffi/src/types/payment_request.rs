@@ -224,6 +224,7 @@ pub struct PreparedPaymentRequest {
     inner: std::sync::Mutex<Option<cdk::wallet::PreparedPaymentRequest>>,
     operation_id: String,
     mint_url: String,
+    payment_mint_url: String,
     unit: CurrencyUnit,
     requested_amount: Amount,
     method: Option<String>,
@@ -249,6 +250,7 @@ impl PreparedPaymentRequest {
         Self {
             operation_id: inner.operation_id().to_string(),
             mint_url: inner.mint_url().to_string(),
+            payment_mint_url: inner.payment_mint_url().to_string(),
             unit: inner.unit().clone().into(),
             requested_amount: inner.requested_amount().into(),
             method: inner.method().map(str::to_owned),
@@ -276,9 +278,17 @@ impl PreparedPaymentRequest {
         self.operation_id.clone()
     }
 
-    /// Mint selected for the payment.
+    /// Mint selected for the payment: the paying wallet's mint URL.
     pub fn mint_url(&self) -> String {
         self.mint_url.clone()
+    }
+
+    /// Mint URL the delivered payment names.
+    ///
+    /// Differs from `mint_url` when the request lists the paying wallet's mint
+    /// only through an alias, such as another federation member's URL.
+    pub fn payment_mint_url(&self) -> String {
+        self.payment_mint_url.clone()
     }
 
     /// Currency unit of the payment.

@@ -100,9 +100,21 @@ impl PreparedPaymentRequest {
         self.operation_id
     }
 
-    /// Mint selected for the payment.
+    /// Mint selected for the payment: the paying wallet's mint URL.
     pub fn mint_url(&self) -> &MintUrl {
         &self.wallet.mint_url
+    }
+
+    /// Mint URL the delivered payment names.
+    ///
+    /// This is the entry of the request's mint list that names the paying
+    /// wallet's mint, which is an [alias](Wallet::mint_url_aliases) when the
+    /// request lists only another federation member's URL, because the
+    /// receiver checks the payment against its own list. It is
+    /// [`Self::mint_url`] when the request lists that URL or lists no mint
+    /// for this wallet.
+    pub fn payment_mint_url(&self) -> &MintUrl {
+        self.wallet.payment_request_mint_url(&self.payment_request)
     }
 
     /// Currency unit of the payment.
@@ -282,9 +294,8 @@ impl Wallet {
             return Err(Error::UnsupportedUnit);
         }
 
-        if payment_request_mint_list_is_strict(&payment_request)
-            && payment_request_uses_unlisted_mint(&payment_request, &self.mint_url)
-        {
+        let listed_mint_url = payment_request_listed_mint_url(&payment_request, self);
+        if payment_request_mint_list_is_strict(&payment_request) && listed_mint_url.is_none() {
             return Err(Error::Custom(format!(
                 "Mint {} is not accepted by this payment request. Accepted mints: {:?}",
                 self.mint_url, payment_request.mints
@@ -294,7 +305,7 @@ impl Wallet {
         let selected_method = wallet_payment_request_method(self, &payment_request, &unit)
             .await?
             .ok_or(Error::UnsupportedPaymentMethod)?;
-        let method_fee = if payment_request_method_fee_applies(&payment_request, &self.mint_url) {
+        let method_fee = if payment_request_method_fee_applies(listed_mint_url) {
             selected_method.fee
         } else {
             Amount::ZERO
@@ -375,6 +386,15 @@ impl Wallet {
         })
     }
 
+    /// Mint URL that a payment from this wallet names in its NUT-18 payload.
+    ///
+    /// The receiver checks the payload's mint against its request's list, so
+    /// when the list names this wallet's mint only through an alias, the
+    /// payload carries that alias.
+    fn payment_request_mint_url<'a>(&'a self, payment_request: &'a PaymentRequest) -> &'a MintUrl {
+        payment_request_listed_mint_url(payment_request, self).unwrap_or(&self.mint_url)
+    }
+
     #[instrument(skip_all)]
     async fn deliver_payment_request(
         &self,
@@ -388,7 +408,7 @@ impl Wallet {
         let payload = PaymentRequestPayload {
             id: payment_request.payment_id.clone(),
             memo: None,
-            mint: self.mint_url.clone(),
+            mint: self.payment_request_mint_url(payment_request).clone(),
             unit: self.unit.clone(),
             proofs,
         };
@@ -893,17 +913,38 @@ mod tests {
         }
     }
 
-    #[test]
-    fn method_fee_only_applies_to_nonpreferred_mints() {
-        let listed = MintUrl::from_str("https://listed.example.com").expect("valid URL");
-        let unlisted = MintUrl::from_str("https://unlisted.example.com").expect("valid URL");
+    #[tokio::test]
+    async fn method_fee_only_applies_to_nonpreferred_mints() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, MockMintConnector,
+        };
+
+        let listed_wallet = create_test_wallet_with_mock(
+            create_test_db().await,
+            Arc::new(MockMintConnector::new()),
+        )
+        .await;
+        let listed = listed_wallet.mint_url.clone();
+        let unlisted_wallet = crate::wallet::WalletBuilder::new()
+            .mint_url(MintUrl::from_str("https://unlisted.example.com").expect("valid URL"))
+            .unit(CurrencyUnit::Sat)
+            .localstore(create_test_db().await)
+            .seed([0u8; 64])
+            .build()
+            .expect("wallet");
         let mut request = payment_request(Some(CurrencyUnit::Sat), Some(Amount::from(1)), vec![]);
 
-        assert!(payment_request_method_fee_applies(&request, &listed));
+        assert!(payment_request_method_fee_applies(
+            payment_request_listed_mint_url(&request, &listed_wallet)
+        ));
 
-        request.mints.push(listed.clone());
-        assert!(!payment_request_method_fee_applies(&request, &listed));
-        assert!(payment_request_method_fee_applies(&request, &unlisted));
+        request.mints.push(listed);
+        assert!(!payment_request_method_fee_applies(
+            payment_request_listed_mint_url(&request, &listed_wallet)
+        ));
+        assert!(payment_request_method_fee_applies(
+            payment_request_listed_mint_url(&request, &unlisted_wallet)
+        ));
     }
 
     #[test]
@@ -1205,6 +1246,153 @@ mod tests {
         }
     }
 
+    /// A federation wallet keyed by member 1 pays a request that lists only
+    /// member 2. The request accepts it through the alias, charges no method
+    /// fee, and the payload names member 2 because the receiver checks the
+    /// payload's mint against its own list.
+    #[tokio::test]
+    async fn prepare_pay_request_accepts_a_mint_url_alias_and_names_it_in_the_payload() {
+        use crate::wallet::test_utils::{
+            create_test_db, test_keyset, test_keyset_id, test_mint_url, test_proof,
+            test_proof_info, MockMintConnector, PaymentRequestDeliverability,
+        };
+        use crate::wallet::WalletBuilder;
+
+        let alias = MintUrl::from_str("https://member2.example.com").expect("alias");
+        let db = create_test_db().await;
+        db.update_proofs(
+            vec![test_proof_info(test_keyset_id(), 1024, test_mint_url())],
+            vec![],
+        )
+        .await
+        .expect("store proof");
+        let mock = Arc::new(MockMintConnector::new());
+        mock.set_payment_request_deliverability(PaymentRequestDeliverability::Deliverable);
+        mock.set_mint_keys_response(Ok(vec![test_keyset()]));
+        let build_wallet = |aliases: Vec<MintUrl>| {
+            WalletBuilder::new()
+                .mint_url(test_mint_url())
+                .unit(CurrencyUnit::Sat)
+                .localstore(db.clone())
+                .seed([0u8; 64])
+                .shared_client(mock.clone())
+                .with_mint_url_aliases(aliases)
+                .build()
+                .expect("wallet")
+        };
+        let mut request = payment_request_with_http_transport(Amount::from(100), Amount::from(500));
+        request.mints = vec![alias.clone()];
+
+        let plain = build_wallet(vec![]);
+        let error = plain
+            .prepare_pay_request(request.clone(), None)
+            .await
+            .expect_err("a wallet without the alias is not accepted");
+        assert!(error.to_string().contains("is not accepted"), "{error}");
+
+        let wallet = build_wallet(vec![alias.clone()]);
+        let prepared = wallet
+            .prepare_pay_request(request.clone(), None)
+            .await
+            .expect("alias is accepted");
+        assert_eq!(prepared.mint_url(), &test_mint_url());
+        assert_eq!(prepared.payment_mint_url(), &alias);
+        assert_eq!(prepared.method_fee(), Amount::ZERO);
+        assert_eq!(prepared.payment_amount(), Amount::from(100));
+        prepared.cancel().await.expect("cancel prepared payment");
+
+        let token = crate::nuts::Token::new(
+            test_mint_url(),
+            vec![test_proof(test_keyset_id(), 64)],
+            None,
+            CurrencyUnit::Sat,
+        );
+        let transport = request.transports[0].clone();
+        wallet
+            .deliver_payment_request(&request, &transport, &token)
+            .await
+            .expect("deliver");
+        request.mints.push(test_mint_url());
+        wallet
+            .deliver_payment_request(&request, &transport, &token)
+            .await
+            .expect("deliver");
+
+        let payloads = mock.posted_payment_request_payloads();
+        assert_eq!(payloads.len(), 2);
+        assert_eq!(payloads[0].1.mint, alias, "only the alias is listed");
+        assert_eq!(
+            payloads[1].1.mint,
+            test_mint_url(),
+            "the wallet's own URL wins when both are listed"
+        );
+    }
+
+    #[tokio::test]
+    async fn repository_prepare_pay_request_selects_a_wallet_through_its_alias() {
+        use cdk_common::database::{Error as DatabaseError, WalletDatabase};
+
+        use crate::wallet::test_utils::{
+            test_keyset_id, test_mint_url, test_proof_info, MockMintConnector,
+            PaymentRequestDeliverability,
+        };
+        use crate::wallet::WalletConfig;
+
+        let localstore: Arc<dyn WalletDatabase<DatabaseError> + Send + Sync> = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("in-memory database"),
+        );
+        localstore
+            .update_proofs(
+                vec![test_proof_info(test_keyset_id(), 1024, test_mint_url())],
+                vec![],
+            )
+            .await
+            .expect("store proofs");
+        let repository = crate::wallet::WalletRepositoryBuilder::new()
+            .localstore(localstore)
+            .seed([0u8; 64])
+            .build()
+            .await
+            .expect("repository");
+        let alias = MintUrl::from_str("https://member2.example.com").expect("alias");
+        let mock = MockMintConnector::new();
+        mock.set_payment_request_deliverability(PaymentRequestDeliverability::Deliverable);
+        repository
+            .create_wallet(
+                test_mint_url(),
+                CurrencyUnit::Sat,
+                Some(
+                    WalletConfig::new()
+                        .with_mint_connector(Arc::new(mock))
+                        .with_mint_url_aliases([alias.clone()]),
+                ),
+            )
+            .await
+            .expect("alias wallet");
+        let mut request = payment_request_with_http_transport(Amount::from(100), Amount::from(500));
+        request.mints = vec![alias.clone()];
+
+        for mint_url in [None, Some(test_mint_url()), Some(alias.clone())] {
+            let prepared = repository
+                .prepare_pay_request(request.clone(), mint_url, None)
+                .await
+                .expect("alias wallet is accepted");
+            assert_eq!(prepared.mint_url(), &test_mint_url());
+            assert_eq!(prepared.payment_mint_url(), &alias);
+            assert_eq!(prepared.method_fee(), Amount::ZERO);
+            prepared.cancel().await.expect("cancel prepared payment");
+        }
+
+        let unrelated = MintUrl::from_str("https://unrelated.example.com").expect("mint url");
+        let error = repository
+            .prepare_pay_request(request, Some(unrelated), None)
+            .await
+            .expect_err("unrelated mint is not accepted");
+        assert!(error.to_string().contains("is not accepted"), "{error}");
+    }
+
     /// Delivery rides the selected wallet's connector, so the richest accepted
     /// mint is not automatically payable. Ranking on balance alone would hand
     /// back a wallet that can never reach the receiver while a funded sibling
@@ -1440,11 +1628,24 @@ fn payment_request_mint_policy_accepts_mint(
     !payment_request_mint_policy_is_strict(mints, mint_preferred) || mints.contains(mint_url)
 }
 
-fn payment_request_uses_unlisted_mint(
-    payment_request: &PaymentRequest,
-    mint_url: &MintUrl,
-) -> bool {
-    !payment_request.mints.is_empty() && !payment_request.mints.contains(mint_url)
+/// The entry of a request's mint list that names `wallet`'s mint: its own
+/// mint URL if listed, else the first listed
+/// [alias](Wallet::mint_url_aliases). `None` when the list does not name the
+/// wallet's mint, including when the list is empty.
+fn payment_request_listed_mint_url<'a>(
+    payment_request: &'a PaymentRequest,
+    wallet: &Wallet,
+) -> Option<&'a MintUrl> {
+    payment_request
+        .mints
+        .iter()
+        .find(|mint_url| **mint_url == wallet.mint_url)
+        .or_else(|| {
+            payment_request
+                .mints
+                .iter()
+                .find(|mint_url| wallet.accepts_mint_url(mint_url))
+        })
 }
 
 async fn payment_request_amount_for_wallet(
@@ -1453,9 +1654,8 @@ async fn payment_request_amount_for_wallet(
     wallet: &Wallet,
     unit: &CurrencyUnit,
 ) -> Result<Amount, Error> {
-    if payment_request_mint_list_is_strict(payment_request)
-        && payment_request_uses_unlisted_mint(payment_request, &wallet.mint_url)
-    {
+    let listed_mint_url = payment_request_listed_mint_url(payment_request, wallet);
+    if payment_request_mint_list_is_strict(payment_request) && listed_mint_url.is_none() {
         return Err(Error::Custom(format!(
             "Mint {} is not accepted by this payment request. Accepted mints: {:?}",
             wallet.mint_url, payment_request.mints
@@ -1467,18 +1667,18 @@ async fn payment_request_amount_for_wallet(
         .ok_or(Error::UnsupportedPaymentMethod)?
         .fee;
 
-    if payment_request_method_fee_applies(payment_request, &wallet.mint_url) {
+    if payment_request_method_fee_applies(listed_mint_url) {
         return amount.checked_add(method_fee).ok_or(Error::AmountOverflow);
     }
 
     Ok(amount)
 }
 
-fn payment_request_method_fee_applies(
-    payment_request: &PaymentRequest,
-    mint_url: &MintUrl,
-) -> bool {
-    payment_request.mints.is_empty() || !payment_request.mints.contains(mint_url)
+/// The receiver-selected method fee applies unless the request lists the
+/// paying wallet's mint, given as the
+/// [listed mint URL](payment_request_listed_mint_url).
+fn payment_request_method_fee_applies(listed_mint_url: Option<&MintUrl>) -> bool {
+    listed_mint_url.is_none()
 }
 
 /// Whether this wallet's connector can hand proofs to the chosen transport.
@@ -1752,18 +1952,27 @@ impl WalletRepository {
 
         // Select the wallet to use for payment
         let selected_wallet = if let Some(specified_mint) = &mint_url {
-            // User specified a mint - verify it's accepted by strict payment requests.
-            if payment_request_mint_list_is_strict(&payment_request)
-                && !accepted_mints.contains(specified_mint)
-            {
-                return Err(Error::Custom(format!(
-                    "Mint {} is not accepted by this payment request. Accepted mints: {:?}",
-                    specified_mint, accepted_mints
-                )));
+            // Get the wallet for the specified mint (or one of its aliases) and unit
+            let wallet = self.get_wallet(specified_mint, &unit).await;
+
+            // User specified a mint - verify it's accepted by strict payment requests,
+            // directly or through one of the wallet's aliases.
+            if payment_request_mint_list_is_strict(&payment_request) {
+                let accepted = match &wallet {
+                    Ok(wallet) => {
+                        payment_request_listed_mint_url(&payment_request, wallet).is_some()
+                    }
+                    Err(_) => accepted_mints.contains(specified_mint),
+                };
+                if !accepted {
+                    return Err(Error::Custom(format!(
+                        "Mint {} is not accepted by this payment request. Accepted mints: {:?}",
+                        specified_mint, accepted_mints
+                    )));
+                }
             }
 
-            // Get the wallet for the specified mint and unit
-            self.get_wallet(specified_mint, &unit).await?
+            wallet?
         } else {
             // No mint specified - find the best matching mint with highest balance
             let balances = self.get_balances().await?;
@@ -1779,13 +1988,6 @@ impl WalletRepository {
                     continue;
                 }
 
-                let mint_is_listed =
-                    accepted_mints.is_empty() || accepted_mints.contains(&wallet_key.mint_url);
-
-                if !mint_is_listed && !mint_list_is_preferred {
-                    continue;
-                }
-
                 let wallet = match self.get_wallet(&wallet_key.mint_url, &unit).await {
                     Ok(wallet) => wallet,
                     Err(err) => {
@@ -1797,6 +1999,13 @@ impl WalletRepository {
                         continue;
                     }
                 };
+
+                let mint_is_listed = accepted_mints.is_empty()
+                    || payment_request_listed_mint_url(&payment_request, &wallet).is_some();
+
+                if !mint_is_listed && !mint_list_is_preferred {
+                    continue;
+                }
 
                 let required_amount = match payment_request_amount_for_wallet(
                     amount,

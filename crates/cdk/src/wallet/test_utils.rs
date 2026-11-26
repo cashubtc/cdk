@@ -634,6 +634,8 @@ pub struct MockMintConnector {
     /// `MintConnector` default, so a test paying an HTTP-only payment request
     /// has to opt in.
     pub payment_request_deliverability: Mutex<PaymentRequestDeliverability>,
+    /// NUT-18 payloads delivered over HTTP POST, with their target URL
+    pub posted_payment_request_payloads: Mutex<Vec<(String, cdk_common::PaymentRequestPayload)>>,
 }
 
 /// What a [`MockMintConnector`] reports for a NUT-18 receiver URL.
@@ -714,6 +716,7 @@ impl MockMintConnector {
             #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
             dns_txt_response: Mutex::new(None),
             payment_request_deliverability: Mutex::new(PaymentRequestDeliverability::Unsupported),
+            posted_payment_request_payloads: Mutex::new(Vec::new()),
         }
     }
 
@@ -1096,6 +1099,12 @@ impl MockMintConnector {
     pub fn set_payment_request_deliverability(&self, deliverability: PaymentRequestDeliverability) {
         *self.payment_request_deliverability.lock().unwrap() = deliverability;
     }
+
+    pub fn posted_payment_request_payloads(
+        &self,
+    ) -> Vec<(String, cdk_common::PaymentRequestPayload)> {
+        self.posted_payment_request_payloads.lock().unwrap().clone()
+    }
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
@@ -1116,6 +1125,19 @@ impl MintConnector for MockMintConnector {
                 Err(Error::UnverifiedTlsEndpoint { host })
             }
         }
+    }
+
+    async fn post_payment_request_payload(
+        &self,
+        url: &str,
+        payload: &cdk_common::PaymentRequestPayload,
+    ) -> Result<(), Error> {
+        self.ensure_payment_request_deliverable(url)?;
+        self.posted_payment_request_payloads
+            .lock()
+            .unwrap()
+            .push((url.to_string(), payload.clone()));
+        Ok(())
     }
 
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
