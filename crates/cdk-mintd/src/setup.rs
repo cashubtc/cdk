@@ -841,6 +841,10 @@ impl OnchainBackendSetup for crate::config::Bdk {
             None,
         )?;
 
+        let bdk = match &self.payjoin {
+            Some(config) => bdk.with_payjoin(config.clone())?,
+            None => bdk,
+        };
         Ok(bdk)
     }
 }

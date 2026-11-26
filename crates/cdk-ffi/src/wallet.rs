@@ -665,6 +665,38 @@ impl Wallet {
         Ok(quotes.into_iter().map(Into::into).collect())
     }
 
+    /// Fetch the current Payjoin receiver parameters for an onchain mint quote.
+    pub async fn onchain_mint_quote_payjoin(
+        &self,
+        quote_id: String,
+    ) -> Result<Option<crate::types::PayjoinV2>, FfiError> {
+        Ok(self
+            .inner
+            .onchain_mint_quote_payjoin(&quote_id)
+            .await?
+            .map(Into::into))
+    }
+
+    /// Fetch onchain melt options with a Payjoin v2 destination.
+    pub async fn quote_onchain_melt_options_with_payjoin(
+        &self,
+        address: String,
+        amount: Amount,
+        max_fee_amount: Option<Amount>,
+        payjoin: Option<crate::types::PayjoinV2>,
+    ) -> Result<Vec<MeltQuote>, FfiError> {
+        let quotes = self
+            .inner
+            .quote_onchain_melt_options_with_payjoin(
+                &address,
+                amount.into(),
+                max_fee_amount.map(Into::into),
+                payjoin.map(TryInto::try_into).transpose()?,
+            )
+            .await?;
+        Ok(quotes.into_iter().map(Into::into).collect())
+    }
+
     /// Persist the selected onchain melt quote before preparing it.
     pub async fn select_onchain_melt_quote(&self, quote: MeltQuote) -> Result<MeltQuote, FfiError> {
         let quote = self

@@ -269,12 +269,13 @@ fn strip_fragment_prefix<'a>(
 
 #[cfg(test)]
 mod tests {
+    use cashu::bip77::PayjoinReceiver;
+
     use super::{
         build_bip21_payjoin_uri, build_receiver_endpoint, decode_bip77_expiry, encode_bip77_expiry,
         parse_bip21_payjoin_uri, parse_receiver_endpoint, receiver_is_expired_at,
         Bip21PayjoinUriError,
     };
-    use cashu::bip77::PayjoinReceiver;
 
     const OHTTP_KEYS: &str = "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ";
     const RECEIVER_KEY: &str = "QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG";

@@ -2,6 +2,7 @@
 //!
 //! Represents a single Bitcoin transaction that batches one or more
 //! [`SendIntent`]s. Progresses through: `Built` -> `Signed` -> `Broadcast`.
+//! Negotiated Payjoins enter `Signed` through an atomic intent/batch handoff.
 //!
 //! The wrapper is internal to the crate.
 
@@ -11,13 +12,12 @@ pub(crate) mod state;
 
 use uuid::Uuid;
 
-#[cfg(test)]
-use self::record::SendBatchRecord;
-use self::record::{BatchOutputAssignment, SendBatchState};
+use self::record::{BatchOutputAssignment, SendBatchRecord, SendBatchState};
 use self::state::{Built, Signed};
 use crate::error::Error;
-use crate::send::payment_intent::state::Batched;
-use crate::send::payment_intent::SendIntent;
+use crate::send::payment_intent::record::{SendIntentRecord, SendIntentState};
+use crate::send::payment_intent::state::{Batched, Pending};
+use crate::send::payment_intent::{self, SendIntent, SendIntentAny};
 use crate::storage::BdkStorage;
 
 /// A send batch in a particular typestate
@@ -187,6 +187,72 @@ impl SendBatch<Built> {
 }
 
 impl SendBatch<Signed> {
+    /// Commit a negotiated Payjoin (or its fallback) and assign its pending intent
+    /// in one transaction. Cancellation cannot leave only one side of the handoff.
+    /// The session's input reservations remain held until confirmation.
+    pub async fn from_payjoin(
+        storage: &BdkStorage,
+        intent: SendIntent<Pending>,
+        transaction: &bdk_wallet::bitcoin::Transaction,
+        vout: u32,
+        fee_sat: u64,
+    ) -> Result<Self, Error> {
+        use std::str::FromStr;
+
+        use bdk_wallet::bitcoin::Address;
+
+        if intent.metadata.payjoin.is_none() {
+            return Err(Error::Payjoin("Missing negotiation parameters".to_string()));
+        }
+        let address = Address::from_str(&intent.address)
+            .map_err(|error| Error::Payjoin(error.to_string()))?
+            .assume_checked();
+        let output = transaction
+            .output
+            .get(vout as usize)
+            .ok_or(Error::VoutNotFound)?;
+        if output.script_pubkey != address.script_pubkey() || output.value.to_sat() < intent.amount
+        {
+            return Err(Error::VoutNotFound);
+        }
+        if fee_sat > intent.max_fee_amount {
+            return Err(Error::EstimatedFeeTooHigh {
+                estimated_fee: fee_sat,
+                max_fee: intent.max_fee_amount,
+            });
+        }
+        let batch_id = intent.intent_id;
+        let pending = SendIntentRecord {
+            intent_id: intent.intent_id,
+            quote_id: intent.quote_id,
+            address: intent.address,
+            amount_sat: intent.amount,
+            max_fee_amount_sat: intent.max_fee_amount,
+            tier: intent.tier,
+            metadata: intent.metadata,
+            state: SendIntentState::Pending {
+                created_at: intent.created_at,
+            },
+        };
+        let batch = SendBatchRecord {
+            batch_id,
+            state: SendBatchState::Signed {
+                tx_bytes: bdk_wallet::bitcoin::consensus::serialize(transaction),
+                assignments: vec![BatchOutputAssignment {
+                    intent_id: pending.intent_id,
+                    vout,
+                    fee_contribution_sat: fee_sat,
+                }],
+                fee_sat,
+            },
+        };
+        let batched = storage.commit_payjoin_batch(&pending, &batch).await?;
+        let SendIntentAny::Batched(intent) = payment_intent::from_record(&batched) else {
+            return Err(Error::Payjoin("Invalid batch handoff state".to_string()));
+        };
+        Ok(Self::reconstruct(batch_id, vec![intent]))
+    }
+
     /// Reconstruct a `SendBatch<Signed>` from a stored record for recovery.
     ///
     /// Does **not** persist anything — the batch already exists in storage.

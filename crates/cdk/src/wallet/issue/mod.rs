@@ -196,6 +196,22 @@ fn mint_quote_response_amount(response: &MintQuoteResponse<String>) -> Option<Am
 }
 
 impl Wallet {
+    /// Fetch the current Payjoin receiver parameters for an onchain mint quote.
+    #[instrument(skip_all)]
+    pub async fn onchain_mint_quote_payjoin(
+        &self,
+        quote_id: &str,
+    ) -> Result<Option<cdk_common::nuts::nut31::PayjoinV2>, Error> {
+        match self
+            .client
+            .get_mint_quote_status(PaymentMethod::Known(KnownMethod::Onchain), quote_id)
+            .await?
+        {
+            MintQuoteResponse::Onchain(response) => Ok(response.payjoin),
+            _ => Err(Error::InvalidPaymentMethod),
+        }
+    }
+
     async fn next_mint_quote_signing_key(&self) -> Result<SecretKey, Error> {
         let counter = self
             .reserve_derivation_index(DerivationCounterNamespace::Nut20Quote, 0)

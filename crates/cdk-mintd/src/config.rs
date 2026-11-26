@@ -394,6 +394,9 @@ impl Default for BatchConfig {
 #[cfg(feature = "bdk")]
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Bdk {
+    /// Optional Payjoin v2 OHTTP relay configuration.
+    #[serde(default)]
+    pub payjoin: Option<cdk_bdk::payjoin::PayjoinConfig>,
     /// Fee percentage (e.g., 0.02 for 2%)
     #[serde(default = "default_fee_percent")]
     pub fee_percent: f32,
@@ -493,6 +496,7 @@ impl fmt::Debug for Bdk {
 impl Default for Bdk {
     fn default() -> Self {
         Self {
+            payjoin: None,
             fee_percent: default_fee_percent(),
             reserve_fee_min: default_reserve_fee_min(),
             network: None,
