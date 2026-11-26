@@ -1232,3 +1232,100 @@ where
 
     tx.rollback().await.unwrap();
 }
+
+/// Store more proofs than fit one multi-row insert statement
+pub async fn add_proofs_crosses_insert_batches<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let keyset_id = setup_keyset(&db).await;
+    let quote_id = QuoteId::new();
+
+    let proofs = (0..601)
+        .map(|_| Proof {
+            amount: Amount::from(2),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        })
+        .collect::<Vec<_>>();
+
+    let ys = proofs.iter().map(|p| p.y().unwrap()).collect::<Vec<_>>();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_proofs(
+        proofs.clone(),
+        Some(quote_id.clone()),
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let stored = db.get_proofs_by_ys(&ys).await.unwrap();
+    assert_eq!(stored.len(), proofs.len());
+    assert!(stored.iter().all(|proof| proof.is_some()));
+    assert_eq!(
+        stored
+            .into_iter()
+            .map(|proof| proof.unwrap().secret)
+            .collect::<Vec<_>>(),
+        proofs
+            .iter()
+            .map(|proof| proof.secret.clone())
+            .collect::<Vec<_>>()
+    );
+
+    assert_eq!(
+        db.get_proof_ys_by_quote_id(&quote_id).await.unwrap().len(),
+        proofs.len()
+    );
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut acquired = tx.get_proofs(&ys).await.unwrap();
+    tx.update_proofs_state(&mut acquired, State::Spent)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let totals = db.get_total_redeemed().await.unwrap();
+    assert_eq!(
+        totals.get(&keyset_id).copied().unwrap_or(Amount::ZERO),
+        Amount::from(2 * proofs.len() as u64)
+    );
+}
+
+/// Reject a batch that repeats the same proof, writing nothing
+pub async fn add_proofs_rejects_duplicate_inside_one_batch<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let keyset_id = setup_keyset(&db).await;
+
+    let proof = Proof {
+        amount: Amount::from(100),
+        keyset_id,
+        secret: Secret::generate(),
+        c: SecretKey::generate().public_key(),
+        witness: None,
+        dleq: None,
+        p2pk_e: None,
+    };
+    let y = proof.y().unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let result = tx
+        .add_proofs(
+            vec![proof.clone(), proof],
+            None,
+            &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+        )
+        .await;
+    assert!(result.is_err());
+    tx.rollback().await.unwrap();
+
+    assert!(db.get_proofs_by_ys(&[y]).await.unwrap()[0].is_none());
+}

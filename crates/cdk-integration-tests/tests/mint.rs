@@ -225,7 +225,7 @@ async fn test_concurrent_duplicate_payment_handling() {
             ) {
                 Err(err)
             } else {
-                tx.update_mint_quote(&mut quote_from_db)
+                tx.update_mint_quotes(std::slice::from_mut(&mut quote_from_db))
                     .await
                     .map_err(cdk_common::Error::Database)
             };

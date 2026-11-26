@@ -27,7 +27,10 @@ use tracing::instrument;
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::database::DatabaseExecutor;
 use crate::pool::DatabasePool;
-use crate::stmt::{query, Column};
+use crate::stmt::{
+    execute_in_chunks, execute_rows, fetch_in_chunks, max_rows_per_statement, query, Column,
+};
+use crate::value::Value;
 use crate::{
     column_as_nullable_number, column_as_nullable_string, column_as_number, column_as_string,
     unpack_into,
@@ -340,13 +343,13 @@ where
         "#
     );
 
-    let rows = query(&query_str)?
-        .bind_vec(
-            "quote_ids",
-            quote_ids.iter().map(|x| x.to_string()).collect(),
-        )?
-        .fetch_all(executor)
-        .await?;
+    let mut keys = quote_ids
+        .iter()
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>();
+    keys.sort_unstable();
+
+    let rows = fetch_in_chunks(executor, &query_str, "quote_ids", keys).await?;
 
     // Build a map from quote ID to MintQuote (without payments/issuance yet)
     let mut quote_map: HashMap<String, MintQuote> = HashMap::with_capacity(rows.len());
@@ -729,63 +732,80 @@ where
         // Insert blinded_messages directly into blind_signature with c = NULL.
         // ON CONFLICT DO NOTHING waits for a concurrent transaction that is
         // inserting the same output, so a reservation it commits is seen below.
-        for (i, message) in ordered_messages {
-            match query(
+        // A row list is one statement per chunk, so a short affected count means
+        // some output in that chunk was already stored, which is what the
+        // per-output return code used to report.
+        let rows = ordered_messages
+            .into_iter()
+            .map(|(i, message)| {
+                Ok(vec![
+                    Value::from(message.blinded_secret.to_bytes().to_vec()),
+                    Value::from(i64::try_from(message.amount.to_u64())?),
+                    Value::from(message.keyset_id.to_string()),
+                    Value::Null,
+                    Value::from(quote_id.map(|q| q.to_string())),
+                    Value::from(i64::try_from(current_time)?),
+                    Value::from(operation.kind().to_string()),
+                    Value::from(operation.id().to_string()),
+                    Value::from(i64::try_from(i)?),
+                ])
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+
+        let expected = rows.len();
+        let mut inserted = 0;
+
+        for chunk in rows.chunks(max_rows_per_statement(9)) {
+            let affected = match query(
                 r#"
                 INSERT INTO blind_signature
                 (blinded_message, amount, keyset_id, c, quote_id, created_time, operation_kind, operation_id, order_index)
-                VALUES
-                (:blinded_message, :amount, :keyset_id, NULL, :quote_id, :created_time, :operation_kind, :operation_id, :order_index)
+                VALUES :rows
                 ON CONFLICT (blinded_message) DO NOTHING
                 "#,
             )?
-            .bind(
-                "blinded_message",
-                message.blinded_secret.to_bytes().to_vec(),
-            )
-            .bind("amount", i64::try_from(message.amount.to_u64())?)
-            .bind("keyset_id", message.keyset_id.to_string())
-            .bind("quote_id", quote_id.map(|q| q.to_string()))
-            .bind("created_time", i64::try_from(current_time)?)
-            .bind("operation_kind", operation.kind().to_string())
-            .bind("operation_id", operation.id().to_string())
-            .bind("order_index", i64::try_from(i)?)
+            .bind_rows("rows", chunk.to_vec())?
             .execute(&self.inner)
             .await
             {
-                Ok(0) => {
-                    // The output is already stored. Outputs that were signed
-                    // (c IS NOT NULL) and outputs another operation reserved but
-                    // has not signed yet (c IS NULL) map to different NUT-00
-                    // errors. A signed output visible to this query takes
-                    // precedence; under READ COMMITTED another transaction may
-                    // still sign one after this snapshot.
-                    let signed = query(
-                        r#"
-                        SELECT blinded_message
-                        FROM blind_signature
-                        WHERE blinded_message IN (:blinded_secrets) AND c IS NOT NULL
-                        LIMIT 1
-                        "#,
-                    )?
-                    .bind_vec("blinded_secrets", blinded_secrets)?
-                    .pluck(&self.inner)
-                    .await?
-                    .is_some();
-
-                    return Err(if signed {
-                        database::Error::Duplicate
-                    } else {
-                        database::Error::BlindedMessagePending
-                    });
-                }
-                Ok(_) => continue,
-                Err(database::Error::Duplicate) => {
-                    // Primary key constraint violation - blinded message already exists
-                    return Err(database::Error::Duplicate);
-                }
+                Ok(affected) => affected,
+                Err(database::Error::Duplicate) => return Err(database::Error::Duplicate),
                 Err(err) => return Err(err),
+            };
+
+            inserted += affected;
+
+            if affected != chunk.len() {
+                break;
             }
+        }
+
+        if inserted != expected {
+            // The output is already stored. Outputs that were signed
+            // (c IS NOT NULL) and outputs another operation reserved but
+            // has not signed yet (c IS NULL) map to different NUT-00
+            // errors. A signed output visible to this query takes
+            // precedence; under READ COMMITTED another transaction may
+            // still sign one after this snapshot.
+            let signed = !fetch_in_chunks(
+                &self.inner,
+                r#"
+                SELECT blinded_message
+                FROM blind_signature
+                WHERE blinded_message IN (:blinded_secrets) AND c IS NOT NULL
+                LIMIT 1
+                "#,
+                "blinded_secrets",
+                blinded_secrets,
+            )
+            .await?
+            .is_empty();
+
+            return Err(if signed {
+                database::Error::Duplicate
+            } else {
+                database::Error::BlindedMessagePending
+            });
         }
 
         Ok(())
@@ -796,7 +816,14 @@ where
         blinded_secrets: &[PublicKey],
     ) -> Result<(), Self::Err> {
         // Acquire all affected row locks in primary-key order before deleting.
-        query(
+        let mut ordered = blinded_secrets
+            .iter()
+            .map(|secret| secret.to_bytes().to_vec())
+            .collect::<Vec<_>>();
+        ordered.sort_unstable();
+
+        fetch_in_chunks(
+            &self.inner,
             r#"
             SELECT blinded_message
             FROM blind_signature
@@ -804,33 +831,20 @@ where
             ORDER BY blinded_message
             FOR UPDATE
             "#,
-        )?
-        .bind_vec(
             "blinded_secrets",
-            blinded_secrets
-                .iter()
-                .map(|secret| secret.to_bytes().to_vec())
-                .collect(),
-        )?
-        .fetch_all(&self.inner)
+            ordered.clone(),
+        )
         .await?;
 
-        // Delete blinded messages from blind_signature table where c IS NULL
-        // (only delete unsigned blinded messages)
-        query(
+        execute_in_chunks(
+            &self.inner,
             r#"
             DELETE FROM blind_signature
             WHERE blinded_message IN (:blinded_secrets) AND c IS NULL
             "#,
-        )?
-        .bind_vec(
             "blinded_secrets",
-            blinded_secrets
-                .iter()
-                .map(|secret| secret.to_bytes().to_vec())
-                .collect(),
-        )?
-        .execute(&self.inner)
+            ordered,
+        )
         .await?;
 
         Ok(())
@@ -941,134 +955,194 @@ where
         Ok(())
     }
 
-    async fn update_mint_quote(
+    async fn update_mint_quotes(
         &mut self,
-        quote: &mut Acquired<mint::MintQuote>,
+        quotes: &mut [Acquired<mint::MintQuote>],
     ) -> Result<(), Self::Err> {
-        let mut changes = if let Some(changes) = quote.take_changes() {
-            changes
-        } else {
-            return Ok(());
-        };
+        let current_time = unix_time();
 
-        if changes.issuances.is_none() && changes.payments.is_none() {
+        // Changes are consumed from every quote before anything is written, so a failure leaves
+        // no quote holding changes a retry would apply twice.
+        let mut pending = Vec::new();
+
+        for quote in quotes.iter_mut() {
+            let Some(mut changes) = quote.take_changes() else {
+                continue;
+            };
+
+            if changes.issuances.is_none() && changes.payments.is_none() {
+                continue;
+            }
+
+            let payments = changes.payments.take().unwrap_or_default();
+            let issuances = changes.issuances.take().unwrap_or_default();
+
+            // The counters the stored row must still hold for these changes to apply to it.
+            let expected_paid = payments
+                .iter()
+                .try_fold(quote.amount_paid().value(), |total, payment| {
+                    total.checked_sub(payment.amount.value())
+                });
+            let expected_issued = issuances
+                .iter()
+                .try_fold(quote.amount_issued().value(), |total, amount| {
+                    total.checked_sub(amount.to_u64())
+                });
+            let (Some(expected_paid), Some(expected_issued)) = (expected_paid, expected_issued)
+            else {
+                return Err(Error::Internal(format!(
+                    "mint quote {} has changes larger than its totals",
+                    quote.id
+                )));
+            };
+
+            pending.push((quote, payments, issuances, expected_paid, expected_issued));
+        }
+
+        if pending.is_empty() {
             return Ok(());
         }
 
-        let payments = changes.payments.take().unwrap_or_default();
-        let issuances = changes.issuances.take().unwrap_or_default();
+        // Written in quote id order so concurrent batches take child row locks alike.
+        pending.sort_unstable_by(|(left, ..), (right, ..)| left.id.cmp(&right.id));
 
-        // The counters the stored row must still hold for these changes to apply to it.
-        let expected_paid = payments
-            .iter()
-            .try_fold(quote.amount_paid().value(), |total, payment| {
-                total.checked_sub(payment.amount.value())
-            });
-        let expected_issued = issuances
-            .iter()
-            .try_fold(quote.amount_issued().value(), |total, amount| {
-                total.checked_sub(amount.to_u64())
-            });
-        let (Some(expected_paid), Some(expected_issued)) = (expected_paid, expected_issued) else {
-            return Err(Error::Internal(format!(
-                "mint quote {} has changes larger than its totals",
-                quote.id
-            )));
-        };
+        if let Some(duplicate) = pending
+            .windows(2)
+            .find(|pair| pair[0].0.id == pair[1].0.id)
+            .map(|pair| pair[0].0.id.clone())
+        {
+            return Err(Error::DuplicateQuoteInBatch(duplicate));
+        }
 
-        for payment in payments {
-            query(
+        let mut payment_rows = Vec::new();
+        let mut payment_ids = Vec::new();
+        let mut issuance_rows = Vec::new();
+
+        for (quote, payments, issuances, ..) in pending.iter() {
+            for payment in payments {
+                payment_rows.push(vec![
+                    Value::from(quote.id.to_string()),
+                    Value::from(payment.payment_id.clone()),
+                    Value::from(i64::try_from(payment.amount.clone().to_u64())?),
+                    Value::from(i64::try_from(payment.time)?),
+                ]);
+                payment_ids.push(payment.payment_id.clone());
+            }
+
+            for amount_issued in issuances {
+                issuance_rows.push(vec![
+                    Value::from(quote.id.to_string()),
+                    Value::from(i64::try_from(amount_issued.to_u64())?),
+                    Value::from(i64::try_from(current_time)?),
+                ]);
+            }
+        }
+
+        if !payment_rows.is_empty() {
+            let payment_ids = payment_ids.join(", ");
+
+            execute_rows(
+                &self.inner,
                 r#"
                 INSERT INTO mint_quote_payments
                 (quote_id, payment_id, amount, timestamp)
-                VALUES (:quote_id, :payment_id, :amount, :timestamp)
+                VALUES :rows
                 "#,
-            )?
-            .bind("quote_id", quote.id.to_string())
-            .bind("payment_id", payment.payment_id)
-            .bind("amount", i64::try_from(payment.amount.to_u64())?)
-            .bind("timestamp", i64::try_from(payment.time)?)
-            .execute(&self.inner)
+                "rows",
+                payment_rows,
+            )
             .await
             .map_err(|err| {
-                tracing::error!("SQLite could not insert payment ID: {}", err);
+                tracing::error!("SQL could not insert payment IDs [{payment_ids}]: {err}");
                 err
             })?;
         }
 
-        let current_time = unix_time();
+        execute_rows(
+            &self.inner,
+            r#"
+            INSERT INTO mint_quote_issued
+            (quote_id, amount, timestamp)
+            VALUES :rows
+            "#,
+            "rows",
+            issuance_rows,
+        )
+        .await?;
 
-        for amount_issued in issuances {
-            query(
+        // Each quote keeps its own guarded UPDATE: a batched affected count could not say which
+        // quote lost the race, and that check is the only guard on mint accounting.
+        for (quote, _, _, expected_paid, expected_issued) in pending.iter() {
+            let affected = query(
                 r#"
-                INSERT INTO mint_quote_issued
-                (quote_id, amount, timestamp)
-                VALUES (:quote_id, :amount, :timestamp);
+                UPDATE
+                    mint_quote
+                SET
+                    amount_issued = :amount_issued,
+                    amount_paid = :amount_paid,
+                    updated_at = CASE
+                        WHEN :current_time > updated_at + 1 THEN :current_time
+                        ELSE updated_at + 1
+                    END
+                WHERE
+                    id = :quote_id
+                    AND amount_paid = :expected_paid
+                    AND amount_issued = :expected_issued
                 "#,
             )?
             .bind("quote_id", quote.id.to_string())
-            .bind("amount", i64::try_from(amount_issued.to_u64())?)
-            .bind("timestamp", i64::try_from(current_time)?)
+            .bind(
+                "amount_issued",
+                i64::try_from(quote.amount_issued().to_u64())?,
+            )
+            .bind("amount_paid", i64::try_from(quote.amount_paid().to_u64())?)
+            .bind("expected_paid", i64::try_from(*expected_paid)?)
+            .bind("expected_issued", i64::try_from(*expected_issued)?)
+            .bind("current_time", i64::try_from(current_time)?)
             .execute(&self.inner)
-            .await?;
+            .await
+            .inspect_err(|err| {
+                tracing::error!("SQL could not update mint quote accounting: {}", err);
+            })?;
+
+            if affected != 1 {
+                return Err(Error::ConcurrentUpdate);
+            }
         }
 
-        let affected = query(
+        let mut updated_at = fetch_in_chunks(
+            &self.inner,
             r#"
-            UPDATE
-                mint_quote
-            SET
-                amount_issued = :amount_issued,
-                amount_paid = :amount_paid,
-                updated_at = CASE
-                    WHEN :current_time > updated_at + 1 THEN :current_time
-                    ELSE updated_at + 1
-                END
-            WHERE
-                id = :quote_id
-                AND amount_paid = :expected_paid
-                AND amount_issued = :expected_issued
-            "#,
-        )?
-        .bind("quote_id", quote.id.to_string())
-        .bind(
-            "amount_issued",
-            i64::try_from(quote.amount_issued().to_u64())?,
-        )
-        .bind("amount_paid", i64::try_from(quote.amount_paid().to_u64())?)
-        .bind("expected_paid", i64::try_from(expected_paid)?)
-        .bind("expected_issued", i64::try_from(expected_issued)?)
-        .bind("current_time", i64::try_from(current_time)?)
-        .execute(&self.inner)
-        .await
-        .inspect_err(|err| {
-            tracing::error!("SQL could not update mint quote accounting: {}", err);
-        })?;
-
-        if affected != 1 {
-            return Err(Error::ConcurrentUpdate);
-        }
-
-        let updated_at = query(
-            r#"
-            SELECT updated_at
+            SELECT id, updated_at
             FROM mint_quote
-            WHERE id = :quote_id
+            WHERE id IN (:quote_ids)
             "#,
-        )?
-        .bind("quote_id", quote.id.to_string())
-        .pluck(&self.inner)
+            "quote_ids",
+            pending
+                .iter()
+                .map(|(quote, ..)| quote.id.to_string())
+                .collect::<Vec<_>>(),
+        )
         .await?
-        .map(|updated_at| Ok::<_, Error>(column_as_number!(updated_at)))
-        .transpose()?
-        .ok_or_else(|| {
-            Error::Internal(format!(
-                "mint quote {} missing after accounting update",
-                quote.id
+        .into_iter()
+        .map(|row| {
+            Ok::<_, Error>((
+                column_as_string!(&row[0]),
+                column_as_number!(row[1].clone()),
             ))
-        })?;
+        })
+        .collect::<Result<HashMap<String, u64>, Error>>()?;
 
-        quote.set_updated_at(updated_at);
+        for (quote, ..) in pending.iter_mut() {
+            let updated_at = updated_at.remove(&quote.id.to_string()).ok_or_else(|| {
+                Error::Internal(format!(
+                    "mint quote {} missing after accounting update",
+                    quote.id
+                ))
+            })?;
+
+            quote.set_updated_at(updated_at);
+        }
 
         Ok(())
     }

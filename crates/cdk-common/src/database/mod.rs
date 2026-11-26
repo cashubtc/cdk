@@ -174,6 +174,10 @@ pub enum Error {
     /// Quote is already in use by another operation
     #[error("Quote already in use by another operation")]
     QuoteAlreadyInUse,
+    /// One batch named the same quote twice
+    #[error("Quote {0} appears more than once in one batch")]
+    #[cfg(feature = "mint")]
+    DuplicateQuoteInBatch(crate::quote_id::QuoteId),
     /// Invalid keyset
     #[error("Unknown or invalid keyset")]
     InvalidKeysetId,

@@ -604,7 +604,8 @@ impl MeltSaga<SetupComplete> {
         .await?;
 
         mint_quote.add_payment(amount.clone(), self.state_data.quote.id.to_string(), None)?;
-        tx.update_mint_quote(&mut mint_quote).await?;
+        tx.update_mint_quotes(std::slice::from_mut(&mut mint_quote))
+            .await?;
 
         // Mark the melt quote Paid in the same transaction as the mint quote
         // credit. Keep ownership until finalization spends the input proofs.

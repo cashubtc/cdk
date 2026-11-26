@@ -65,7 +65,9 @@ where
 
     // Add keyset info
     let mut tx = KeysDatabase::begin_transaction(&db).await.unwrap();
-    tx.add_keyset_info(keyset_info.clone()).await.unwrap();
+    tx.add_keyset_infos(vec![keyset_info.clone()])
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     // Retrieve keyset info
@@ -100,13 +102,15 @@ where
 
     // Add keyset info first time
     let mut tx = KeysDatabase::begin_transaction(&db).await.unwrap();
-    tx.add_keyset_info(keyset_info.clone()).await.unwrap();
+    tx.add_keyset_infos(vec![keyset_info.clone()])
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     // Add the same keyset info again - this may succeed (idempotent) or fail
     // Both behaviors are acceptable
     let mut tx = KeysDatabase::begin_transaction(&db).await.unwrap();
-    let result = tx.add_keyset_info(keyset_info).await;
+    let result = tx.add_keyset_infos(vec![keyset_info]).await;
     assert!(result.is_ok());
     tx.commit().await.unwrap();
 
@@ -150,8 +154,12 @@ where
 
     // Add keyset infos
     let mut tx = KeysDatabase::begin_transaction(&db).await.unwrap();
-    tx.add_keyset_info(keyset_info1.clone()).await.unwrap();
-    tx.add_keyset_info(keyset_info2.clone()).await.unwrap();
+    tx.add_keyset_infos(vec![keyset_info1.clone()])
+        .await
+        .unwrap();
+    tx.add_keyset_infos(vec![keyset_info2.clone()])
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     // Get all keyset infos
@@ -184,8 +192,10 @@ where
 
     // Add keyset info
     let mut tx = KeysDatabase::begin_transaction(&db).await.unwrap();
-    tx.add_keyset_info(keyset_info.clone()).await.unwrap();
-    tx.set_active_keyset(CurrencyUnit::Sat, keyset_id)
+    tx.add_keyset_infos(vec![keyset_info.clone()])
+        .await
+        .unwrap();
+    tx.set_active_keysets(vec![(CurrencyUnit::Sat, keyset_id)])
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -231,12 +241,16 @@ where
 
     // Add keyset infos and set as active
     let mut tx = KeysDatabase::begin_transaction(&db).await.unwrap();
-    tx.add_keyset_info(keyset_info_sat.clone()).await.unwrap();
-    tx.add_keyset_info(keyset_info_usd.clone()).await.unwrap();
-    tx.set_active_keyset(CurrencyUnit::Sat, keyset_id_sat)
+    tx.add_keyset_infos(vec![keyset_info_sat.clone()])
         .await
         .unwrap();
-    tx.set_active_keyset(CurrencyUnit::Usd, keyset_id_usd)
+    tx.add_keyset_infos(vec![keyset_info_usd.clone()])
+        .await
+        .unwrap();
+    tx.set_active_keysets(vec![(CurrencyUnit::Sat, keyset_id_sat)])
+        .await
+        .unwrap();
+    tx.set_active_keysets(vec![(CurrencyUnit::Usd, keyset_id_usd)])
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -285,9 +299,13 @@ where
 
     // Add both keysets and set first as active
     let mut tx = KeysDatabase::begin_transaction(&db).await.unwrap();
-    tx.add_keyset_info(keyset_info1.clone()).await.unwrap();
-    tx.add_keyset_info(keyset_info2.clone()).await.unwrap();
-    tx.set_active_keyset(CurrencyUnit::Sat, keyset_id1)
+    tx.add_keyset_infos(vec![keyset_info1.clone()])
+        .await
+        .unwrap();
+    tx.add_keyset_infos(vec![keyset_info2.clone()])
+        .await
+        .unwrap();
+    tx.set_active_keysets(vec![(CurrencyUnit::Sat, keyset_id1)])
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -298,7 +316,7 @@ where
 
     // Update to second keyset
     let mut tx = KeysDatabase::begin_transaction(&db).await.unwrap();
-    tx.set_active_keyset(CurrencyUnit::Sat, keyset_id2)
+    tx.set_active_keysets(vec![(CurrencyUnit::Sat, keyset_id2)])
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -328,4 +346,217 @@ where
     // Try to get active keyset when none is set
     let active_id = active_keyset_id(&db, &CurrencyUnit::Sat).await;
     assert!(active_id.is_none());
+}
+
+/// Store more keysets than fit one multi-row insert statement
+pub async fn add_keyset_infos_batch<DB>(db: DB)
+where
+    DB: KeysDatabase<Err = Error>,
+{
+    let keysets = (0..200)
+        .map(|index| MintKeySetInfo {
+            id: Id::from_bytes(&[
+                0,
+                (index >> 8) as u8,
+                index as u8,
+                0xaa,
+                0xbb,
+                0xcc,
+                0xdd,
+                0xee,
+            ])
+            .unwrap(),
+            unit: CurrencyUnit::Sat,
+            active: false,
+            valid_from: 0,
+            final_expiry: None,
+            derivation_path: DerivationPath::from_str("m/0'/0'/0'").unwrap(),
+            derivation_path_index: Some(index),
+            input_fee_ppk: 0,
+            amounts: vec![1, 2, 4, 8],
+            issuer_version: None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut tx = db.begin_transaction().await.unwrap();
+    tx.add_keyset_infos(keysets.clone()).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = db.begin_transaction().await.unwrap();
+    let stored = tx.get_keyset_infos().await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(stored.len(), keysets.len());
+}
+
+/// A repeated keyset id in one batch keeps its last occurrence
+pub async fn add_keyset_infos_dedupes_within_batch<DB>(db: DB)
+where
+    DB: KeysDatabase<Err = Error>,
+{
+    let keyset_id = Id::from_str("00916bbf7ef91a36").unwrap();
+    let base = MintKeySetInfo {
+        id: keyset_id,
+        unit: CurrencyUnit::Sat,
+        active: false,
+        valid_from: 0,
+        final_expiry: None,
+        derivation_path: DerivationPath::from_str("m/0'/0'/0'").unwrap(),
+        derivation_path_index: Some(0),
+        input_fee_ppk: 0,
+        amounts: vec![1, 2, 4, 8],
+        issuer_version: None,
+    };
+
+    let mut last = base.clone();
+    last.input_fee_ppk = 42;
+
+    let mut tx = db.begin_transaction().await.unwrap();
+    tx.add_keyset_infos(vec![base, last]).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = db.begin_transaction().await.unwrap();
+    let stored = tx.get_keyset_infos().await.unwrap();
+    tx.commit().await.unwrap();
+
+    let stored = stored
+        .into_iter()
+        .find(|keyset| keyset.id == keyset_id)
+        .unwrap();
+    assert_eq!(stored.input_fee_ppk, 42);
+}
+
+/// Activate one keyset per unit in a single call
+pub async fn set_active_keysets_batch<DB>(db: DB)
+where
+    DB: KeysDatabase<Err = Error>,
+{
+    let units = [CurrencyUnit::Sat, CurrencyUnit::Usd, CurrencyUnit::Eur];
+    let ids = [
+        Id::from_str("00916bbf7ef91a36").unwrap(),
+        Id::from_str("001711afb1de20cb").unwrap(),
+        Id::from_str("00c074b96c7e2b0e").unwrap(),
+    ];
+
+    let keysets = units
+        .iter()
+        .zip(ids.iter())
+        .map(|(unit, id)| MintKeySetInfo {
+            id: *id,
+            unit: unit.clone(),
+            active: false,
+            valid_from: 0,
+            final_expiry: None,
+            derivation_path: DerivationPath::from_str("m/0'/0'/0'").unwrap(),
+            derivation_path_index: Some(0),
+            input_fee_ppk: 0,
+            amounts: vec![1, 2, 4, 8],
+            issuer_version: None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut tx = db.begin_transaction().await.unwrap();
+    tx.add_keyset_infos(keysets).await.unwrap();
+    tx.set_active_keysets(
+        units
+            .iter()
+            .cloned()
+            .zip(ids.iter().copied())
+            .collect::<Vec<_>>(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = db.begin_transaction().await.unwrap();
+    let active = tx.get_active_keysets().await.unwrap();
+    tx.commit().await.unwrap();
+
+    for (unit, id) in units.iter().zip(ids.iter()) {
+        assert_eq!(active.get(unit), Some(id));
+    }
+}
+
+/// A repeated unit in one batch keeps its last id active
+pub async fn set_active_keysets_dedupes_within_batch<DB>(db: DB)
+where
+    DB: KeysDatabase<Err = Error>,
+{
+    let first = Id::from_str("00916bbf7ef91a36").unwrap();
+    let last = Id::from_str("001711afb1de20cb").unwrap();
+
+    let keysets = [first, last]
+        .into_iter()
+        .enumerate()
+        .map(|(index, id)| MintKeySetInfo {
+            id,
+            unit: CurrencyUnit::Sat,
+            active: false,
+            valid_from: 0,
+            final_expiry: None,
+            derivation_path: DerivationPath::from_str("m/0'/0'/0'").unwrap(),
+            derivation_path_index: Some(index as u32),
+            input_fee_ppk: 0,
+            amounts: vec![1, 2, 4, 8],
+            issuer_version: None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut tx = db.begin_transaction().await.unwrap();
+    tx.add_keyset_infos(keysets).await.unwrap();
+    tx.set_active_keysets(vec![(CurrencyUnit::Sat, first), (CurrencyUnit::Sat, last)])
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = db.begin_transaction().await.unwrap();
+    let stored = tx.get_keyset_infos().await.unwrap();
+    let active = tx.get_active_keysets().await.unwrap();
+    tx.commit().await.unwrap();
+
+    let flag = |wanted: Id| {
+        stored
+            .iter()
+            .find(|keyset| keyset.id == wanted)
+            .map(|keyset| keyset.active)
+            .unwrap()
+    };
+
+    assert!(!flag(first), "the superseded keyset must not stay active");
+    assert!(flag(last), "the last id for the unit must be active");
+    assert_eq!(active.get(&CurrencyUnit::Sat), Some(&last));
+}
+
+/// One batched keyset write advances the epoch once
+pub async fn keyset_epoch_changes_once_per_batch<DB>(db: DB)
+where
+    DB: KeysDatabase<Err = Error>,
+{
+    let before = db.keysets_epoch().await.unwrap();
+
+    let keysets = [
+        Id::from_str("00916bbf7ef91a36").unwrap(),
+        Id::from_str("001711afb1de20cb").unwrap(),
+        Id::from_str("00c074b96c7e2b0e").unwrap(),
+    ]
+    .into_iter()
+    .map(|id| MintKeySetInfo {
+        id,
+        unit: CurrencyUnit::Sat,
+        active: false,
+        valid_from: 0,
+        final_expiry: None,
+        derivation_path: DerivationPath::from_str("m/0'/0'/0'").unwrap(),
+        derivation_path_index: Some(0),
+        input_fee_ppk: 0,
+        amounts: vec![1, 2, 4, 8],
+        issuer_version: None,
+    })
+    .collect::<Vec<_>>();
+
+    let mut tx = db.begin_transaction().await.unwrap();
+    tx.add_keyset_infos(keysets).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let after = db.keysets_epoch().await.unwrap();
+    assert_eq!(after, before + 1);
 }

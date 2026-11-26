@@ -12,7 +12,8 @@ use cdk_common::{Amount, BlindSignature, Id, PublicKey};
 use super::proofs::sql_row_to_hashmap_amount;
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::pool::DatabasePool;
-use crate::stmt::{query, Column};
+use crate::stmt::{execute_rows, fetch_in_chunks, query, Column};
+use crate::value::Value;
 use crate::{column_as_number, column_as_string, unpack_into};
 
 pub(crate) fn sql_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignature, Error> {
@@ -75,8 +76,15 @@ where
             ));
         }
 
+        let mut locked_messages = blinded_messages
+            .iter()
+            .map(|message| message.to_bytes().to_vec())
+            .collect::<Vec<_>>();
+        locked_messages.sort_unstable();
+
         // Select all existing rows for the given blinded messages at once
-        let mut existing_rows = query(
+        let mut existing_rows = fetch_in_chunks(
+            &self.inner,
             r#"
             SELECT blinded_message, c
             FROM blind_signature
@@ -84,15 +92,9 @@ where
             ORDER BY blinded_message
             FOR UPDATE
             "#,
-        )?
-        .bind_vec(
             "blinded_messages",
-            blinded_messages
-                .iter()
-                .map(|message| message.to_bytes().to_vec())
-                .collect(),
-        )?
-        .fetch_all(&self.inner)
+            locked_messages,
+        )
         .await?
         .into_iter()
         .map(|mut row| {
@@ -112,92 +114,127 @@ where
             left.to_bytes().cmp(&right.to_bytes())
         });
 
-        // Mutate rows in blinded-message order while retaining the request order index.
+        // Split by what the pre-read found, in blinded-message order, so each group becomes one
+        // statement while keeping the request order index and the row lock order.
+        let mut unknown = Vec::new();
+        let mut reserved = Vec::new();
+
         for (i, (message, signature)) in ordered_signatures {
             match existing_rows.remove(message) {
-                None => {
-                    // Unknown blind message: Insert new row with all columns
-                    query(
-                        r#"
-                        INSERT INTO blind_signature
-                        (blinded_message, amount, keyset_id, c, quote_id, created_time, signed_time, order_index)
-                        VALUES
-                        (:blinded_message, :amount, :keyset_id, :c, :quote_id, :created_time, :signed_time, :order_index)
-                        "#,
-                    )?
-                    .bind("blinded_message", message.to_bytes().to_vec())
-                    .bind("amount", i64::try_from(u64::from(signature.amount))?)
-                    .bind("keyset_id", signature.keyset_id.to_string())
-                    .bind("c", signature.c.to_bytes().to_vec())
-                    .bind("quote_id", quote_id.as_ref().map(|q| q.to_string()))
-                    .bind("created_time", i64::try_from(current_time)?)
-                    .bind("signed_time", i64::try_from(current_time)?)
-                    .bind("order_index", i64::try_from(i)?)
-                    .execute(&self.inner)
-                    .await?;
+                None => unknown.push((i, message, signature)),
+                Some(Column::Null) => reserved.push((message, signature)),
+                Some(_) => {
+                    tracing::error!(
+                        "Attempting to add signature to message already signed {}",
+                        message
+                    );
 
-                    query(
-                        r#"
-                        INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                        VALUES (:keyset_id, :amount, 0)
-                        ON CONFLICT (keyset_id)
-                        DO UPDATE SET total_issued = keyset_amounts.total_issued + EXCLUDED.total_issued
-                        "#,
-                    )?
-                    .bind("amount", i64::try_from(u64::from(signature.amount))?)
-                    .bind("keyset_id", signature.keyset_id.to_string())
-                    .execute(&self.inner)
-                    .await?;
-                }
-                Some(c) => {
-                    // Blind message exists: check if c is NULL
-                    match c {
-                        Column::Null => {
-                            // Blind message with no c: Update with missing columns c
-                            let affected = query(
-                                r#"
-                                UPDATE blind_signature
-                                SET c = :c, signed_time = :signed_time, amount = :amount
-                                WHERE blinded_message = :blinded_message AND c IS NULL
-                                "#,
-                            )?
-                            .bind("c", signature.c.to_bytes().to_vec())
-                            .bind("blinded_message", message.to_bytes().to_vec())
-                            .bind("signed_time", i64::try_from(current_time)?)
-                            .bind("amount", i64::try_from(u64::from(signature.amount))?)
-                            .execute(&self.inner)
-                            .await?;
-
-                            if affected != 1 {
-                                return Err(Error::ConcurrentUpdate);
-                            }
-
-                            query(
-                                r#"
-                                INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                                VALUES (:keyset_id, :amount, 0)
-                                ON CONFLICT (keyset_id)
-                                DO UPDATE SET total_issued = keyset_amounts.total_issued + EXCLUDED.total_issued
-                                "#,
-                            )?
-                            .bind("amount", i64::try_from(u64::from(signature.amount))?)
-                            .bind("keyset_id", signature.keyset_id.to_string())
-                            .execute(&self.inner)
-                            .await?;
-                        }
-                        _ => {
-                            // Blind message already has c: Error
-                            tracing::error!(
-                                "Attempting to add signature to message already signed {}",
-                                message
-                            );
-
-                            return Err(database::Error::Duplicate);
-                        }
-                    }
+                    return Err(database::Error::Duplicate);
                 }
             }
         }
+
+        let rows = unknown
+            .iter()
+            .map(|(i, message, signature)| {
+                Ok(vec![
+                    Value::from(message.to_bytes().to_vec()),
+                    Value::from(i64::try_from(u64::from(signature.amount))?),
+                    Value::from(signature.keyset_id.to_string()),
+                    Value::from(signature.c.to_bytes().to_vec()),
+                    Value::from(quote_id.as_ref().map(|q| q.to_string())),
+                    Value::from(i64::try_from(current_time)?),
+                    Value::from(i64::try_from(current_time)?),
+                    Value::from(i64::try_from(*i)?),
+                ])
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+
+        execute_rows(
+            &self.inner,
+            r#"
+            INSERT INTO blind_signature
+            (blinded_message, amount, keyset_id, c, quote_id, created_time, signed_time, order_index)
+            VALUES :rows
+            "#,
+            "rows",
+            rows,
+        )
+        .await?;
+
+        for (message, signature) in &reserved {
+            let affected = query(
+                r#"
+                UPDATE blind_signature
+                SET c = :c, signed_time = :signed_time, amount = :amount
+                WHERE blinded_message = :blinded_message AND c IS NULL
+                "#,
+            )?
+            .bind("c", signature.c.to_bytes().to_vec())
+            .bind("blinded_message", message.to_bytes().to_vec())
+            .bind("signed_time", i64::try_from(current_time)?)
+            .bind("amount", i64::try_from(u64::from(signature.amount))?)
+            .execute(&self.inner)
+            .await?;
+
+            if affected != 1 {
+                return Err(Error::ConcurrentUpdate);
+            }
+        }
+
+        // Sum the rows just written, so one upsert per keyset replaces the per-row accumulation.
+        // Must run after both groups, or a reservation's stale amount would be counted.
+        let summed = fetch_in_chunks(
+            &self.inner,
+            r#"
+            SELECT keyset_id, CAST(COALESCE(SUM(amount), 0) AS BIGINT)
+            FROM blind_signature
+            WHERE blinded_message IN (:blinded_messages)
+            GROUP BY keyset_id
+            "#,
+            "blinded_messages",
+            blinded_messages
+                .iter()
+                .map(|message| message.to_bytes().to_vec())
+                .collect::<Vec<_>>(),
+        )
+        .await?;
+
+        let mut issued_by_keyset: HashMap<Id, u64> = HashMap::new();
+
+        for row in summed {
+            let keyset_id: Id = column_as_string!(&row[0], Id::from_str, Id::from_bytes);
+            let issued: u64 = column_as_number!(row[1].clone());
+
+            *issued_by_keyset.entry(keyset_id).or_default() += issued;
+        }
+
+        let mut issued_in_keyset_lock_order = issued_by_keyset.into_iter().collect::<Vec<_>>();
+        issued_in_keyset_lock_order.sort_unstable_by_key(|(keyset_id, _)| *keyset_id);
+
+        let rows = issued_in_keyset_lock_order
+            .into_iter()
+            .map(|(keyset_id, issued)| {
+                Ok(vec![
+                    Value::from(keyset_id.to_string()),
+                    Value::from(i64::try_from(issued)?),
+                    Value::from(0_i64),
+                ])
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+
+        execute_rows(
+            &self.inner,
+            r#"
+            INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
+            VALUES :rows
+            ON CONFLICT (keyset_id)
+            DO UPDATE SET total_issued = keyset_amounts.total_issued + EXCLUDED.total_issued
+            "#,
+            "rows",
+            rows,
+        )
+        .await?;
 
         debug_assert!(
             existing_rows.is_empty(),
@@ -223,7 +260,8 @@ where
             return Ok(Vec::new());
         }
 
-        let mut blinded_signatures = query(
+        let mut blinded_signatures = fetch_in_chunks(
+            &self.inner,
             r#"SELECT
                 keyset_id,
                 amount,
@@ -233,15 +271,12 @@ where
                 blind_signature
             WHERE blinded_message IN (:b) AND c IS NOT NULL
             "#,
-        )?
-        .bind_vec(
             "b",
             blinded_messages
                 .iter()
                 .map(|b| b.to_bytes().to_vec())
-                .collect(),
-        )?
-        .fetch_all(&self.inner)
+                .collect::<Vec<_>>(),
+        )
         .await?
         .into_iter()
         .map(|mut row| {
@@ -282,7 +317,8 @@ where
             .get()
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
-        let mut blinded_signatures = query(
+        let mut blinded_signatures = fetch_in_chunks(
+            &*conn,
             r#"SELECT
                 keyset_id,
                 amount,
@@ -292,15 +328,12 @@ where
                 blind_signature
             WHERE blinded_message IN (:b) AND c IS NOT NULL
             "#,
-        )?
-        .bind_vec(
             "b",
             blinded_messages
                 .iter()
                 .map(|b_| b_.to_bytes().to_vec())
-                .collect(),
-        )?
-        .fetch_all(&*conn)
+                .collect::<Vec<_>>(),
+        )
         .await?
         .into_iter()
         .map(|mut row| {
