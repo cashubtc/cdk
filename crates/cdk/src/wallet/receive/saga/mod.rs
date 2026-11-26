@@ -31,12 +31,12 @@
 //! | `[compensated]` | Receive failed, pending input proofs removed |
 //! | `[skipped]` | Recovery deferred (mint unreachable), will retry on next recovery |
 
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::XOnlyPublicKey;
+use cdk_common::amount::FeeAndAmounts;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
     OperationData, ProofInfo, ReceiveOperationData, ReceiveSagaState, Transaction,
@@ -48,11 +48,11 @@ use self::compensation::RemovePendingProofs;
 use self::state::{Finalized, Initial, Prepared};
 use super::ReceiveOptions;
 use crate::dhke::construct_proofs;
+use crate::fees::ProofsFeeBreakdown;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut10::Kind;
 use crate::nuts::{
-    verify_proof_signatures, Conditions, Id, Keys, LegacyDleq, Proofs, PublicKey, SecretKey,
-    SigFlag, State,
+    Conditions, LegacyDleq, PreSwap, ProofId, Proofs, PublicKey, SecretKey, SigFlag, State,
 };
 use crate::util::hex;
 use crate::wallet::blind_signature::{
@@ -116,7 +116,10 @@ impl<'a> ReceiveSaga<'a, Initial> {
             self.state_data.operation_id
         );
 
-        let _mint_info = self.wallet.load_mint_info().await?;
+        let mint_info = self.wallet.load_mint_info().await?;
+        if let Some(max) = mint_info.max_array_length {
+            super::check_proof_count(proofs.len(), usize::try_from(max).unwrap_or(usize::MAX))?;
+        }
 
         let keyset_policy = self.state_data.keyset_policy;
         let active_keyset_id = self
@@ -125,10 +128,42 @@ impl<'a> ReceiveSaga<'a, Initial> {
             .await?
             .id;
 
-        let mut proofs = proofs;
         let proofs_amount = proofs.total_amount()?;
 
         let mut _sig_flag = SigFlag::SigInputs;
+
+        // Verify the mint's signatures: DLEQ proofs where present on legacy
+        // proofs, and one batched pairing check for all v3 proofs.
+        let proofs = self
+            .wallet
+            .verify_received_signatures(proofs, keyset_policy, LegacyDleq::Optional)
+            .await?;
+
+        let (mut proofs, opts, v3_keys) = super::proof_work(move || {
+            // Reconstruct each v3 secret and select a spend path for the swap.
+            let mut v3_keys = crate::wallet::nutroot::V3Spends::new();
+            for proof in proofs.iter().filter(|proof| {
+                proof.keyset_id.get_version() == cdk_common::nuts::nut02::KeySetVersion::Version02
+            }) {
+                let key = match &opts.v3_payment_request {
+                    Some(request) => crate::wallet::nutroot::check_requested_v3_proof(
+                        proof,
+                        request,
+                        &opts.p2pk_signing_keys,
+                        &opts.preimages,
+                    )?,
+                    None => crate::wallet::nutroot::check_received_v3_proof(
+                        proof,
+                        &opts.p2pk_signing_keys,
+                        opts.v3_min_refund_horizon,
+                        opts.v3_script_path.then_some(opts.preimages.as_slice()),
+                    )?,
+                };
+                v3_keys.insert(proof.secret.v3_point()?, key);
+            }
+            Ok((proofs, opts, v3_keys))
+        })
+        .await?;
 
         // Map hash of preimage to preimage
         let hashed_to_preimage: HashMap<String, &String> = opts
@@ -145,29 +180,6 @@ impl<'a> ReceiveSaga<'a, Initial> {
             .iter()
             .map(|s| Ok((s.x_only_public_key().0, s.clone())))
             .collect::<Result<_, Error>>()?;
-
-        // Verify the mint's signatures: DLEQ proofs where present on legacy
-        // proofs, and one batched pairing check for all v3 proofs.
-        let mut keys_cache: HashMap<Id, Keys> = HashMap::new();
-        let mut signed_proofs = Vec::new();
-        for proof in proofs
-            .iter()
-            .filter(|proof| proof.requires_signature_verification(LegacyDleq::Optional))
-        {
-            let keys = match keys_cache.entry(proof.keyset_id) {
-                Entry::Occupied(entry) => entry.into_mut(),
-                Entry::Vacant(entry) => entry.insert(
-                    self.wallet
-                        .keyset_with_policy(proof.keyset_id, keyset_policy)
-                        .await?
-                        .keys,
-                ),
-            };
-            let key = keys.amount_key(proof.amount).ok_or(Error::AmountKey)?;
-            signed_proofs.push((proof, key));
-        }
-        verify_proof_signatures(signed_proofs, LegacyDleq::Optional)
-            .map_err(|_| Error::CouldNotVerifyDleq)?;
 
         // Handle P2PK/HTLC
         for proof in &mut proofs {
@@ -278,6 +290,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
                 proofs_amount,
                 active_keyset_id,
                 p2pk_signing_keys,
+                v3_keys,
             },
         })
     }
@@ -307,26 +320,31 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             .keys;
 
         let proofs = self.state_data.proofs.clone();
-        let proofs_ys = proofs.ys()?;
 
         let fee_breakdown = self.wallet.get_proofs_fee(&proofs).await?;
 
         let operation_id = self.state_data.operation_id;
 
-        let proofs_info = proofs
-            .clone()
-            .into_iter()
-            .map(|p| {
-                ProofInfo::new_with_operations(
-                    p,
-                    self.wallet.mint_url.clone(),
-                    State::Pending,
-                    self.wallet.unit.clone(),
-                    Some(operation_id),
-                    None,
-                )
-            })
-            .collect::<Result<Vec<ProofInfo>, _>>()?;
+        let inputs = proofs.clone();
+        let mint_url = self.wallet.mint_url.clone();
+        let unit = self.wallet.unit.clone();
+        let mut proofs_info = super::proof_work(move || {
+            inputs
+                .into_iter()
+                .map(|proof| {
+                    ProofInfo::new_with_operations(
+                        proof,
+                        mint_url.clone(),
+                        State::Pending,
+                        unit.clone(),
+                        Some(operation_id),
+                        None,
+                    )
+                })
+                .collect::<Result<Vec<_>, Error>>()
+        })
+        .await?;
+        let proofs_ys: Vec<_> = proofs_info.iter().map(|info| info.y).collect();
 
         self.wallet
             .localstore
@@ -354,40 +372,33 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             &mut self.compensations,
             Box::new(RemovePendingProofs {
                 localstore: self.wallet.localstore.clone(),
-                proof_ys: proofs_info.iter().map(|p| p.y).collect(),
+                proof_ys: proofs_ys.clone(),
                 saga_id: operation_id,
             }),
         )
         .await;
 
-        let mut pre_swap = self
-            .wallet
-            .create_swap(
-                &operation_id,
-                self.state_data.active_keyset_id,
+        // Nothing has been sent to the mint yet, so a failure here is
+        // definitive: release the pending inputs.
+        let pre_swap = match self
+            .build_swap_request(
+                operation_id,
                 &fee_and_amounts,
-                None,
-                self.state_data.options.amount_split_target.clone(),
                 proofs,
-                None,
-                false,
-                false,
                 &fee_breakdown,
-                ProofReservation::Skip,
+                &proofs_ys,
+                &mut proofs_info,
             )
-            .await?;
-
-        // Determine if SigAll signing is needed
-        let sig_flag = self.determine_sig_flag()?;
-        if sig_flag == SigFlag::SigAll {
-            for blinded_message in pre_swap.swap_request.outputs_mut() {
-                for signing_key in self.state_data.p2pk_signing_keys.values() {
-                    // Sign the outputs of the swap using standard P2PK since output
-                    // P2BK requires ephemeral keys which is handled at creation.
-                    blinded_message.sign_p2pk(signing_key.to_owned().clone())?
-                }
+            .await
+        {
+            Ok(pre_swap) => pre_swap,
+            Err(err) => {
+                tracing::error!("Failed to build receive swap request: {}", err);
+                execute_compensations(&mut self.compensations).await?;
+                return Err(err);
             }
-        }
+        };
+        let swap_request = pre_swap.swap_request;
 
         // Get counter range for recovery (before the swap request is sent)
         let counter_end = self
@@ -404,7 +415,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
         if let OperationData::Receive(ref mut data) = saga.data {
             data.counter_start = Some(counter_start);
             data.counter_end = Some(counter_end);
-            data.blinded_messages = Some(pre_swap.swap_request.outputs().clone());
+            data.blinded_messages = Some(swap_request.outputs().clone());
         }
 
         // Update saga state - if this fails due to version conflict, another instance
@@ -438,7 +449,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             })
             .await?;
 
-        let swap_response = match self.wallet.client.post_swap(pre_swap.swap_request).await {
+        let swap_response = match self.wallet.client.post_swap(swap_request).await {
             Ok(response) => response,
             Err(err) => {
                 if err.is_definitive_failure() {
@@ -474,37 +485,40 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             );
         })?;
 
-        let recv_proofs = construct_proofs(
-            swap_response.signatures,
-            pre_swap.pre_mint_secrets.rs(),
-            pre_swap.pre_mint_secrets.secrets(),
-            &keys,
-        )?;
-
+        let mint_url = self.wallet.mint_url.clone();
+        let unit = self.wallet.unit.clone();
+        let premints = pre_swap.pre_mint_secrets;
+        let (recv_proof_infos, total_amount) = super::proof_work(move || {
+            let proofs = construct_proofs(
+                swap_response.signatures,
+                premints.rs(),
+                premints.secrets(),
+                &keys,
+            )?;
+            let amount = proofs.total_amount()?;
+            let infos = proofs
+                .into_iter()
+                .zip(premints.secrets)
+                .map(|(proof, premint)| {
+                    let info =
+                        ProofInfo::new(proof, mint_url.clone(), State::Unspent, unit.clone())?;
+                    Ok::<_, Error>(match premint.derivation_index {
+                        Some(index) => info.with_derivation_index(index),
+                        None => info,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok((infos, amount))
+        })
+        .await?;
         self.wallet
             .localstore
-            .increment_keyset_counter(&self.state_data.active_keyset_id, recv_proofs.len() as u32)
+            .increment_keyset_counter(
+                &self.state_data.active_keyset_id,
+                recv_proof_infos.len() as u32,
+            )
             .await?;
-
-        let total_amount = recv_proofs.total_amount()?;
         let fee = self.state_data.proofs_amount - total_amount;
-
-        let recv_proof_infos = recv_proofs
-            .into_iter()
-            .zip(&pre_swap.pre_mint_secrets.secrets)
-            .map(|(proof, premint)| {
-                let proof_info = ProofInfo::new(
-                    proof,
-                    self.wallet.mint_url.clone(),
-                    State::Unspent,
-                    self.wallet.unit.clone(),
-                )?;
-                Ok::<_, Error>(match premint.derivation_index {
-                    Some(index) => proof_info.with_derivation_index(index),
-                    None => proof_info,
-                })
-            })
-            .collect::<Result<Vec<ProofInfo>, _>>()?;
 
         self.wallet
             .localstore
@@ -552,6 +566,86 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                 amount: total_amount,
             },
         })
+    }
+
+    /// Build the swap request and sign its inputs
+    ///
+    /// Persists the signed v3 witnesses so restart recovery can replay the
+    /// same request.
+    async fn build_swap_request(
+        &mut self,
+        operation_id: uuid::Uuid,
+        fee_and_amounts: &FeeAndAmounts,
+        proofs: Proofs,
+        fee_breakdown: &ProofsFeeBreakdown,
+        proofs_ys: &[ProofId],
+        proofs_info: &mut [ProofInfo],
+    ) -> Result<PreSwap, Error> {
+        let mut pre_swap = self
+            .wallet
+            .create_swap(
+                &operation_id,
+                self.state_data.active_keyset_id,
+                fee_and_amounts,
+                None,
+                self.state_data.options.amount_split_target.clone(),
+                proofs,
+                None,
+                false,
+                false,
+                fee_breakdown,
+                ProofReservation::Skip,
+                None,
+            )
+            .await?;
+
+        // Determine if SigAll signing is needed
+        let sig_flag = self.determine_sig_flag()?;
+        if sig_flag == SigFlag::SigAll {
+            for blinded_message in pre_swap.swap_request.outputs_mut() {
+                for signing_key in self.state_data.p2pk_signing_keys.values() {
+                    // Sign the outputs of the swap using standard P2PK since output
+                    // P2BK requires ephemeral keys which is handled at creation.
+                    blinded_message.sign_p2pk(signing_key.to_owned().clone())?
+                }
+            }
+        }
+
+        let mut swap_request = pre_swap.swap_request;
+        if !self.state_data.v3_keys.is_empty() {
+            let ys = proofs_ys.to_vec();
+            let received = std::mem::take(&mut self.state_data.v3_keys);
+            swap_request = super::proof_work(move || {
+                use cdk_common::nut00::transaction::{
+                    blinded_outputs, proof_inputs_with_ys, Transaction,
+                };
+
+                let tx = Transaction::new(
+                    proof_inputs_with_ys(swap_request.inputs(), &ys)?,
+                    blinded_outputs(swap_request.outputs()),
+                )?;
+                Wallet::sign_v3_swap_inputs(
+                    &tx,
+                    swap_request.inputs_mut(),
+                    Default::default(),
+                    &received,
+                )?;
+                Ok(swap_request)
+            })
+            .await?;
+            // Keep the authorization before dispatch so restart recovery can
+            // replay the same transaction without the receiver's private keys.
+            for (info, signed) in proofs_info.iter_mut().zip(swap_request.inputs()) {
+                info.proof.witness = signed.witness.clone();
+            }
+            self.wallet
+                .localstore
+                .update_proofs(proofs_info.to_vec(), vec![])
+                .await?;
+        }
+
+        pre_swap.swap_request = swap_request;
+        Ok(pre_swap)
     }
 
     /// Determine the signature flag based on the proofs
@@ -609,8 +703,8 @@ mod tests {
         nut00, BlindSignature, PreMintSecrets, Proof, SecretKey, State, SwapResponse,
     };
     use crate::wallet::test_utils::{
-        create_test_db, create_test_wallet_with_mock_seed, test_keyset_id, test_proof,
-        MockMintConnector,
+        create_test_db, create_test_wallet_with_mock_seed, test_keyset_id, test_mint_info,
+        test_proof, MockMintConnector,
     };
     use crate::wallet::ReceiveOptions;
     use crate::{Amount, Error, Wallet};
@@ -686,6 +780,81 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(transaction.status, TransactionStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn test_receive_compensates_failure_before_dispatch() {
+        let (wallet, mock, input, signature) = receive_fixture().await;
+        // The split target exceeds the input, so building the swap request
+        // fails after the inputs were stored as pending.
+        let result = wallet
+            .receive_proofs(
+                vec![input.clone()],
+                ReceiveOptions {
+                    amount_split_target: SplitTarget::Values(vec![Amount::from(4)]),
+                    ..Default::default()
+                },
+                None,
+                None,
+            )
+            .await;
+        assert!(result.is_err(), "{result:?}");
+        assert!(mock.captured_swap_requests().is_empty());
+        assert!(wallet
+            .localstore
+            .get_incomplete_sagas()
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(wallet
+            .localstore
+            .get_proofs(None, None, None, None)
+            .await
+            .unwrap()
+            .is_empty());
+
+        // The proof stays receivable.
+        let amount = receive_response(&wallet, &mock, &input, vec![signature])
+            .await
+            .unwrap();
+        assert_eq!(amount, Amount::from(2));
+    }
+
+    #[tokio::test]
+    async fn test_receive_rejects_excess_proofs_before_hashing_or_storage() {
+        let (wallet, mock, proof, _) = receive_fixture().await;
+        let max = crate::wallet::MAX_RECEIVE_PROOFS;
+        let result = wallet
+            .receive_proofs(vec![proof; max + 1], ReceiveOptions::default(), None, None)
+            .await;
+        assert!(
+            matches!(result, Err(Error::MaxInputsExceeded { actual, max: limit }) if actual == max + 1 && limit == max)
+        );
+        assert!(wallet
+            .localstore
+            .get_incomplete_sagas()
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(mock.captured_swap_requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_receive_respects_lower_mint_input_limit() {
+        let (wallet, mock, input, signature) = receive_fixture().await;
+        mock.set_mint_info_response(Ok(test_mint_info().max_array_length(0)));
+        let result = receive_response(&wallet, &mock, &input, vec![signature]).await;
+        assert!(matches!(
+            result,
+            Err(Error::MaxInputsExceeded { actual: 1, max: 0 })
+        ));
+        assert!(mock.captured_swap_requests().is_empty());
+        assert!(wallet
+            .localstore
+            .get_incomplete_sagas()
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]

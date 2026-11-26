@@ -162,6 +162,11 @@ impl PaymentRequest {
         Ok(builder.to_string())
     }
 
+    /// Get the NUT-18 `nutroot` option (v3 keysets), as JSON
+    pub fn nutroot_option(&self) -> Option<String> {
+        crate::types::proof::to_json_field(self.inner.nutroot.as_ref())
+    }
+
     /// Get the payment ID
     pub fn payment_id(&self) -> Option<String> {
         self.inner.payment_id.clone()
@@ -373,6 +378,10 @@ pub struct CreateRequestParams {
     #[serde(default)]
     #[uniffi(default = None)]
     pub nostr_pubkey: Option<String>,
+    /// NUT-18 `nutroot` option for payments from v3 keysets, as JSON
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub nutroot: Option<String>,
 }
 
 impl fmt::Debug for CreateRequestParams {
@@ -403,9 +412,11 @@ impl Default for CreateRequestParams {
     }
 }
 
-impl From<CreateRequestParams> for cdk::wallet::payment_request::CreateRequestParams {
-    fn from(params: CreateRequestParams) -> Self {
-        Self {
+impl TryFrom<CreateRequestParams> for cdk::wallet::payment_request::CreateRequestParams {
+    type Error = FfiError;
+
+    fn try_from(params: CreateRequestParams) -> Result<Self, Self::Error> {
+        Ok(Self {
             payment_id: params.payment_id,
             nostr_pubkey: params.nostr_pubkey,
             amount: params.amount,
@@ -425,7 +436,8 @@ impl From<CreateRequestParams> for cdk::wallet::payment_request::CreateRequestPa
                 .into_iter()
                 .map(Into::into)
                 .collect(),
-        }
+            nutroot: crate::types::proof::parse_json_field(params.nutroot, "nutroot")?,
+        })
     }
 }
 
@@ -451,6 +463,7 @@ impl From<cdk::wallet::payment_request::CreateRequestParams> for CreateRequestPa
                 .into_iter()
                 .map(Into::into)
                 .collect(),
+            nutroot: crate::types::proof::to_json_field(params.nutroot.as_ref()),
         }
     }
 }
@@ -493,6 +506,21 @@ impl NostrWaitInfo {
 
 #[uniffi::export]
 impl NostrWaitInfo {
+    /// Supply signing keys and preimages while retaining the original request.
+    pub fn with_receive_options(
+        &self,
+        options: crate::types::ReceiveOptions,
+    ) -> Result<Arc<Self>, FfiError> {
+        Ok(Arc::new(Self {
+            inner: self.inner.clone().with_receive_options(options.try_into()?),
+        }))
+    }
+
+    /// Nutroot option retained from the original request, as JSON.
+    pub fn nutroot_option(&self) -> Option<String> {
+        crate::types::proof::to_json_field(self.inner.nutroot_option())
+    }
+
     /// Get the Nostr relays to connect to
     pub fn relays(&self) -> Vec<String> {
         self.inner.relays.clone()
@@ -788,7 +816,8 @@ mod tests {
         assert_eq!(params.supported_methods.len(), 1);
         assert_eq!(params.supported_methods[0].fee, Some(Amount::new(5)));
 
-        let cdk_params: cdk::wallet::payment_request::CreateRequestParams = decoded.into();
+        let cdk_params: cdk::wallet::payment_request::CreateRequestParams =
+            decoded.try_into().unwrap();
         let ffi_params: CreateRequestParams = cdk_params.into();
         assert_eq!(ffi_params.mint_preferred, Some(true));
         assert_eq!(ffi_params.supported_methods, params.supported_methods);

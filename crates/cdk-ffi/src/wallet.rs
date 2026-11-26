@@ -212,11 +212,32 @@ impl Wallet {
         token: std::sync::Arc<Token>,
         options: ReceiveOptions,
     ) -> Result<Amount, FfiError> {
+        let count = token.inner.proof_count();
+        if count > cdk::wallet::MAX_RECEIVE_PROOFS {
+            return Err(cdk::Error::MaxInputsExceeded {
+                actual: count,
+                max: cdk::wallet::MAX_RECEIVE_PROOFS,
+            }
+            .into());
+        }
         let amount = self
             .inner
             .receive(&token.to_string(), options.try_into()?)
             .await?;
         Ok(amount.into())
+    }
+
+    /// Receive an encoded token, applying wallet limits before its proof points are decoded.
+    pub async fn receive_encoded(
+        &self,
+        encoded_token: String,
+        options: ReceiveOptions,
+    ) -> Result<Amount, FfiError> {
+        Ok(self
+            .inner
+            .receive(&encoded_token, options.try_into()?)
+            .await?
+            .into())
     }
 
     /// Restore wallet from seed
@@ -236,8 +257,7 @@ impl Wallet {
         &self,
         token: std::sync::Arc<Token>,
     ) -> Result<(), FfiError> {
-        let cdk_token = token.inner.clone();
-        self.inner.verify_token_signatures(&cdk_token).await?;
+        self.inner.verify_token_signatures(&token.inner).await?;
         Ok(())
     }
 
@@ -245,8 +265,7 @@ impl Wallet {
     ///
     /// Deprecated: use `verify_token_signatures` instead.
     pub async fn verify_token_dleq(&self, token: std::sync::Arc<Token>) -> Result<(), FfiError> {
-        let cdk_token = token.inner.clone();
-        self.inner.verify_token_signatures(&cdk_token).await?;
+        self.inner.verify_token_signatures(&token.inner).await?;
         Ok(())
     }
 
@@ -263,6 +282,13 @@ impl Wallet {
         memo: Option<String>,
         token: Option<String>,
     ) -> Result<Amount, FfiError> {
+        if proofs.len() > cdk::wallet::MAX_RECEIVE_PROOFS {
+            return Err(cdk::Error::MaxInputsExceeded {
+                actual: proofs.len(),
+                max: cdk::wallet::MAX_RECEIVE_PROOFS,
+            }
+            .into());
+        }
         let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
             proofs.into_iter().map(|p| p.try_into()).collect();
         let cdk_proofs = cdk_proofs?;

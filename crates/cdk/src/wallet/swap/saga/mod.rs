@@ -32,7 +32,8 @@
 //! | `[skipped]` | Recovery deferred (mint unreachable), will retry on next recovery |
 
 use cdk_common::wallet::{
-    OperationData, ProofInfo, SwapOperationData, SwapSagaState, WalletSaga, WalletSagaState,
+    OperationData, ProofInfo, SwapOperationData, SwapOutput, SwapSagaState, WalletSaga,
+    WalletSagaState,
 };
 use tracing::instrument;
 
@@ -75,8 +76,19 @@ impl<'a> SwapSaga<'a, Initial> {
             state_data: Initial {
                 operation_id,
                 keyset_policy: Default::default(),
+                parent_operation_id: None,
             },
         }
+    }
+
+    /// Record the parent operation that holds the input reservation
+    ///
+    /// Recovery replays the swap only with inputs held by this saga or by
+    /// this parent, so a reservation another operation took later is not
+    /// spent by the replay.
+    pub(crate) fn with_parent_operation(mut self, parent_operation_id: uuid::Uuid) -> Self {
+        self.state_data.parent_operation_id = Some(parent_operation_id);
+        self
     }
 
     /// Prepare the swap operation.
@@ -91,9 +103,36 @@ impl<'a> SwapSaga<'a, Initial> {
     /// When `proof_reservation` is [`ProofReservation::Skip`], the swap does
     /// not own the proof reservation and skips both the reservation call and
     /// the corresponding compensation registration.
+    #[cfg(test)]
     #[instrument(skip_all)]
     #[allow(clippy::too_many_arguments)]
     pub async fn prepare(
+        self,
+        amount: Option<Amount>,
+        amount_split_target: SplitTarget,
+        input_proofs: Proofs,
+        spending_conditions: Option<SpendingConditions>,
+        use_p2bk: bool,
+        include_fees: bool,
+        proof_reservation: ProofReservation,
+    ) -> Result<SwapSaga<'a, Prepared>, Error> {
+        self.prepare_with_nutroot(
+            amount,
+            amount_split_target,
+            input_proofs,
+            spending_conditions,
+            use_p2bk,
+            include_fees,
+            proof_reservation,
+            None,
+        )
+        .await
+    }
+
+    /// [`Self::prepare`], locking the send outputs to a NUT-18 `nutroot`
+    /// option instead of NUT-10 conditions
+    #[allow(clippy::too_many_arguments)]
+    pub async fn prepare_with_nutroot(
         mut self,
         amount: Option<Amount>,
         amount_split_target: SplitTarget,
@@ -102,6 +141,7 @@ impl<'a> SwapSaga<'a, Initial> {
         use_p2bk: bool,
         include_fees: bool,
         proof_reservation: ProofReservation,
+        nutroot: Option<crate::nuts::nut18::NutrootOption>,
     ) -> Result<SwapSaga<'a, Prepared>, Error> {
         tracing::info!(
             "Preparing swap with operation {}",
@@ -137,6 +177,7 @@ impl<'a> SwapSaga<'a, Initial> {
                 use_p2bk,
                 &fee_breakdown,
                 proof_reservation,
+                nutroot.as_ref(),
             )
             .await?;
 
@@ -172,6 +213,26 @@ impl<'a> SwapSaga<'a, Initial> {
                 counter_start: Some(counter_start),
                 counter_end: Some(counter_end),
                 blinded_messages: None,
+                input_ys: input_ys.clone(),
+                parent_operation_id: self.state_data.parent_operation_id,
+                pending_outputs: (!pre_swap.nutroot_spend_info.is_empty()).then(|| {
+                    pre_swap
+                        .pre_mint_secrets
+                        .secrets
+                        .iter()
+                        .map(|premint| SwapOutput {
+                            blinded_message: premint.blinded_message.clone(),
+                            secret: premint.secret.clone(),
+                            r: premint.r.clone(),
+                            derivation_index: premint.derivation_index,
+                            spend_info: pre_swap
+                                .nutroot_spend_info
+                                .iter()
+                                .find(|(secret, _)| *secret == premint.secret)
+                                .map(|(_, info)| info.clone()),
+                        })
+                        .collect()
+                }),
             }),
         );
 
@@ -224,6 +285,17 @@ impl<'a> SwapSaga<'a, Prepared> {
         let unit = &self.wallet.unit;
         let operation_id = self.state_data.operation_id;
 
+        let mut swap_request = self.state_data.pre_swap.swap_request.clone();
+        if let Err(err) = self
+            .wallet
+            .sign_v3_swap(&mut swap_request, &Default::default())
+            .await
+        {
+            tracing::error!("Failed to sign v3 swap inputs: {}", err);
+            execute_compensations(&mut self.compensations).await?;
+            return Err(err);
+        }
+
         let mut saga = self.state_data.saga.clone();
         saga.update_state(WalletSagaState::Swap(SwapSagaState::SwapRequested));
         if let OperationData::Swap(ref mut data) = saga.data {
@@ -234,12 +306,7 @@ impl<'a> SwapSaga<'a, Prepared> {
             return Err(Error::ConcurrentUpdate);
         }
 
-        let swap_response = match self
-            .wallet
-            .client
-            .post_swap(self.state_data.pre_swap.swap_request.clone())
-            .await
-        {
+        let swap_response = match self.wallet.client.post_swap(swap_request).await {
             Ok(response) => response,
             Err(err) => {
                 if err.is_definitive_failure() {
@@ -281,15 +348,33 @@ impl<'a> SwapSaga<'a, Prepared> {
 
         match self.state_data.send_amount {
             Some(amount) => {
+                let nutroot_spend_info = &self.state_data.pre_swap.nutroot_spend_info;
+                let is_nutroot = |p: &crate::nuts::Proof| {
+                    nutroot_spend_info
+                        .iter()
+                        .any(|(secret, _)| *secret == p.secret)
+                };
                 let (proofs_with_condition, proofs_without_condition): (Proofs, Proofs) =
                     post_swap_proofs.into_iter().partition(|p| {
                         let nut10_secret: Result<nut10::Secret, _> = p.secret.clone().try_into();
-                        nut10_secret.is_ok()
+                        nut10_secret.is_ok() || is_nutroot(p)
                     });
 
                 let (mut proofs_to_send, proofs_to_keep) =
                     match &self.state_data.spending_conditions {
                         Some(_) => (proofs_with_condition, proofs_without_condition),
+                        None if !nutroot_spend_info.is_empty() => {
+                            // Nutroot-locked outputs carry the spend info the
+                            // payee needs (NUT-18).
+                            let mut locked = proofs_with_condition;
+                            for proof in &mut locked {
+                                proof.spend_info = nutroot_spend_info
+                                    .iter()
+                                    .find(|(secret, _)| *secret == proof.secret)
+                                    .map(|(_, info)| info.clone());
+                            }
+                            (locked, proofs_without_condition)
+                        }
                         None => {
                             let mut all_proofs = proofs_without_condition;
                             all_proofs.reverse();

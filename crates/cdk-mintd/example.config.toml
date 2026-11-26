@@ -85,7 +85,7 @@ tti = 60
 # command. It is never reapplied automatically during daemon startup.
 [mint_info]
 # name = "cdk-mintd mutiney net mint"
-# Hex pubkey of mint
+# Optional NUT-06 mint identity public key
 # pubkey = ""
 # description = "These are not real sats for testing only"
 # description_long = "A longer mint for testing"

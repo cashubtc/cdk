@@ -21,6 +21,8 @@ pub struct Initial {
     pub operation_id: Uuid,
     /// Policy controlling how keysets are loaded during this saga
     pub keyset_policy: KeysetLoadPolicy,
+    /// Parent operation holding the input reservation, if any
+    pub parent_operation_id: Option<Uuid>,
 }
 
 /// Prepared state - swap request created, proofs reserved.
@@ -142,11 +144,14 @@ mod tests {
             test_mint_url(),
             CurrencyUnit::Sat,
             OperationData::Swap(SwapOperationData {
+                parent_operation_id: None,
                 input_amount: Amount::from(1),
                 output_amount: Amount::from(1),
                 counter_start: Some(0),
                 counter_end: Some(1),
                 blinded_messages: None,
+                pending_outputs: None,
+                input_ys: vec![],
             }),
         )
     }
@@ -181,6 +186,7 @@ mod tests {
                 derived_secret_count: 1,
                 fee: Amount::from(0),
                 p2bk_secret_keys: None,
+                nutroot_spend_info: vec![],
             },
             saga: swap_saga(operation_id),
         };

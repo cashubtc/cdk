@@ -6,11 +6,13 @@
 //! <https://github.com/cashubtc/nuts/blob/main/18.md>
 
 pub mod error;
+pub mod nutroot;
 pub mod payment_request;
 pub mod secret;
 pub mod transport;
 
 pub use error::Error;
+pub use nutroot::{NutrootOption, NutrootPayment};
 pub use payment_request::{
     PaymentRequest, PaymentRequestBuilder, PaymentRequestPayload, SupportedMethod,
 };

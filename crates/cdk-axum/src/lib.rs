@@ -20,6 +20,7 @@ mod auth;
 pub mod cache;
 mod custom_handlers;
 mod custom_router;
+mod point_request;
 mod router_handlers;
 mod ws;
 
@@ -103,7 +104,7 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/keys", get(get_keys))
         .route("/keysets", get(get_keysets))
         .route("/keys/{keyset_id}", get(get_keyset_pubkeys))
-        .route("/swap", post(cache_post_swap))
+        .route("/swap", post(admitted_swap))
         .route("/ws", get(ws_handler))
         .route("/checkstate", post(post_check))
         .route("/info", get(get_mint_info))
@@ -146,6 +147,7 @@ pub async fn create_mint_router_with_custom_cache(
         metrics::global_metrics_middleware,
     ));
     let mint_router = mint_router
+        .layer(from_fn(auth::blind_auth_request_context))
         .layer(from_fn(cors_middleware))
         .with_state(state);
 

@@ -14,6 +14,7 @@ use cdk_common::payment::{DynMintPayment, WaitPaymentResponse};
 pub use cdk_common::quote_id::QuoteId;
 use cdk_common::stream::{BackoffPolicy, SupervisedStream};
 pub use cdk_common::work_pool::Admission;
+use cdk_common::work_pool::WorkPool;
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::MintMetricGuard;
 use cdk_signatory::signatory::{
@@ -37,6 +38,7 @@ mod check_spendable;
 mod issue;
 mod keysets;
 mod melt;
+mod nutroot;
 mod payment_backend;
 mod proofs;
 mod saga_recovery;
@@ -99,6 +101,9 @@ pub struct Mint {
     max_inputs: usize,
     /// Maximum number of outputs allowed per transaction
     max_outputs: usize,
+    /// Runs the mint's own CPU-heavy checks (spending-condition witnesses),
+    /// which need no signatory keys, off the async workers.
+    work_pool: Arc<WorkPool>,
 }
 
 impl std::fmt::Debug for Mint {
@@ -409,6 +414,7 @@ impl Mint {
             keysets: Arc::new(ArcSwap::new(keysets.keysets.into())),
             keyset_store_lock: Arc::new(Mutex::new(())),
             melt_quote_locks: Arc::new(Mutex::new(HashMap::new())),
+            work_pool: Arc::new(WorkPool::sized_to_host()),
             task_state: Arc::new(Mutex::new(TaskState {
                 keyset_updates: Some(keyset_updates),
                 ..Default::default()
@@ -736,6 +742,12 @@ impl Mint {
         self.max_inputs
     }
 
+    /// Get the maximum number of outputs allowed per transaction
+    #[inline]
+    pub fn max_outputs(&self) -> usize {
+        self.max_outputs
+    }
+
     /// Pub Sub manager
     #[inline]
     pub fn pubsub_manager(&self) -> Arc<PubSubManager> {
@@ -794,6 +806,24 @@ impl Mint {
         // the endpoints actually enforce. One figure for both, so a wallet respecting it trips
         // neither cap.
         mint_info.max_array_length = Some(self.max_inputs.min(self.max_outputs) as u64);
+
+        // A mint with v3 keysets implements nutroot secrets with every core
+        // leaf and lists them (NUT-10). Without v3 keysets the setting is
+        // left as configured.
+        if self
+            .keysets
+            .load()
+            .iter()
+            .any(|keyset| keyset.id.get_version() == cdk_common::nut02::KeySetVersion::Version02)
+        {
+            mint_info.nuts.nut10.supported = true;
+            for leaf in cdk_common::nuts::nut10::nutroot::LeafType::CORE {
+                let signal = leaf.signal();
+                if !mint_info.nuts.nut10.supports_leaf(&signal) {
+                    mint_info.nuts.nut10.leaves.push(signal);
+                }
+            }
+        }
 
         Ok(mint_info)
     }

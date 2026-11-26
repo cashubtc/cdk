@@ -2,6 +2,9 @@ use std::sync::Arc;
 
 use cdk_common::database::mint::Acquired;
 use cdk_common::mint::{MintQuote, Operation};
+use cdk_common::nut00::transaction::{MintQuoteState as QuoteInputState, Transaction};
+use cdk_common::nuts::nut02::KeySetVersion;
+use cdk_common::nuts::nut10::nutroot::verify_quote_input;
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt12IncomingPaymentOptions, CustomIncomingPaymentOptions,
     IncomingPaymentOptions, OnchainIncomingPaymentOptions, WaitPaymentResponse,
@@ -128,6 +131,55 @@ impl MintInput {
     }
 }
 
+/// Whether a mint request's outputs are v3; all must share one version
+fn v3_output_request(outputs: &[BlindedMessage]) -> Result<bool, Error> {
+    let mut versions = outputs
+        .iter()
+        .map(|output| output.keyset_id.get_version() == KeySetVersion::Version02);
+    let Some(first) = versions.next() else {
+        return Ok(false);
+    };
+    if versions.any(|v3| v3 != first) {
+        return Err(Error::MixedOutputVersions);
+    }
+    Ok(first)
+}
+
+/// What each quote binds in a v3 mint transcript: its lock key and
+/// `amount_issued`. `quotes` are in request order.
+fn v3_quote_input_states<'a, I>(quotes: I) -> Result<Vec<QuoteInputState>, Error>
+where
+    I: IntoIterator<Item = Option<&'a MintQuote>>,
+{
+    quotes
+        .into_iter()
+        .map(|quote| {
+            let quote = quote.ok_or(Error::UnknownQuote)?;
+            Ok(QuoteInputState {
+                lock_key: quote.pubkey.ok_or(Error::PubkeyRequired)?,
+                issued: quote.amount_issued().into(),
+            })
+        })
+        .collect()
+}
+
+/// Verify each quote input of a v3 mint transaction: the transcript binds
+/// every quote's `states` entry, and each quote's witness signs its input
+/// digest.
+fn verify_v3_quote_inputs(transaction: &Transaction, entries: &[QuoteEntry]) -> Result<(), Error> {
+    let now = unix_time();
+    for (index, entry) in entries.iter().enumerate() {
+        verify_quote_input(transaction, index, entry.signature.as_deref(), now).map_err(|err| {
+            tracing::debug!(
+                "v3 mint quote {} failed the signing rule: {err}",
+                entry.quote_id
+            );
+            Error::SignatureMissingOrInvalid
+        })?;
+    }
+    Ok(())
+}
+
 /// NUT-29 batch bounds for a list of quote ids.
 ///
 /// Ordered empty, over-size, duplicate to match the order the HTTP routes have
@@ -161,6 +213,7 @@ impl Mint {
     ///
     /// Checks that:
     /// - Minting is enabled for the requested payment method
+    /// - A quote includes a lock key when the unit only has active v3 keysets
     /// - The currency unit is supported
     /// - The amount (if provided) is within the allowed range for the payment method
     ///
@@ -201,6 +254,19 @@ impl Mint {
                     amount,
                 )
             );
+        }
+
+        if mint_quote_request.pubkey().is_none() {
+            let keysets = self.keysets.load();
+            let mut active_versions = keysets
+                .iter()
+                .filter(|keyset| keyset.active && keyset.unit == unit)
+                .map(|keyset| keyset.id.get_version());
+            if active_versions.next() == Some(KeySetVersion::Version02)
+                && active_versions.all(|version| version == KeySetVersion::Version02)
+            {
+                return Err(Error::PubkeyRequired);
+            }
         }
 
         Ok(())
@@ -797,6 +863,11 @@ impl Mint {
                 })?
                 .amount;
 
+            // A request's outputs are all v3 or all pre-v3 (NUT-04). v3
+            // outputs mint as a transaction: each quote input signs its
+            // input digest.
+            let v3_outputs = v3_output_request(input.outputs())?;
+
             // Fetch all quotes
             let mut quote_map = std::collections::HashMap::new();
             for quote_id in &quote_ids {
@@ -872,21 +943,32 @@ impl Mint {
                     MintQuoteState::Paid => (),
                 }
 
-                // Determine the expected amount for this quote.
-                //
-                // For bolt11 (all-or-nothing): the expected amount is always the
-                // quote amount since bolt11 invoices are paid in full.
-                //
-                // For bolt12 and other methods: the expected amount comes from
-                // the batch `quote_amounts` field if present, otherwise it falls
-                // back to the full mintable amount (amount_paid - amount_issued).
-                let expected_amount = if mint_quote.payment_method.is_bolt11() {
-                    mint_quote.amount.clone().ok_or(Error::AmountUndefined)?
-                } else if let Some(expected) = entry.expected_amount {
-                    Amount::new(expected, mint_quote.unit.clone())
-                } else {
-                    mint_quote.amount_mintable()
+                // The batch `quote_amounts` entry is the amount issued from this
+                // quote (and the amount a v3 quote witness commits); without one,
+                // bolt11 issues the quote amount and other methods what is mintable.
+                let expected_amount = match entry.expected_amount {
+                    Some(expected) => Amount::new(expected, mint_quote.unit.clone()),
+                    None if mint_quote.payment_method.is_bolt11() => {
+                        mint_quote.amount.clone().ok_or(Error::AmountUndefined)?
+                    }
+                    None => mint_quote.amount_mintable(),
                 };
+
+                // bolt11 is all or nothing
+                if mint_quote.payment_method.is_bolt11()
+                    && Some(&expected_amount) != mint_quote.amount.as_ref()
+                {
+                    tracing::error!(
+                        "Quote {} expected amount {} is not its bolt11 amount",
+                        entry.quote_id,
+                        expected_amount
+                    );
+                    return Err(Error::TransactionUnbalanced(
+                        mint_quote.amount.as_ref().map_or(0, |a| a.value()),
+                        expected_amount.value(),
+                        0,
+                    ));
+                }
 
                 // Validate the expected amount does not exceed what is actually mintable
                 let mintable = mint_quote.amount_mintable();
@@ -918,8 +1000,14 @@ impl Mint {
                     return Err(Error::SignatureMissingOrInvalid);
                 }
 
-                // Verify NUT-20 signature
-                if let Some(ref pubkey) = mint_quote.pubkey {
+                // v3 outputs need a locked quote; its witness is verified
+                // before signing and again inside the database transaction,
+                // against the locked quote state the transcript binds.
+                if v3_outputs {
+                    if mint_quote.pubkey.is_none() {
+                        return Err(Error::PubkeyRequired);
+                    }
+                } else if let Some(ref pubkey) = mint_quote.pubkey {
                     match &input {
                         MintInput::Single(request) => request
                             .verify_signature(*pubkey)
@@ -1003,6 +1091,28 @@ impl Mint {
                 );
             }
 
+            // Verify v3 quote witnesses against the quotes as read so far, on
+            // the work pool and before blind signing. Phase 5 checks under the
+            // lock that the quotes still bind what was verified here.
+            let v3_quote_states = match v3_outputs {
+                true => {
+                    let states = v3_quote_input_states(
+                        quote_ids.iter().map(|quote_id| quote_map.get(quote_id)),
+                    )?;
+                    let transaction = match &input {
+                        MintInput::Single(request) => {
+                            request.transaction(states.first().ok_or(Error::UnknownQuote)?)?
+                        }
+                        MintInput::Batch(request) => request.transaction(&states)?,
+                    };
+                    let entries = quote_entries.clone();
+                    self.run_bounded(move || verify_v3_quote_inputs(&transaction, &entries))
+                        .await??;
+                    Some(states)
+                }
+                false => None,
+            };
+
             // Phase 4: Generate blind signatures (stateless, safe outside transaction).
             // Nothing is reserved until Phase 5, so an overloaded signatory may
             // refuse and the client retries the whole request.
@@ -1026,6 +1136,28 @@ impl Mint {
             // them by ID, so reversed batch requests cannot deadlock each other.
             let locked_quotes = tx.get_mint_quotes_by_ids(&quote_ids).await?;
             let mut issuance_events = Vec::with_capacity(quote_ids.len());
+
+            // The witnesses sign each quote's lock key and `amount_issued`,
+            // so they hold for the locked quotes exactly when those match.
+            if let Some(verified) = &v3_quote_states {
+                let unchanged =
+                    v3_quote_input_states(locked_quotes.iter().map(|quote| quote.as_deref()))
+                        .map(|locked| locked == *verified);
+                match unchanged {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        tracing::debug!(
+                            "v3 mint rejected: quote changed after its witness was verified"
+                        );
+                        tx.rollback().await?;
+                        return Err(Error::SignatureMissingOrInvalid);
+                    }
+                    Err(err) => {
+                        tx.rollback().await?;
+                        return Err(err);
+                    }
+                }
+            }
 
             // For batch minting, outputs are shared across all quotes and should be persisted once.
             if input.is_batch() {
@@ -1174,20 +1306,25 @@ mod batch_mint_tests {
     use crate::mint::{Mint, MintBuilder, MintMeltLimits, MintQuoteRequest};
     use crate::types::{FeeReserve, QuoteTTL};
 
-    struct OnchainTestBackend {
+    struct QuoteTestBackend {
         unit: CurrencyUnit,
         confirmations: u32,
         check_count: Arc<AtomicUsize>,
+        invoice_count: Arc<AtomicUsize>,
     }
 
     #[async_trait]
-    impl MintPayment for OnchainTestBackend {
+    impl MintPayment for QuoteTestBackend {
         type Err = payment::Error;
 
         async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
             Ok(SettingsResponse {
                 unit: self.unit.to_string(),
-                bolt11: None,
+                bolt11: Some(payment::Bolt11Settings {
+                    mpp: false,
+                    amountless: false,
+                    invoice_description: false,
+                }),
                 bolt12: None,
                 onchain: Some(OnchainSettings {
                     confirmations: self.confirmations,
@@ -1200,9 +1337,19 @@ mod batch_mint_tests {
 
         async fn create_incoming_payment_request(
             &self,
-            _options: IncomingPaymentOptions,
+            options: IncomingPaymentOptions,
         ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
-            Err(payment::Error::UnsupportedPaymentOption)
+            let IncomingPaymentOptions::Bolt11(options) = options else {
+                return Err(payment::Error::UnsupportedPaymentOption);
+            };
+            self.invoice_count.fetch_add(1, Ordering::Relaxed);
+            let id = QuoteId::new();
+            Ok(CreateIncomingPaymentResponse {
+                request: format!("test-invoice-{id}"),
+                request_lookup_id: PaymentIdentifier::QuoteId(id),
+                expiry: options.unix_expiry,
+                extra_json: None,
+            })
         }
 
         async fn get_payment_quote(
@@ -1251,6 +1398,99 @@ mod batch_mint_tests {
 
     async fn create_test_mint() -> Arc<Mint> {
         create_test_mint_with_onchain_limits(1, 10_000).await
+    }
+
+    #[test]
+    fn mint_outputs_must_share_one_version() {
+        use cdk_common::dhke::blind_secret;
+        use cdk_common::nuts::nut02::KeySetVersion;
+        use cdk_common::secret::Secret;
+
+        use super::v3_output_request;
+
+        let output = |version: KeySetVersion| {
+            let id =
+                cdk_common::Id::from_bytes(&[[version.to_byte()].as_slice(), &[1; 32]].concat())
+                    .unwrap();
+            let (secret, _) = Secret::generate_for_version(version);
+            let (blinded, _) = blind_secret(&secret, None, version).unwrap();
+            BlindedMessage::new(Amount::from(1), id, blinded)
+        };
+        let v3 = output(KeySetVersion::Version02);
+        let v2 = output(KeySetVersion::Version01);
+        assert!(!v3_output_request(&[]).unwrap());
+        assert!(!v3_output_request(std::slice::from_ref(&v2)).unwrap());
+        assert!(v3_output_request(&[v3.clone(), v3.clone()]).unwrap());
+        assert!(matches!(
+            v3_output_request(&[v3, v2]),
+            Err(Error::MixedOutputVersions)
+        ));
+    }
+
+    #[tokio::test]
+    async fn mint_quote_requires_pubkey_only_for_active_v3_unit() {
+        use cdk_common::error::ErrorResponse;
+        use cdk_common::nuts::{KeySetVersion, SecretKey};
+
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+        let mut builder =
+            MintBuilder::new(db.clone()).with_pubkey(SecretKey::generate().public_key());
+        let invoice_count = Arc::<AtomicUsize>::default();
+        for unit in [CurrencyUnit::Sat, CurrencyUnit::Msat] {
+            let backend = QuoteTestBackend {
+                unit: unit.clone(),
+                confirmations: 1,
+                check_count: Arc::default(),
+                invoice_count: invoice_count.clone(),
+            };
+            builder
+                .add_payment_processor(
+                    unit,
+                    PaymentMethod::Known(KnownMethod::Bolt11),
+                    MintMeltLimits::new(1, 10_000),
+                    Arc::new(backend),
+                )
+                .await
+                .unwrap();
+        }
+        let mint = builder.build_with_seed(db, &[42; 64]).await.unwrap();
+        mint.rotate_keyset_by_version(
+            CurrencyUnit::Sat,
+            vec![1, 2, 4, 8],
+            0,
+            KeySetVersion::Version02,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let request = |unit, pubkey| {
+            MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
+                amount: 8.into(),
+                unit,
+                description: None,
+                pubkey,
+            })
+        };
+        let err = mint
+            .get_mint_quote(request(CurrencyUnit::Sat, None))
+            .await
+            .unwrap_err();
+        assert_eq!(ErrorResponse::from(err).code.to_code(), 20009);
+        assert_eq!(invoice_count.load(Ordering::Relaxed), 0);
+        assert!(mint.mint_quotes().await.unwrap().is_empty());
+
+        mint.get_mint_quote(request(
+            CurrencyUnit::Sat,
+            Some(SecretKey::generate().public_key()),
+        ))
+        .await
+        .unwrap();
+        mint.get_mint_quote(request(CurrencyUnit::Msat, None))
+            .await
+            .unwrap();
+        assert_eq!(invoice_count.load(Ordering::Relaxed), 2);
+        assert_eq!(mint.mint_quotes().await.unwrap().len(), 2);
     }
 
     #[tokio::test]
@@ -1331,10 +1571,11 @@ mod batch_mint_tests {
             .unwrap();
 
         let onchain_check_count = Arc::new(AtomicUsize::new(0));
-        let onchain_backend = OnchainTestBackend {
+        let onchain_backend = QuoteTestBackend {
             unit: CurrencyUnit::Sat,
             confirmations: 1,
             check_count: onchain_check_count.clone(),
+            invoice_count: Arc::default(),
         };
 
         mint_builder
@@ -1914,6 +2155,79 @@ mod batch_mint_tests {
             result.unwrap_err(),
             Error::TransactionUnbalanced(_, _, _)
         ));
+    }
+
+    #[tokio::test]
+    async fn test_process_batch_mint_bolt11_entry_differs_from_quote_amount() {
+        let mint = create_test_mint().await;
+
+        let mut quotes = Vec::new();
+        for _ in 0..2 {
+            let quote: MintQuoteBolt11Response<QuoteId> = mint
+                .get_mint_quote(
+                    MintQuoteBolt11Request {
+                        amount: Amount::from(5),
+                        unit: CurrencyUnit::Sat,
+                        description: None,
+                        pubkey: None,
+                    }
+                    .into(),
+                )
+                .await
+                .unwrap()
+                .try_into()
+                .unwrap();
+            wait_for_quote_paid(&mint, &quote.quote).await;
+            quotes.push(quote.quote);
+        }
+
+        let keyset_id = *mint.get_active_keysets().get(&CurrencyUnit::Sat).unwrap();
+        let keys = mint
+            .keyset_pubkeys(&keyset_id)
+            .unwrap()
+            .keysets
+            .first()
+            .unwrap()
+            .keys
+            .clone();
+        let fees: (u64, Vec<u64>) = (0, keys.iter().map(|a| a.0.to_u64()).collect::<Vec<_>>());
+
+        // Outputs match the quotes' total, but the entries shift value
+        // between them.
+        let premint_secrets = PreMintSecrets::random(
+            keyset_id,
+            Amount::from(10),
+            &SplitTarget::None,
+            &fees.into(),
+        )
+        .unwrap();
+
+        let batch_request = BatchMintRequest {
+            quotes: quotes.clone(),
+            quote_amounts: Some(vec![Amount::from(3), Amount::from(7)]),
+            outputs: premint_secrets.blinded_messages().to_vec(),
+            signatures: None,
+        };
+
+        let result = mint
+            .process_mint_request(crate::mint::MintInput::Batch(batch_request))
+            .await;
+
+        assert!(
+            matches!(result, Err(Error::TransactionUnbalanced(5, 3, 0))),
+            "{result:?}"
+        );
+
+        // Nothing was issued from either quote.
+        for quote_id in &quotes {
+            let quote = mint
+                .localstore
+                .get_mint_quote(quote_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(quote.amount_issued().value(), 0);
+        }
     }
 
     #[tokio::test]

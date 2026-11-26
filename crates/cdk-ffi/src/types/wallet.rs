@@ -240,6 +240,9 @@ pub struct SendOptions {
     /// How P2PK-locked input proofs should be handled during send
     #[serde(default)]
     pub p2pk_locked_proof_send_mode: P2PKLockedProofSendMode,
+    /// NUT-18 `nutroot` option to lock v3 proofs to, as JSON (`k`, `l`, `b`)
+    #[serde(default)]
+    pub nutroot: Option<String>,
 }
 
 impl Default for SendOptions {
@@ -269,6 +272,7 @@ impl TryFrom<SendOptions> for cdk::wallet::SendOptions {
             use_p2bk: opts.use_p2bk,
             p2pk_signing_keys,
             p2pk_locked_proof_send_mode: opts.p2pk_locked_proof_send_mode.into(),
+            nutroot: crate::types::proof::parse_json_field(opts.nutroot, "nutroot")?,
         })
     }
 }
@@ -286,6 +290,7 @@ impl From<cdk::wallet::SendOptions> for SendOptions {
             use_p2bk: opts.use_p2bk,
             p2pk_signing_keys: opts.p2pk_signing_keys.into_iter().map(Into::into).collect(),
             p2pk_locked_proof_send_mode: opts.p2pk_locked_proof_send_mode.into(),
+            nutroot: crate::types::proof::to_json_field(opts.nutroot.as_ref()),
         }
     }
 }
@@ -380,10 +385,25 @@ pub struct ReceiveOptions {
     /// P2PK signing keys
     #[serde(default)]
     pub p2pk_signing_keys: Vec<SecretKey>,
-    /// Preimages for HTLC conditions
+    /// Preimages for HTLC conditions and requested v3 hashlock leaves
     pub preimages: Vec<String>,
     /// Metadata
     pub metadata: HashMap<String, String>,
+    /// Optional leaf policy for a generic v3 key-path sweep. When set,
+    /// refund leaves must open at least this many seconds from now, and
+    /// threshold and hashlock leaves are refused. By default the wallet
+    /// attempts the swap immediately and credits it on success.
+    #[serde(default)]
+    pub v3_min_refund_horizon: Option<u64>,
+    /// The NUT-18 `nutroot` option these proofs pay, as JSON; when set,
+    /// v3 proofs must match it exactly. Script-only payments use the supplied
+    /// signing keys and preimages to sweep a satisfiable leaf.
+    #[serde(default)]
+    pub v3_payment_request: Option<String>,
+    /// Accept v3 proofs the wallet can spend only through a disclosed leaf,
+    /// using the supplied signing keys and preimages (default off)
+    #[serde(default)]
+    pub v3_script_path: bool,
 }
 
 impl fmt::Debug for ReceiveOptions {
@@ -418,6 +438,12 @@ impl TryFrom<ReceiveOptions> for cdk::wallet::ReceiveOptions {
             p2pk_signing_keys,
             preimages: opts.preimages,
             metadata: opts.metadata,
+            v3_min_refund_horizon: opts.v3_min_refund_horizon,
+            v3_payment_request: crate::types::proof::parse_json_field(
+                opts.v3_payment_request,
+                "v3_payment_request",
+            )?,
+            v3_script_path: opts.v3_script_path,
         })
     }
 }
@@ -429,6 +455,11 @@ impl From<cdk::wallet::ReceiveOptions> for ReceiveOptions {
             p2pk_signing_keys: opts.p2pk_signing_keys.into_iter().map(Into::into).collect(),
             preimages: opts.preimages,
             metadata: opts.metadata,
+            v3_min_refund_horizon: opts.v3_min_refund_horizon,
+            v3_payment_request: crate::types::proof::to_json_field(
+                opts.v3_payment_request.as_ref(),
+            ),
+            v3_script_path: opts.v3_script_path,
         }
     }
 }
@@ -1153,6 +1184,7 @@ mod tests {
                 witness: None,
                 dleq: None,
                 p2pk_e: None,
+                spend_info: None,
             }]),
             amount: Amount::new(100),
             fee_paid: Amount::new(1),

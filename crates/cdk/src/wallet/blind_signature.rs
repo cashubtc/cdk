@@ -41,6 +41,7 @@ pub(crate) async fn validate_mint_response_signatures<'a>(
         )));
     }
 
+    let mut checks = Vec::with_capacity(signatures.len());
     for (sig, blinded_message) in signatures.iter().zip(blinded_messages) {
         let amount_matches = match amount_validation {
             SignatureAmountValidation::Exact => sig.amount == blinded_message.amount,
@@ -66,9 +67,15 @@ pub(crate) async fn validate_mint_response_signatures<'a>(
         let keys = wallet.keyset(sig.keyset_id).await?.keys;
         let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
 
-        sig.verify_signature(key, blinded_message.blinded_secret, LegacyDleq::Optional)
-            .map_err(|_| Error::CouldNotVerifyDleq)?;
+        checks.push((sig.clone(), key, blinded_message.blinded_secret));
     }
 
-    Ok(())
+    super::receive::proof_work(move || {
+        for (sig, key, blinded_message) in checks {
+            sig.verify_signature(key, blinded_message, LegacyDleq::Optional)
+                .map_err(|_| Error::CouldNotVerifyDleq)?;
+        }
+        Ok(())
+    })
+    .await
 }

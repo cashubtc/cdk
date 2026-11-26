@@ -78,6 +78,13 @@ impl ProofId {
     pub fn to_hex(&self) -> String {
         crate::util::hex::encode(self.as_bytes())
     }
+
+    /// Whether this identifies a v3 proof
+    ///
+    /// v3 keysets hash to BLS12-381 G1, so their `Y` has the BLS point size.
+    pub fn is_v3(&self) -> bool {
+        usize::from(self.len) == BLS_G1_POINT_SIZE
+    }
 }
 
 impl From<DhkePoint> for ProofId {
@@ -188,5 +195,14 @@ mod tests {
             ProofId::from_hex(secp_hex.to_uppercase()).expect("uppercase secp256k1"),
             ProofId::from_hex(&secp_hex).expect("lowercase secp256k1"),
         );
+    }
+
+    #[test]
+    fn is_v3_follows_the_curve() {
+        let secp = ProofId::from_slice(&[0x02; SECP256K1_POINT_SIZE]).expect("secp id");
+        let bls = ProofId::from_slice(&[0x02; BLS_G1_POINT_SIZE]).expect("bls id");
+
+        assert!(!secp.is_v3());
+        assert!(bls.is_v3());
     }
 }

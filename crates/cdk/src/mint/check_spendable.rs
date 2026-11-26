@@ -1,9 +1,64 @@
 use std::collections::HashMap;
 
+use cdk_common::database::{self, DynMintDatabase};
+use cdk_common::ProofId;
 use tracing::instrument;
 
 use super::{CheckStateRequest, CheckStateResponse, Mint, ProofState, State};
 use crate::Error;
+
+/// Whether a proof in `state` exposes its witness and input digest (NUT-07)
+///
+/// Spent proofs expose their witness. A v3 proof also exposes it, with the
+/// input digest it signed, while pending.
+pub(crate) fn exposes_witness(y: &ProofId, state: State) -> bool {
+    match state {
+        State::Spent => true,
+        State::Pending => y.is_v3(),
+        _ => false,
+    }
+}
+
+/// Build the NUT-07 state of each proof, with the witness and input digest
+/// its state exposes
+///
+/// HTTP check-state, subscription backfill and live proof-state
+/// notifications all report states built here, so they agree.
+pub(crate) async fn assemble_proof_states(
+    db: &DynMintDatabase,
+    states: &[(ProofId, State)],
+) -> Result<Vec<ProofState>, database::Error> {
+    let mut ys_needing_witness: Vec<ProofId> = states
+        .iter()
+        .filter(|(y, state)| exposes_witness(y, *state))
+        .map(|(y, _)| *y)
+        .collect();
+    ys_needing_witness.sort();
+    ys_needing_witness.dedup();
+
+    let (witnesses, digests): (HashMap<_, _>, HashMap<_, _>) = match ys_needing_witness.is_empty() {
+        true => (HashMap::new(), HashMap::new()),
+        false => {
+            let witnesses = ys_needing_witness
+                .iter()
+                .zip(db.get_proofs_by_ys(&ys_needing_witness).await?)
+                .filter_map(|(y, proof)| proof.map(|proof| (*y, proof.witness)))
+                .collect();
+            let digests = db.get_input_digests(&ys_needing_witness).await?;
+            (witnesses, digests)
+        }
+    };
+
+    Ok(states
+        .iter()
+        .map(|(y, state)| ProofState {
+            y: *y,
+            state: *state,
+            witness: witnesses.get(y).cloned().flatten(),
+            input_digest: digests.get(y).copied(),
+        })
+        .collect())
+}
 
 impl Mint {
     /// Check state
@@ -40,41 +95,13 @@ impl Mint {
             return Err(Error::UnknownPaymentState);
         }
 
-        // Collect ys that need witness fetching (only spent proofs expose witnesses)
-        let ys_needing_witness: Vec<_> = check_state
+        let states: Vec<(ProofId, State)> = check_state
             .ys
             .iter()
-            .zip(states.iter())
-            .filter_map(|(y, state)| match state {
-                Some(State::Spent) => Some(*y),
-                _ => None,
-            })
+            .zip(states)
+            .map(|(y, state)| (*y, state.unwrap_or(State::Unspent)))
             .collect();
-
-        // Build a lookup map for witnesses (only query if there are ys to fetch)
-        let witness_map: HashMap<_, _> = if ys_needing_witness.is_empty() {
-            HashMap::new()
-        } else {
-            self.localstore
-                .get_proofs_by_ys(&ys_needing_witness)
-                .await?
-                .into_iter()
-                .flatten()
-                .filter_map(|p| p.y().ok().map(|y| (y, p.witness)))
-                .collect()
-        };
-
-        // Construct response without additional queries
-        let proof_states = check_state
-            .ys
-            .iter()
-            .zip(states.iter())
-            .map(|(y, state)| ProofState {
-                y: *y,
-                state: state.unwrap_or(State::Unspent),
-                witness: witness_map.get(y).cloned().flatten(),
-            })
-            .collect();
+        let proof_states = assemble_proof_states(&self.localstore, &states).await?;
 
         Ok(CheckStateResponse {
             states: proof_states,

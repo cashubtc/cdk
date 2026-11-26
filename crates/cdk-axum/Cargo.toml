@@ -30,7 +30,7 @@ tracing.workspace = true
 futures.workspace = true
 cdk-prometheus = { workspace = true , optional = true}
 moka = { version = "0.12.10", features = ["future"] }
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 serde.workspace = true
 sha2 = "0.11"
 maud = { workspace = true, optional = true }
@@ -41,6 +41,7 @@ redis = { version = "0.31.0", default-features = false, features = [
 ], optional = true }
 
 [dev-dependencies]
+tower = { workspace = true }
 cdk-fake-wallet = { workspace = true }
 cdk-sqlite = { workspace = true, features = ["mint"] }
 cdk-signatory = { workspace = true }

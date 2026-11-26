@@ -9,6 +9,9 @@
 //! - Tests run concurrently with multi-threaded tokio runtime
 //! - No external dependencies (Lightning nodes, databases) required
 
+#[path = "common/v3_nutroot.rs"]
+mod v3_nutroot;
+
 use std::assert_eq;
 use std::collections::{HashMap, HashSet};
 use std::hash::RandomState;

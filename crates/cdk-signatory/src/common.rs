@@ -88,7 +88,7 @@ pub fn derive_keyset<C: secp256k1::Signing>(
         info.input_fee_ppk,
         info.final_expiry,
         info.id.get_version(),
-    );
+    )?;
 
     KeySet {
         id: info.id,
@@ -122,7 +122,7 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
     input_fee_ppk: u64,
     final_expiry: Option<u64>,
     keyset_id_version: nut02::KeySetVersion,
-) -> (MintKeySet, MintKeySetInfo) {
+) -> Result<(MintKeySet, MintKeySetInfo), Error> {
     let keyset = MintKeySet::generate(
         secp,
         xpriv
@@ -133,7 +133,7 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
         input_fee_ppk,
         final_expiry,
         keyset_id_version,
-    );
+    )?;
     let keyset_info = MintKeySetInfo {
         id: keyset.id,
         unit: keyset.unit.clone(),
@@ -146,7 +146,7 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
         input_fee_ppk,
         issuer_version: IssuerVersion::from_str(&format!("cdk/{}", env!("CARGO_PKG_VERSION"))).ok(),
     };
-    (keyset, keyset_info)
+    Ok((keyset, keyset_info))
 }
 
 pub fn derivation_path_from_unit(unit: CurrencyUnit, index: u32) -> Option<DerivationPath> {

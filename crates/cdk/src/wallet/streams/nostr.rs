@@ -106,8 +106,7 @@ async fn pump_notifications<S>(
             Some(ClientNotification::Event { event, .. }) => {
                 match UnwrappedGift::from_gift_wrap(&keys, &event) {
                     Ok(unwrapped) => {
-                        serde_json::from_str::<PaymentRequestPayload>(&unwrapped.rumor.content)
-                            .map_err(|e| Error::Custom(format!("Invalid payload JSON: {e}")))
+                        crate::wallet::decode_payment_request_payload(unwrapped.rumor.content).await
                     }
                     Err(e) => Err(Error::Custom(format!("Unwrap gift wrap failed: {e}"))),
                 }

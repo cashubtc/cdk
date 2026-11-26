@@ -303,19 +303,10 @@ impl Wallet {
             .checked_add(method_fee)
             .ok_or(Error::AmountOverflow)?;
 
-        // Extract optional NUT-10 spending conditions from the payment request.
-        //
-        // NUT-18 encodes spending conditions in the optional `nut10` field using
-        // `Nut10SecretRequest` (kind + data + tags). To actually create locked
-        // ecash, we need full NUT-10 secrets, so we:
-        //   1. Convert `Nut10SecretRequest` -> `Nut10Secret` (adds nonce, keeps tags)
-        //   2. Convert `Nut10Secret` -> `SpendingConditions` (NUT-11 helper)
-        let conditions = if let Some(nut10_request) = &payment_request.nut10 {
-            let secret: Nut10Secret = nut10_request.clone().into();
-            Some(SpendingConditions::try_from(secret)?)
-        } else {
-            None
-        };
+        // The locking policy is settled before any proofs are reserved.
+        let v3 = self.active_keyset().await?.id.get_version()
+            == crate::nuts::nut02::KeySetVersion::Version02;
+        let (conditions, nutroot) = payment_request_lock(&payment_request, v3)?;
 
         // Prefer Nostr to avoid revealing the payer's IP address, then fall back
         // to HTTP POST when Nostr is unavailable in this build or request.
@@ -332,6 +323,7 @@ impl Wallet {
                 payment_amount,
                 SendOptions {
                     conditions,
+                    nutroot,
                     include_fee: true,
                     ..Default::default()
                 },
@@ -1308,6 +1300,77 @@ mod tests {
         );
     }
 
+    /// NUT-18: each proof follows the option for its keyset. Every
+    /// combination of `nut10` and `nutroot` on both keyset families.
+    #[test]
+    fn payment_request_lock_follows_the_keyset_family() {
+        use crate::nuts::nut18::NutrootOption;
+        use crate::nuts::{Kind, SecretKey};
+
+        let pubkey = SecretKey::generate().public_key();
+        let nut10 = Nut10SecretRequest::new(Kind::P2PK, pubkey.to_hex(), None::<Vec<Vec<String>>>);
+        let nutroot = NutrootOption {
+            k: SecretKey::generate().public_key(),
+            l: None,
+            b: None,
+        };
+        let request = |nut10: Option<Nut10SecretRequest>, nutroot: Option<NutrootOption>| {
+            let mut request =
+                payment_request(Some(CurrencyUnit::Sat), Some(Amount::from(1)), vec![]);
+            request.nut10 = nut10;
+            request.nutroot = nutroot;
+            request
+        };
+
+        for v3 in [false, true] {
+            // Neither option: bearer proofs from any keyset.
+            let (conditions, lock) = payment_request_lock(&request(None, None), v3).unwrap();
+            assert!(conditions.is_none() && lock.is_none());
+        }
+
+        // Pre-v3 keyset: the nut10 option locks, a nutroot-only request is
+        // refused.
+        let (conditions, lock) =
+            payment_request_lock(&request(Some(nut10.clone()), None), false).unwrap();
+        assert!(
+            matches!(conditions, Some(SpendingConditions::P2PKConditions { data, .. }) if data == pubkey)
+        );
+        assert!(lock.is_none());
+        let (conditions, lock) =
+            payment_request_lock(&request(Some(nut10.clone()), Some(nutroot.clone())), false)
+                .unwrap();
+        assert!(conditions.is_some() && lock.is_none());
+        assert!(matches!(
+            payment_request_lock(&request(None, Some(nutroot.clone())), false),
+            Err(Error::NutrootRequiresV3Keyset)
+        ));
+
+        // v3 keyset: the nutroot option locks, a nut10-only request is
+        // refused.
+        let (conditions, lock) =
+            payment_request_lock(&request(None, Some(nutroot.clone())), true).unwrap();
+        assert!(conditions.is_none());
+        assert_eq!(lock.as_ref(), Some(&nutroot));
+        let (conditions, lock) =
+            payment_request_lock(&request(Some(nut10.clone()), Some(nutroot.clone())), true)
+                .unwrap();
+        assert!(conditions.is_none());
+        assert_eq!(lock.as_ref(), Some(&nutroot));
+        assert!(payment_request_lock(&request(Some(nut10), None), true).is_err());
+
+        // An invalid nutroot option is refused before paying.
+        let invalid = NutrootOption {
+            b: Some(vec![SecretKey::generate().public_key()]),
+            ..nutroot
+        };
+        assert!(matches!(
+            payment_request_lock(&request(None, Some(invalid)), true),
+            Err(Error::NUT18(
+                crate::nuts::nut18::Error::NutrootBlindKeyNotInTree
+            ))
+        ));
+    }
+
     fn payment_request(
         unit: Option<CurrencyUnit>,
         amount: Option<Amount>,
@@ -1324,6 +1387,7 @@ mod tests {
             description: None,
             transports: vec![],
             nut10: None,
+            nutroot: None,
         }
     }
 
@@ -1346,6 +1410,7 @@ mod tests {
                 tags: vec![],
             }],
             nut10: None,
+            nutroot: None,
         }
     }
 
@@ -1552,6 +1617,42 @@ mod tests {
             max_amount: None,
             options: None,
         }
+    }
+}
+
+/// The lock a payment from the given keyset family must carry
+///
+/// Each proof follows the option for its keyset (NUT-18): proofs from a v3
+/// keyset are locked by the `nutroot` option and proofs from a pre-v3 keyset
+/// by the `nut10` option. A request carrying only one of them cannot be paid
+/// from the other keyset family; one carrying neither accepts bearer proofs
+/// from any keyset.
+fn payment_request_lock(
+    payment_request: &PaymentRequest,
+    v3: bool,
+) -> Result<
+    (
+        Option<SpendingConditions>,
+        Option<crate::nuts::nut18::NutrootOption>,
+    ),
+    Error,
+> {
+    match (v3, &payment_request.nut10, &payment_request.nutroot) {
+        (true, _, Some(nutroot)) => {
+            nutroot.validate()?;
+            Ok((None, Some(nutroot.clone())))
+        }
+        (true, Some(_), None) => Err(Error::Custom(
+            "The payment request has no nutroot option for v3 keysets".to_string(),
+        )),
+        (false, Some(nut10_request), _) => {
+            // NUT-18 encodes spending conditions as a `Nut10SecretRequest`
+            // (kind + data + tags); a full NUT-10 secret adds the nonce.
+            let secret: Nut10Secret = nut10_request.clone().into();
+            Ok((Some(SpendingConditions::try_from(secret)?), None))
+        }
+        (false, None, Some(_)) => Err(Error::NutrootRequiresV3Keyset),
+        (_, None, None) => Ok((None, None)),
     }
 }
 
@@ -1775,6 +1876,9 @@ pub struct CreateRequestParams {
     /// Public Nostr receiving key (hex or npub). None generates ephemeral keys.
     /// Used with nostr_relays; no private key is required or returned for this destination.
     pub nostr_pubkey: Option<String>,
+    /// NUT-18 `nutroot` option, for payments from v3 keysets: the receiver
+    /// key `k` (or the NUMS point), requested leaves and blind-me keys
+    pub nutroot: Option<crate::nuts::nut18::NutrootOption>,
 }
 
 impl fmt::Debug for CreateRequestParams {
@@ -1817,6 +1921,7 @@ impl Default for CreateRequestParams {
             mints: None,
             mint_preferred: None,
             supported_methods: vec![],
+            nutroot: None,
         }
     }
 }
@@ -1839,6 +1944,23 @@ pub struct NostrWaitInfo {
     pub mints: Vec<MintUrl>,
     /// Whether the original request's mint list is preferred instead of strict
     pub mint_preferred: Option<bool>,
+    receive_options: ReceiveOptions,
+}
+
+#[cfg(feature = "nostr")]
+impl NostrWaitInfo {
+    /// Supply signing keys, preimages and receive policy for this request.
+    /// The original request's Nutroot option remains authoritative.
+    pub fn with_receive_options(mut self, mut options: ReceiveOptions) -> Self {
+        options.v3_payment_request = self.receive_options.v3_payment_request.clone();
+        self.receive_options = options;
+        self
+    }
+
+    /// Nutroot option retained from the original request.
+    pub fn nutroot_option(&self) -> Option<&crate::nuts::nut18::NutrootOption> {
+        self.receive_options.v3_payment_request.as_ref()
+    }
 }
 
 impl WalletRepository {
@@ -2199,6 +2321,10 @@ impl WalletRepository {
                         pubkey: nprofile.public_key,
                         mints: mints.clone(),
                         mint_preferred: params.mint_preferred,
+                        receive_options: ReceiveOptions {
+                            v3_payment_request: params.nutroot.clone(),
+                            ..Default::default()
+                        },
                     }),
                 )
             }
@@ -2241,6 +2367,7 @@ impl WalletRepository {
             description: params.description,
             transports,
             nut10,
+            nutroot: params.nutroot,
         };
 
         Ok((req, nostr_info))
@@ -2318,6 +2445,7 @@ impl WalletRepository {
             description: params.description,
             transports,
             nut10,
+            nutroot: params.nutroot,
         };
 
         Ok(req)
@@ -2325,7 +2453,7 @@ impl WalletRepository {
 
     /// Wait for a Nostr payment for the previously constructed PaymentRequest and receive it into the wallet.
     #[cfg(all(feature = "nostr", not(target_arch = "wasm32")))]
-    pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
+    pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount, Error> {
         use crate::wallet::streams::nostr::NostrPaymentEventStream;
 
         let NostrWaitInfo {
@@ -2334,6 +2462,7 @@ impl WalletRepository {
             pubkey,
             mints,
             mint_preferred,
+            receive_options,
         } = info;
 
         let mut stream = NostrPaymentEventStream::new(keys, relays, pubkey);
@@ -2369,9 +2498,7 @@ impl WalletRepository {
 
                     // Receive using the individual wallet
                     let token_str = token.to_string();
-                    let received = wallet
-                        .receive(&token_str, ReceiveOptions::default())
-                        .await?;
+                    let received = wallet.receive(&token_str, receive_options.clone()).await?;
 
                     // Stop after first successful receipt
                     cancel.cancel();
@@ -2392,13 +2519,14 @@ impl WalletRepository {
     ///
     /// wasm32 fallback: Streams are not available; we await the first matching notification and process it.
     #[cfg(all(feature = "nostr", target_arch = "wasm32"))]
-    pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
+    pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount, Error> {
         let NostrWaitInfo {
             keys,
             relays,
             pubkey,
             mints,
             mint_preferred,
+            receive_options,
         } = info;
 
         let client = NostrClient::builder()
@@ -2429,7 +2557,7 @@ impl WalletRepository {
                 match UnwrappedGift::from_gift_wrap(&keys, &event) {
                     Ok(unwrapped) => {
                         let rumor = unwrapped.rumor;
-                        match serde_json::from_str::<PaymentRequestPayload>(&rumor.content) {
+                        match crate::wallet::decode_payment_request_payload(rumor.content).await {
                             Ok(payload) => {
                                 if !payment_request_mint_policy_accepts_mint(
                                     &mints,
@@ -2457,9 +2585,8 @@ impl WalletRepository {
 
                                 // Receive using the individual wallet
                                 let token_str = token.to_string();
-                                let received = wallet
-                                    .receive(&token_str, ReceiveOptions::default())
-                                    .await?;
+                                let received =
+                                    wallet.receive(&token_str, receive_options.clone()).await?;
 
                                 return Ok(received);
                             }

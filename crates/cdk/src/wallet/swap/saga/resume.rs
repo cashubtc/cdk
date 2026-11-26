@@ -15,7 +15,7 @@ use cdk_common::wallet::{OperationData, SwapOperationData, SwapSagaState, Wallet
 use tracing::instrument;
 
 use crate::dhke::hash_secret_to_curve;
-use crate::nuts::{PreMintSecrets, State};
+use crate::nuts::State;
 use crate::wallet::recovery::{RecoveryAction, RecoveryHelpers};
 use crate::wallet::saga::{CompensatingAction, RevertProofReservation};
 use crate::wallet::util::escape_log_value;
@@ -92,11 +92,42 @@ impl Wallet {
             return Ok(RecoveryAction::Recovered);
         }
 
-        let reserved_proofs = self.localstore.get_reserved_proofs(saga_id).await?;
+        let reserved_proofs = if data.input_ys.is_empty() {
+            self.localstore.get_reserved_proofs(saga_id).await?
+        } else {
+            // Inputs in a state this saga can own. A parent saga may hold
+            // the reservation, or its recovery may already have released it.
+            self.localstore
+                .get_proofs_by_ys(data.input_ys.clone())
+                .await?
+                .into_iter()
+                .filter(|proof| {
+                    matches!(
+                        proof.state,
+                        State::Reserved | State::PendingSpent | State::Unspent
+                    )
+                })
+                .collect()
+        };
+
+        // An input another operation now holds was released and reserved
+        // again, so this swap may never have reached the mint. Replaying it
+        // would spend that operation's proofs; the state check below decides
+        // instead, and compensation releases only this saga's reservations.
+        let held_elsewhere = reserved_proofs.iter().any(|proof| {
+            proof
+                .used_by_operation
+                .is_some_and(|op| op != *saga_id && Some(op) != data.parent_operation_id)
+        });
 
         // 2. Replay Path: Try to replay if we have inputs
         // We can only replay if we have the inputs to construct the request
-        if !reserved_proofs.is_empty() {
+        if held_elsewhere {
+            tracing::info!(
+                "Swap saga {} - an input is held by another operation, not replaying",
+                saga_id
+            );
+        } else if !reserved_proofs.is_empty() {
             if let Some(new_proofs) = self
                 .try_replay_swap_request(
                     saga_id,
@@ -178,10 +209,9 @@ impl Wallet {
                 let keyset_id = blinded_messages[0].keyset_id;
                 // Attempt to restore secrets to derive expected Ys
                 if let Ok(premint_secrets) =
-                    PreMintSecrets::restore_batch(keyset_id, &self.seed, start, end)
+                    self.recovery_outputs(saga_id, keyset_id, start, end).await
                 {
                     let ys_result: Result<Vec<crate::nuts::ProofId>, _> = premint_secrets
-                        .secrets
                         .iter()
                         .map(|p| {
                             hash_secret_to_curve(&p.secret, keyset_id.get_version()).map(Into::into)
@@ -189,14 +219,19 @@ impl Wallet {
                         .collect();
 
                     if let Ok(ys) = ys_result {
+                        let expected_count = ys.len();
                         // Check if these Ys exist in the DB
                         if let Ok(existing_proofs) = self.localstore.get_proofs_by_ys(ys).await {
-                            // If we find any proofs, it means the swap succeeded and we saved them
-                            if !existing_proofs.is_empty() {
+                            if expected_count > 0 && existing_proofs.len() == expected_count {
                                 tracing::info!(
                                     "Swap saga {} - new proofs found in DB, cleaning up",
                                     saga_id
                                 );
+                                if !data.input_ys.is_empty() {
+                                    self.localstore
+                                        .update_proofs_state(data.input_ys.clone(), State::Spent)
+                                        .await?;
+                                }
                                 let mut reserved_proofs =
                                     self.localstore.get_reserved_proofs(saga_id).await?;
                                 for proof in reserved_proofs.iter_mut() {
@@ -245,6 +280,12 @@ impl Wallet {
                 self.localstore.update_proofs(proofs, input_ys).await?;
             }
             None => {
+                if data.pending_outputs.is_some() {
+                    return Err(Error::Custom(
+                        "Pending swap outputs are unavailable; retaining the saga for retry"
+                            .to_owned(),
+                    ));
+                }
                 tracing::warn!(
                     "Swap saga {} - couldn't restore outputs, marking inputs as spent. \
                      Run wallet.restore() to recover any missing proofs.",
@@ -314,11 +355,14 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Swap(SwapOperationData {
+                parent_operation_id: None,
                 input_amount: Amount::from(100),
                 output_amount: Amount::from(90),
                 counter_start: Some(0),
                 counter_end: Some(10),
                 blinded_messages: None,
+                pending_outputs: None,
+                input_ys: vec![],
             }),
         );
         db.add_saga(saga).await.unwrap();
@@ -366,11 +410,14 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Swap(SwapOperationData {
+                parent_operation_id: None,
                 input_amount: Amount::from(100),
                 output_amount: Amount::from(90),
                 counter_start: Some(0),
                 counter_end: Some(10),
                 blinded_messages: None,
+                pending_outputs: None,
+                input_ys: vec![],
             }),
         );
         db.add_saga(saga).await.unwrap();
@@ -382,6 +429,7 @@ mod tests {
                 y: proof_y,
                 state: State::Unspent, // NOT spent - swap failed
                 witness: None,
+                input_digest: None,
             }],
         }));
 
@@ -424,11 +472,14 @@ mod tests {
             mint_url,
             CurrencyUnit::Sat,
             OperationData::Swap(SwapOperationData {
+                parent_operation_id: None,
                 input_amount: Amount::from(100),
                 output_amount: Amount::from(90),
                 counter_start: Some(0),
                 counter_end: Some(10),
                 blinded_messages: None,
+                pending_outputs: None,
+                input_ys: vec![],
             }),
         );
         db.add_saga(saga).await.unwrap();
@@ -469,11 +520,14 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Swap(SwapOperationData {
+                parent_operation_id: None,
                 input_amount: Amount::from(100),
                 output_amount: Amount::from(90),
                 counter_start: Some(0),
                 counter_end: Some(10),
                 blinded_messages: None,
+                pending_outputs: None,
+                input_ys: vec![],
             }),
         );
         db.add_saga(saga).await.unwrap();
@@ -532,6 +586,7 @@ mod tests {
                     witness: None,
                     dleq: None,
                     p2pk_e: None,
+                    spend_info: None,
                 };
                 ProofInfo::new(proof, mint_url.clone(), State::Unspent, CurrencyUnit::Sat).unwrap()
             })
@@ -550,11 +605,14 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Swap(SwapOperationData {
+                parent_operation_id: None,
                 input_amount: Amount::from(100),
                 output_amount: Amount::from(50),
                 counter_start: Some(counter_start),
                 counter_end: Some(counter_end),
                 blinded_messages: Some(blinded_messages),
+                pending_outputs: None,
+                input_ys: vec![],
             }),
         );
         db.add_saga(saga).await.unwrap();
@@ -622,11 +680,14 @@ mod tests {
             mint_url,
             CurrencyUnit::Sat,
             OperationData::Swap(SwapOperationData {
+                parent_operation_id: None,
                 input_amount: Amount::from(5),
                 output_amount: Amount::from(5),
                 counter_start: Some(0),
                 counter_end: Some(2),
                 blinded_messages: Some(premint_secrets.blinded_messages()),
+                pending_outputs: None,
+                input_ys: vec![],
             }),
         );
         db.add_saga(saga).await.unwrap();
@@ -642,5 +703,186 @@ mod tests {
         for proof_info in &proofs {
             assert_valid_mock_signature(&proof_info.proof);
         }
+    }
+
+    /// A replay only includes saga inputs in a state the saga can own.
+    #[tokio::test]
+    async fn test_recover_swap_replay_skips_inputs_the_saga_no_longer_holds() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let saga_id = uuid::Uuid::new_v4();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.enable_mint_signing();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client.clone()).await;
+        let keyset_id = wallet.active_keyset().await.unwrap().id;
+
+        let reserved = test_proof_info(test_keyset_id(), 4, mint_url.clone());
+        let incoming = test_proof_info(test_keyset_id(), 2, mint_url.clone());
+        let spent = test_proof_info(test_keyset_id(), 1, mint_url.clone());
+        let (reserved_y, incoming_y, spent_y) = (reserved.y, incoming.y, spent.y);
+        db.update_proofs(vec![reserved, incoming, spent], vec![])
+            .await
+            .unwrap();
+        db.reserve_proofs(vec![reserved_y], &saga_id).await.unwrap();
+        db.update_proofs_state(vec![spent_y], State::Spent)
+            .await
+            .unwrap();
+        db.update_proofs_state(vec![incoming_y], State::Pending)
+            .await
+            .unwrap();
+
+        let mut premint_secrets =
+            PreMintSecrets::restore_batch(keyset_id, &wallet.seed, 0, 1).unwrap();
+        for premint in premint_secrets.secrets.iter_mut() {
+            premint.amount = Amount::from(4);
+            premint.blinded_message.amount = Amount::from(4);
+        }
+
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Swap(SwapSagaState::SwapRequested),
+            Amount::from(7),
+            mint_url,
+            CurrencyUnit::Sat,
+            OperationData::Swap(SwapOperationData {
+                parent_operation_id: None,
+                input_amount: Amount::from(7),
+                output_amount: Amount::from(4),
+                counter_start: Some(0),
+                counter_end: Some(1),
+                blinded_messages: Some(premint_secrets.blinded_messages()),
+                pending_outputs: None,
+                input_ys: vec![reserved_y, incoming_y, spent_y],
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        let report = wallet.recover_incomplete_sagas().await.unwrap();
+        assert_eq!(report.recovered, 1);
+
+        let requests = mock_client.captured_swap_requests();
+        assert_eq!(requests.len(), 1);
+        let replayed = requests[0]
+            .inputs()
+            .iter()
+            .map(|proof| proof.y().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(replayed, vec![reserved_y]);
+
+        // Inputs the saga did not hold keep their state.
+        let incoming = db.get_proofs_by_ys(vec![incoming_y]).await.unwrap();
+        assert_eq!(incoming.len(), 1);
+        assert_eq!(incoming[0].state, State::Pending);
+        let spent = db.get_proofs_by_ys(vec![spent_y]).await.unwrap();
+        assert_eq!(spent.len(), 1);
+        assert_eq!(spent[0].state, State::Spent);
+        assert!(db
+            .get_proofs_by_ys(vec![reserved_y])
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    /// A `SwapRequested` swap whose single 4-sat input is reserved by
+    /// `holder`, started by `parent`
+    async fn swap_with_input_held_by(
+        parent: uuid::Uuid,
+        holder: uuid::Uuid,
+    ) -> (
+        Arc<dyn cdk_common::database::WalletDatabase<cdk_common::database::Error> + Send + Sync>,
+        Arc<MockMintConnector>,
+        crate::Wallet,
+        uuid::Uuid,
+        cdk_common::ProofId,
+    ) {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let saga_id = uuid::Uuid::new_v4();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.enable_mint_signing();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client.clone()).await;
+        let keyset_id = wallet.active_keyset().await.unwrap().id;
+
+        let input = test_proof_info(test_keyset_id(), 4, mint_url.clone());
+        let input_y = input.y;
+        db.update_proofs(vec![input], vec![]).await.unwrap();
+        db.reserve_proofs(vec![input_y], &holder).await.unwrap();
+
+        let mut premint_secrets =
+            PreMintSecrets::restore_batch(keyset_id, &wallet.seed, 0, 1).unwrap();
+        for premint in premint_secrets.secrets.iter_mut() {
+            premint.amount = Amount::from(4);
+            premint.blinded_message.amount = Amount::from(4);
+        }
+
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Swap(SwapSagaState::SwapRequested),
+            Amount::from(4),
+            mint_url,
+            CurrencyUnit::Sat,
+            OperationData::Swap(SwapOperationData {
+                parent_operation_id: Some(parent),
+                input_amount: Amount::from(4),
+                output_amount: Amount::from(4),
+                counter_start: Some(0),
+                counter_end: Some(1),
+                blinded_messages: Some(premint_secrets.blinded_messages()),
+                pending_outputs: None,
+                input_ys: vec![input_y],
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        (db, mock_client, wallet, saga_id, input_y)
+    }
+
+    /// Inputs the parent operation still holds are replayed.
+    #[tokio::test]
+    async fn test_recover_swap_replays_inputs_held_by_parent() {
+        let parent = uuid::Uuid::new_v4();
+        let (db, mock_client, wallet, saga_id, input_y) =
+            swap_with_input_held_by(parent, parent).await;
+
+        let report = wallet.recover_incomplete_sagas().await.unwrap();
+        assert_eq!(report.recovered, 1);
+
+        let requests = mock_client.captured_swap_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].inputs()[0].y().unwrap(), input_y);
+        assert!(db.get_proofs_by_ys(vec![input_y]).await.unwrap().is_empty());
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+    }
+
+    /// An input another operation reserved after it was released is not
+    /// replayed: the mint reports it unspent, so the swap never happened and
+    /// the saga is compensated without touching that reservation.
+    #[tokio::test]
+    async fn test_recover_swap_does_not_replay_inputs_held_by_another_operation() {
+        let parent = uuid::Uuid::new_v4();
+        let other = uuid::Uuid::new_v4();
+        let (db, mock_client, wallet, saga_id, input_y) =
+            swap_with_input_held_by(parent, other).await;
+        mock_client.set_check_state_response(Ok(CheckStateResponse {
+            states: vec![ProofState {
+                y: input_y,
+                state: State::Unspent,
+                witness: None,
+                input_digest: None,
+            }],
+        }));
+
+        let report = wallet.recover_incomplete_sagas().await.unwrap();
+        assert_eq!(report.compensated, 1);
+        assert_eq!(report.recovered, 0);
+        assert!(mock_client.captured_swap_requests().is_empty());
+
+        let input = db.get_proofs_by_ys(vec![input_y]).await.unwrap();
+        assert_eq!(input.len(), 1);
+        assert_eq!(input[0].state, State::Reserved);
+        assert_eq!(input[0].used_by_operation, Some(other));
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
     }
 }

@@ -23,5 +23,8 @@ extend-ignore-re = [
     "Writeable"
 ]
 
+[default.extend-identifiers]
+BATs = "BATs" # Blind Auth Tokens
+
 [default.extend-words]
 rith = "rith"

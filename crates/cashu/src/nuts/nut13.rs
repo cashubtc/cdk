@@ -9,7 +9,7 @@ use thiserror::Error;
 use tracing::instrument;
 
 use super::nut00::{BlindedMessage, PreMint, PreMintSecrets};
-use super::nut01::{BlindingFactor, PublicKey, SecretKey};
+use super::nut01::{BlindingFactor, SecretKey};
 use super::nut02::{Id, KeySetVersion};
 use crate::amount::{FeeAndAmounts, SplitTarget};
 use crate::dhke::blind_secret;
@@ -64,8 +64,6 @@ pub enum V3DerivationType {
     NumsOffset = 0x02,
     /// A wallet's own leaf key at an index. Keyset scope, suffix `u32_BE(i)`.
     LeafKey = 0x03,
-    /// Mint quote lock key. Mint identity scope, per-mint quote counter.
-    QuoteLockKey = 0x04,
 }
 
 /// Build the V3 KDF message for one attempt
@@ -188,25 +186,6 @@ pub fn derive_v3_leaf_key(
         u64::from(counter),
         V3DerivationType::LeafKey,
         &index.to_be_bytes(),
-    )
-    .map(|(key, _)| key)
-}
-
-/// Derive a V3 mint quote lock key (type `0x04`)
-///
-/// The scope is the mint's NUT-06 identity public key and `counter` is the
-/// wallet's quote counter for that mint, separate from any proof counter.
-pub fn derive_v3_quote_lock_key(
-    seed: &[u8],
-    mint_pubkey: &PublicKey,
-    counter: u32,
-) -> Result<SecretKey, Error> {
-    v3_sample_secp(
-        seed,
-        &mint_pubkey.to_bytes(),
-        u64::from(counter),
-        V3DerivationType::QuoteLockKey,
-        &[],
     )
     .map(|(key, _)| key)
 }
@@ -810,29 +789,6 @@ mod tests {
             ];
             for (index, (privkey, pubkey)) in vectors.into_iter().enumerate() {
                 let key = derive_v3_leaf_key(&seed(), keyset_id(), 0, index as u32).unwrap();
-                assert_eq!(key.to_secret_hex(), privkey);
-                assert_eq!(key.public_key().to_hex(), pubkey);
-            }
-        }
-
-        #[test]
-        fn quote_lock_keys() {
-            let mint_pubkey = PublicKey::from_hex(
-                "0338596797cef0627f653cd6568387361b00314add55d9f1ea9c94f46ae421e3da",
-            )
-            .unwrap();
-            let vectors = [
-                (
-                    "8140af6b627ddf38f9148c7266dca12d396de9266859648df699727c5b205a99",
-                    "0292905560a6a511a13e383ee27e220aeffc85b7a7bc293e6935b1d3678d209812",
-                ),
-                (
-                    "5980da641d9391abed79f528dbea0b85a61cff419bc93bce744d105779413b7a",
-                    "02b357c1ec7bdd73e4ede25d68619ee607c632409e89bcc518a82370b3f499615d",
-                ),
-            ];
-            for (counter, (privkey, pubkey)) in vectors.into_iter().enumerate() {
-                let key = derive_v3_quote_lock_key(&seed(), &mint_pubkey, counter as u32).unwrap();
                 assert_eq!(key.to_secret_hex(), privkey);
                 assert_eq!(key.public_key().to_hex(), pubkey);
             }

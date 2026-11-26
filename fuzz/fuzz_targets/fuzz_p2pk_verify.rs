@@ -152,6 +152,7 @@ fuzz_target!(|input: Input| {
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         };
         for key in signing_keys.iter().take(required_sigs as usize).cloned() {
             proof
@@ -253,6 +254,7 @@ fuzz_target!(|input: Input| {
         witness: Some(witness),
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     };
 
     // Primary target: the full P2PK verification pipeline.

@@ -12,6 +12,9 @@ use serde::ser::{SerializeStruct, Serializer};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use super::nut00::transaction::{
+    blinded_outputs, Error as TransactionError, MintQuoteState, Transaction, TransactionInput,
+};
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};
 use crate::nut00::KnownMethod;
 #[cfg(feature = "mint")]
@@ -55,6 +58,29 @@ impl TryFrom<MintRequest<String>> for MintRequest<QuoteId> {
             outputs: value.outputs,
             signature: value.signature,
         })
+    }
+}
+
+impl<Q> MintRequest<Q>
+where
+    Q: fmt::Display,
+{
+    /// The mint's transaction: the quote input to the blinded outputs
+    ///
+    /// The quote issues the outputs' total. `state` is read from the mint's
+    /// quote state.
+    pub fn transaction(&self, state: &MintQuoteState) -> Result<Transaction, TransactionError> {
+        let amount = Amount::try_sum(self.outputs.iter().map(|output| output.amount))
+            .map_err(|_| TransactionError::AmountOverflow)?;
+        Transaction::new(
+            vec![TransactionInput::MintQuote {
+                amount,
+                quote_id: self.quote.to_string(),
+                lock_key: state.lock_key,
+                issued: state.issued,
+            }],
+            blinded_outputs(&self.outputs),
+        )
     }
 }
 

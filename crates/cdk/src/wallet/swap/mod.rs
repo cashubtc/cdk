@@ -52,7 +52,8 @@ impl Wallet {
             spending_conditions,
             include_fees,
             use_p2bk,
-            ProofReservation::Reserve,
+            None,
+            None,
         )
         .await
     }
@@ -62,16 +63,21 @@ impl Wallet {
     /// This is intended for internal use by parent sagas (send, melt, receive)
     /// that have already reserved the proofs. Calling this on unreserved proofs
     /// bypasses the reservation safety check.
+    ///
+    /// `parent_operation_id` is the operation holding the reservation. Swap
+    /// recovery replays only inputs held by the swap or by that parent.
     #[instrument(skip(self, input_proofs))]
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn swap_no_reserve(
         &self,
+        parent_operation_id: uuid::Uuid,
         amount: Option<Amount>,
         amount_split_target: SplitTarget,
         input_proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
         use_p2bk: bool,
+        nutroot: Option<crate::nuts::nut18::NutrootOption>,
     ) -> Result<Option<Proofs>, Error> {
         self.swap_internal(
             amount,
@@ -80,12 +86,16 @@ impl Wallet {
             spending_conditions,
             include_fees,
             use_p2bk,
-            ProofReservation::Skip,
+            nutroot,
+            Some(parent_operation_id),
         )
         .await
     }
 
-    /// Internal swap implementation with explicit proof reservation control.
+    /// Internal swap implementation
+    ///
+    /// Without a parent the swap reserves its inputs; with one, the parent
+    /// already holds the reservation.
     #[allow(clippy::too_many_arguments)]
     async fn swap_internal(
         &self,
@@ -95,14 +105,22 @@ impl Wallet {
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
         use_p2bk: bool,
-        proof_reservation: ProofReservation,
+        nutroot: Option<crate::nuts::nut18::NutrootOption>,
+        parent_operation_id: Option<uuid::Uuid>,
     ) -> Result<Option<Proofs>, Error> {
         tracing::info!("Swapping");
 
+        let proof_reservation = match parent_operation_id {
+            Some(_) => ProofReservation::Skip,
+            None => ProofReservation::Reserve,
+        };
         self.retry_on_inactive_keyset(|| async {
-            let saga = SwapSaga::new(self);
+            let saga = match parent_operation_id {
+                Some(parent) => SwapSaga::new(self).with_parent_operation(parent),
+                None => SwapSaga::new(self),
+            };
             let saga = saga
-                .prepare(
+                .prepare_with_nutroot(
                     amount,
                     amount_split_target.clone(),
                     input_proofs.clone(),
@@ -110,6 +128,7 @@ impl Wallet {
                     use_p2bk,
                     include_fees,
                     proof_reservation,
+                    nutroot.clone(),
                 )
                 .await?;
             let saga = saga.execute().await?;
@@ -168,8 +187,14 @@ impl Wallet {
         use_p2bk: bool,
         proofs_fee_breakdown: &ProofsFeeBreakdown,
         proof_reservation: ProofReservation,
+        nutroot: Option<&crate::nuts::nut18::NutrootOption>,
     ) -> Result<PreSwap, Error> {
         tracing::info!("Creating swap");
+
+        if let Some(nutroot) = nutroot {
+            self.validate_nutroot_lock(active_keyset_id, nutroot)
+                .await?;
+        }
 
         // Desired amount is either amount passed or value of all proof
         let proofs_total = proofs.total_amount()?;
@@ -253,8 +278,20 @@ impl Wallet {
         let mut count = starting_counter;
 
         let mut p2bk_ephemeral_key = None;
-        let (mut desired_messages, change_messages) = match spending_conditions {
-            Some(conditions) => {
+        let mut nutroot_spend_info = Vec::new();
+        let spending_conditions = match nutroot {
+            Some(_) if spending_conditions.is_some() => {
+                return Err(Error::Custom(
+                    "A send locks to NUT-10 conditions or a nutroot option, not both".to_string(),
+                ))
+            }
+            _ => spending_conditions,
+        };
+        let (mut desired_messages, change_messages) = match (spending_conditions, nutroot) {
+            (None, Some(nutroot)) => {
+                // Each send output's secret is built from the payment
+                // request's nutroot option, with a fresh ephemeral and NUMS
+                // offset per output (NUT-18).
                 let change_premint_secrets = PreMintSecrets::from_seed(
                     active_keyset_id,
                     count,
@@ -263,77 +300,109 @@ impl Wallet {
                     &change_split_target,
                     fee_and_amounts,
                 )?;
-
                 derived_secret_count = change_premint_secrets.len();
 
-                let (send_secrets, ephemeral_key) = if use_p2bk {
-                    if let SpendingConditions::P2PKConditions { data, conditions } = conditions {
-                        let is_sig_all = conditions
-                            .as_ref()
-                            .is_some_and(|c| c.sig_flag == crate::nuts::nut11::SigFlag::SigAll);
-                        let amount_split = send_amount
-                            .unwrap_or(Amount::ZERO)
-                            .split_targeted(&SplitTarget::default(), fee_and_amounts)?;
-                        let keys_count = if is_sig_all { 1 } else { amount_split.len() };
-                        let ephemeral_keys: Vec<_> = (0..keys_count)
-                            .map(|_| crate::nuts::nut01::SecretKey::generate())
-                            .collect();
+                let amounts = send_amount
+                    .unwrap_or(Amount::ZERO)
+                    .split_targeted(&SplitTarget::default(), fee_and_amounts)?;
+                let mut secrets = Vec::with_capacity(amounts.len());
+                for _ in &amounts {
+                    let payment = nutroot.pay(
+                        &crate::nuts::SecretKey::generate(),
+                        &crate::nuts::SecretKey::generate(),
+                    )?;
+                    let secret = crate::secret::Secret::from_point(&payment.secret);
+                    nutroot_spend_info.push((secret.clone(), payment.spend_info));
+                    secrets.push(secret);
+                }
+                (
+                    PreMintSecrets::from_secrets(active_keyset_id, amounts, secrets)?,
+                    change_premint_secrets,
+                )
+            }
+            (spending_conditions, _) => match spending_conditions {
+                Some(conditions) => {
+                    let change_premint_secrets = PreMintSecrets::from_seed(
+                        active_keyset_id,
+                        count,
+                        &self.seed,
+                        change_amount,
+                        &change_split_target,
+                        fee_and_amounts,
+                    )?;
+
+                    derived_secret_count = change_premint_secrets.len();
+
+                    let (send_secrets, ephemeral_key) = if use_p2bk {
+                        if let SpendingConditions::P2PKConditions { data, conditions } = conditions
+                        {
+                            let is_sig_all = conditions
+                                .as_ref()
+                                .is_some_and(|c| c.sig_flag == crate::nuts::nut11::SigFlag::SigAll);
+                            let amount_split = send_amount
+                                .unwrap_or(Amount::ZERO)
+                                .split_targeted(&SplitTarget::default(), fee_and_amounts)?;
+                            let keys_count = if is_sig_all { 1 } else { amount_split.len() };
+                            let ephemeral_keys: Vec<_> = (0..keys_count)
+                                .map(|_| crate::nuts::nut01::SecretKey::generate())
+                                .collect();
+                            (
+                                PreMintSecrets::with_p2bk(
+                                    active_keyset_id,
+                                    send_amount.unwrap_or(Amount::ZERO),
+                                    &SplitTarget::default(),
+                                    data,
+                                    conditions,
+                                    &ephemeral_keys,
+                                    fee_and_amounts,
+                                )?,
+                                Some(ephemeral_keys),
+                            )
+                        } else {
+                            return Err(Error::Custom("P2BK requires P2PK conditions".to_string()));
+                        }
+                    } else {
                         (
-                            PreMintSecrets::with_p2bk(
+                            PreMintSecrets::with_conditions(
                                 active_keyset_id,
                                 send_amount.unwrap_or(Amount::ZERO),
                                 &SplitTarget::default(),
-                                data,
-                                conditions,
-                                &ephemeral_keys,
+                                &conditions,
                                 fee_and_amounts,
                             )?,
-                            Some(ephemeral_keys),
+                            None,
                         )
-                    } else {
-                        return Err(Error::Custom("P2BK requires P2PK conditions".to_string()));
-                    }
-                } else {
-                    (
-                        PreMintSecrets::with_conditions(
-                            active_keyset_id,
-                            send_amount.unwrap_or(Amount::ZERO),
-                            &SplitTarget::default(),
-                            &conditions,
-                            fee_and_amounts,
-                        )?,
-                        None,
-                    )
-                };
+                    };
 
-                p2bk_ephemeral_key = ephemeral_key;
-                (send_secrets, change_premint_secrets)
-            }
-            None => {
-                let premint_secrets = PreMintSecrets::from_seed(
-                    active_keyset_id,
-                    count,
-                    &self.seed,
-                    send_amount.unwrap_or(Amount::ZERO),
-                    &SplitTarget::default(),
-                    fee_and_amounts,
-                )?;
+                    p2bk_ephemeral_key = ephemeral_key;
+                    (send_secrets, change_premint_secrets)
+                }
+                None => {
+                    let premint_secrets = PreMintSecrets::from_seed(
+                        active_keyset_id,
+                        count,
+                        &self.seed,
+                        send_amount.unwrap_or(Amount::ZERO),
+                        &SplitTarget::default(),
+                        fee_and_amounts,
+                    )?;
 
-                count += premint_secrets.len() as u32;
+                    count += premint_secrets.len() as u32;
 
-                let change_premint_secrets = PreMintSecrets::from_seed(
-                    active_keyset_id,
-                    count,
-                    &self.seed,
-                    change_amount,
-                    &change_split_target,
-                    fee_and_amounts,
-                )?;
+                    let change_premint_secrets = PreMintSecrets::from_seed(
+                        active_keyset_id,
+                        count,
+                        &self.seed,
+                        change_amount,
+                        &change_split_target,
+                        fee_and_amounts,
+                    )?;
 
-                derived_secret_count = change_premint_secrets.len() + premint_secrets.len();
+                    derived_secret_count = change_premint_secrets.len() + premint_secrets.len();
 
-                (premint_secrets, change_premint_secrets)
-            }
+                    (premint_secrets, change_premint_secrets)
+                }
+            },
         };
 
         // Combine the BlindedMessages totaling the desired amount with change
@@ -349,6 +418,7 @@ impl Wallet {
             derived_secret_count: derived_secret_count as u32,
             fee: proofs_fee_breakdown.total,
             p2bk_secret_keys: p2bk_ephemeral_key,
+            nutroot_spend_info,
         })
     }
 }

@@ -338,3 +338,31 @@ path = "fuzz_targets/fuzz_nut21_settings.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_nutroot_leaf"
+path = "fuzz_targets/fuzz_nutroot_leaf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_nutroot_witness"
+path = "fuzz_targets/fuzz_nutroot_witness.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_spend_info"
+path = "fuzz_targets/fuzz_spend_info.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_tlv"
+path = "fuzz_targets/fuzz_tlv.rs"
+test = false
+doc = false
+bench = false
