@@ -67,8 +67,13 @@ outside the database and in the member's protected backup.
 
 The protocol is described in [setup ceremony](setup-ceremony.md). Each command
 takes the member's protected setup config with `--config <setup.json>`.
+`--database` must be the member's mint database (for SQLite,
+`<work-dir>/cdk-mintd.sqlite`, after `config init`): the DKG records land there,
+and the runtime refuses to start without its DKG activation.
+`scripts/run_local_signet_federation.sh` runs the whole flow for five local
+members.
 
-1. Creator: `federation setup create --state-dir <dir> --database <setup.db>
+1. Creator: `federation setup create --state-dir <dir> --database <mint.db>
    --members <n> --threshold <t> --network <net> --public-mint-url <url>
    --federation-api-url <url> --coordinator-url <url>` plus keyset, checkpoint,
    FROST and optional Bark policy arguments (`--frost-bark-*`). It writes one
@@ -77,7 +82,7 @@ takes the member's protected setup config with `--config <setup.json>`.
 2. Creator: `federation setup serve --listen <addr>` runs the setup-only
    coordinator.
 3. Each member: `federation setup join --invitation-file <file> --state-dir
-   <dir> --database <setup.db> --public-mint-url <url> --federation-api-url
+   <dir> --database <mint.db> --public-mint-url <url> --federation-api-url
    <url>`.
 4. Creator: `federation setup propose`.
 5. Each member: `federation setup review`, then
