@@ -40,6 +40,23 @@ pub fn escape_json(input: &str) -> String {
     output
 }
 
+/// Renders a value as terminal-safe CBOR diagnostic notation.
+///
+/// The value is serialized to CBOR and pretty-printed, then passed through
+/// [`escape_cbor_diag`] because its contents may be attacker-controlled.
+///
+/// See <https://www.rfc-editor.org/rfc/rfc8949.html#name-diagnostic-notation>
+pub fn render_cbor_diag<T>(data: &T) -> anyhow::Result<String>
+where
+    T: serde::Serialize,
+{
+    let mut cbor_buffer = Vec::<u8>::new();
+    ciborium::ser::into_writer(data, &mut cbor_buffer)?;
+
+    let diag = cbor_diag::parse_bytes(&cbor_buffer)?;
+    Ok(escape_cbor_diag(&diag.to_diag_pretty()))
+}
+
 /// Escapes terminal controls in CBOR diagnostic text while preserving layout.
 ///
 /// Newlines emitted by the diagnostic formatter are retained. Newlines and
