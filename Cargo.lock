@@ -1767,6 +1767,7 @@ dependencies = [
  "paste",
  "percent-encoding",
  "postgres-native-tls",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-postgres",
  "uuid",

@@ -6,10 +6,11 @@ use postgres_native_tls::MakeTlsConnector;
 use tokio_postgres::config::SslMode as PgSslMode;
 use tokio_postgres::{Config, NoTls};
 
+use crate::config::ConfigError;
 use crate::SslMode;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum TlsPolicy {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TlsPolicy {
     Disable,
     Prefer,
     Require,
@@ -18,7 +19,7 @@ pub(super) enum TlsPolicy {
 }
 
 impl TlsPolicy {
-    fn parse(value: &str) -> Result<Self, Error> {
+    pub(crate) fn parse(value: &str) -> Result<Self, ConfigError> {
         match value.to_ascii_lowercase().as_str() {
             "disable" => Ok(Self::Disable),
             "allow" | "prefer" => Ok(Self::Prefer),
@@ -26,7 +27,7 @@ impl TlsPolicy {
             "verify-ca" => Ok(Self::VerifyCa),
             "verify-full" => Ok(Self::VerifyFull),
             // Do not echo arbitrary connection-string contents in errors.
-            _ => Err(Error::Internal("Invalid PostgreSQL TLS mode".to_owned())),
+            _ => Err(ConfigError::TlsMode),
         }
     }
 
@@ -54,117 +55,10 @@ impl TlsPolicy {
     }
 }
 
-pub(super) fn configure(input: &str, explicit: Option<&str>) -> Result<(Config, SslMode), Error> {
-    let (config, policy) = resolve(input, explicit)?;
-    Ok((config, policy.build_connector(|builder| builder.build())?))
-}
-
-pub(super) fn resolve(input: &str, explicit: Option<&str>) -> Result<(Config, TlsPolicy), Error> {
-    let (normalized, url_policy) = normalize(input)?;
-    let policy = match explicit {
-        Some(mode) => TlsPolicy::parse(mode)?,
-        None => url_policy.unwrap_or(TlsPolicy::Disable),
-    };
-    let mut config: Config = normalized
-        .parse()
-        .map_err(|err| Error::Database(Box::new(err)))?;
+/// Set the driver's TLS negotiation and build the matching connector.
+pub(super) fn configure(config: &mut Config, policy: TlsPolicy) -> Result<SslMode, Error> {
     config.ssl_mode(policy.negotiation());
-    Ok((config, policy))
-}
-
-// tokio-postgres only parses disable/prefer/require. Extract the complete mode
-// and replace it with a supported placeholder before invoking its parser. All
-// modes, including overridden values, are validated to catch configuration typos.
-fn normalize(input: &str) -> Result<(String, Option<TlsPolicy>), Error> {
-    let mut policy = None;
-    let mut output = String::new();
-    if input.starts_with("postgres://") || input.starts_with("postgresql://") {
-        let Some((base, query)) = input.split_once('?') else {
-            return Ok((input.to_owned(), None));
-        };
-        if query.is_empty() {
-            return Ok((input.to_owned(), None));
-        }
-        output.push_str(base);
-        output.push('?');
-        for (index, parameter) in query.split('&').enumerate() {
-            if index != 0 {
-                output.push('&');
-            }
-            let (key, value) = parameter.split_once('=').ok_or_else(invalid_parameters)?;
-            let key = percent_encoding::percent_decode_str(key)
-                .decode_utf8()
-                .map_err(|_| invalid_parameters())?;
-            if key == "sslmode" {
-                let value = percent_encoding::percent_decode_str(value)
-                    .decode_utf8()
-                    .map_err(|_| invalid_parameters())?;
-                policy = Some(TlsPolicy::parse(&value)?);
-                output.push_str("sslmode=disable");
-            } else {
-                output.push_str(parameter);
-            }
-        }
-    } else {
-        // Respect libpq keyword syntax: whitespace around '=', quoted values,
-        // and backslash escapes. Never search inside passwords or other values.
-        let mut rest = input;
-        while !rest.trim_start().is_empty() {
-            rest = rest.trim_start();
-            let start = rest;
-            let key_end = rest
-                .find(|ch: char| ch == '=' || ch.is_whitespace())
-                .ok_or_else(invalid_parameters)?;
-            let key = &rest[..key_end];
-            rest = rest[key_end..].trim_start();
-            rest = rest
-                .strip_prefix('=')
-                .ok_or_else(invalid_parameters)?
-                .trim_start();
-            let quoted = rest.starts_with('\'');
-            if quoted {
-                rest = &rest[1..];
-            }
-            let mut value = String::new();
-            let mut chars = rest.char_indices();
-            let mut end = rest.len();
-            let mut closed = !quoted;
-            while let Some((index, ch)) = chars.next() {
-                match ch {
-                    '\\' => {
-                        let (_, escaped) = chars.next().ok_or_else(invalid_parameters)?;
-                        value.push(escaped);
-                    }
-                    '\'' if quoted => {
-                        end = index + 1;
-                        closed = true;
-                        break;
-                    }
-                    ch if !quoted && ch.is_whitespace() => {
-                        end = index;
-                        break;
-                    }
-                    ch => value.push(ch),
-                }
-            }
-            if !closed || (!quoted && value.is_empty()) {
-                return Err(invalid_parameters());
-            }
-            rest = &rest[end..];
-            if key == "sslmode" {
-                policy = Some(TlsPolicy::parse(&value)?);
-                output.push_str("sslmode=disable");
-            } else {
-                output.push_str(&start[..start.len() - rest.len()]);
-            }
-            output.push(' ');
-        }
-    }
-    Ok((output, policy))
-}
-
-fn invalid_parameters() -> Error {
-    Error::Internal("Invalid PostgreSQL connection parameters".to_owned())
+    policy.build_connector(|builder| builder.build())
 }
 
 #[cfg(test)]
@@ -179,6 +73,10 @@ mod tests {
 
     use super::*;
     use crate::{PgConfig, PostgresConnection};
+
+    fn configure(input: &str, explicit: Option<&str>) -> Result<(Config, SslMode), Error> {
+        PgConfig::new(input, explicit, None, None).driver_config()
+    }
 
     #[test]
     fn tls_connector_construction_errors_never_disable_tls() {

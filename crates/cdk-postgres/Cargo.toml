@@ -26,6 +26,7 @@ futures-util = "0.3.31"
 postgres-native-tls = "0.5.1"
 native-tls = "=0.2.18"
 percent-encoding = "2"
+thiserror.workspace = true
 
 [dev-dependencies]
 cdk-common = { workspace = true, features = ["test"] }

@@ -8,7 +8,7 @@ use std::time::Duration;
 use cdk_common::database::Error;
 use cdk_sql_common::database::{DatabaseConnector, DatabaseExecutor, GenericTransactionHandler};
 use cdk_sql_common::mint::SQLMintAuthDatabase;
-use cdk_sql_common::pool::{DatabaseConfig, DatabasePool};
+use cdk_sql_common::pool::DatabasePool;
 use cdk_sql_common::stmt::{Column, Statement};
 use cdk_sql_common::{SQLMintDatabase, SQLWalletDatabase};
 use db::{pg_batch, pg_execute, pg_fetch_all, pg_fetch_one, pg_pluck};
@@ -16,9 +16,13 @@ use tokio::sync::{Mutex, Notify};
 use tokio::time::timeout;
 use tokio_postgres::{Client, Error as PgError, NoTls};
 
+mod config;
 mod db;
 mod tls;
 mod value;
+
+use self::config::ConfigError;
+pub use self::config::PgConfig;
 
 #[derive(Debug)]
 /// Postgres connection pool
@@ -46,114 +50,6 @@ impl fmt::Debug for SslMode {
         };
 
         write!(f, "SslMode::{debug_text}")
-    }
-}
-
-/// Postgres configuration
-#[derive(Clone)]
-pub struct PgConfig {
-    url: String,
-    schema: Option<String>,
-    tls_mode: Option<String>,
-    max_connections: usize,
-    connection_timeout: Duration,
-}
-
-impl fmt::Debug for PgConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PgConfig")
-            .field("url", &"[redacted]")
-            .field("schema", &self.schema)
-            .field("tls_mode", &self.tls_mode.as_ref().map(|_| "[configured]"))
-            .field("max_connections", &self.max_connections)
-            .field("connection_timeout", &self.connection_timeout)
-            .finish()
-    }
-}
-
-impl DatabaseConfig for PgConfig {
-    fn default_timeout(&self) -> Duration {
-        self.connection_timeout
-    }
-
-    fn max_size(&self) -> usize {
-        self.max_connections
-    }
-}
-
-/// Default maximum number of connections in the pool
-const DEFAULT_MAX_CONNECTIONS: usize = 20;
-
-/// Default connection timeout in seconds
-const DEFAULT_CONNECTION_TIMEOUT_SECS: u64 = 10;
-
-impl PgConfig {
-    /// Create a new `PgConfig` with explicit TLS mode, pool size, and timeout.
-    ///
-    /// `tls_mode` accepts the same strings as the configuration file:
-    /// `"disable"`, `"prefer"`, `"allow"`, `"require"`, `"verify-ca"`,
-    /// `"verify-full"`.  When `None`, the TLS mode is inferred from
-    /// `sslmode=` in the connection URL. With neither setting, TLS is disabled.
-    /// Invalid modes and TLS connector errors are returned when validating or connecting.
-    /// `allow` uses the same opportunistic TLS policy as `prefer`.
-    pub fn new(
-        conn_str: &str,
-        tls_mode: Option<&str>,
-        max_connections: Option<usize>,
-        connection_timeout_secs: Option<u64>,
-    ) -> Self {
-        let (schema, conn_str) = Self::strip_schema(conn_str);
-        Self {
-            url: conn_str,
-            schema,
-            tls_mode: tls_mode.map(str::to_owned),
-            max_connections: max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS),
-            connection_timeout: Duration::from_secs(
-                connection_timeout_secs.unwrap_or(DEFAULT_CONNECTION_TIMEOUT_SECS),
-            ),
-        }
-    }
-
-    /// Validate connection parameters and construct the configured TLS connector.
-    ///
-    /// Does not open a connection or verify the server's certificate. Uses the
-    /// same TLS policy and connector construction as connection establishment.
-    pub fn validate(&self) -> Result<(), Error> {
-        tls::configure(&self.url, self.tls_mode.as_deref()).map(|_| ())
-    }
-
-    /// Compare effective TLS policies, including certificate verification requirements.
-    ///
-    /// Resolves explicit modes, URL modes, and defaults using the connection policy.
-    /// Invalid settings return an error. Does not connect or construct TLS connectors.
-    pub fn has_same_tls_policy(&self, other: &Self) -> Result<bool, Error> {
-        let (_, policy) = tls::resolve(&self.url, self.tls_mode.as_deref())?;
-        let (_, other_policy) = tls::resolve(&other.url, other.tls_mode.as_deref())?;
-        Ok(policy == other_policy)
-    }
-
-    /// strip schema from the connection string
-    fn strip_schema(input: &str) -> (Option<String>, String) {
-        let mut schema: Option<String> = None;
-
-        // Split by whitespace
-        let mut parts = Vec::new();
-        for token in input.split_whitespace() {
-            if let Some(rest) = token.strip_prefix("schema=") {
-                schema = Some(rest.to_string());
-            } else {
-                parts.push(token);
-            }
-        }
-
-        let cleaned = parts.join(" ");
-        (schema, cleaned)
-    }
-}
-
-impl From<&str> for PgConfig {
-    fn from(conn_str: &str) -> Self {
-        Self::new(conn_str, None, None, None)
     }
 }
 
@@ -192,28 +88,44 @@ impl PostgresConnection {
         let result_clone = result.clone();
         let notify_clone = notify.clone();
 
-        async fn select_schema(conn: &Client, schema: &str) -> Result<(), Error> {
+        async fn select_schema(
+            conn: &Client,
+            schema: &str,
+            legacy_schema: Option<&str>,
+        ) -> Result<(), Error> {
+            if let Some(legacy_schema) = legacy_schema {
+                // Never start against a new, empty schema while existing data
+                // remains under the name earlier releases used.
+                let exists: bool = conn
+                    .query_one(
+                        "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)",
+                        &[&legacy_schema],
+                    )
+                    .await
+                    .map_err(|e| Error::Database(Box::new(e)))?
+                    .get(0);
+                if exists {
+                    return Err(ConfigError::LegacySchema.into());
+                }
+            }
+            let identifier = format!("\"{}\"", schema.replace('"', "\"\""));
             conn.batch_execute(&format!(
-                r#"
-                    CREATE SCHEMA IF NOT EXISTS "{schema}";
-                    SET search_path TO "{schema}"
-                    "#
+                "CREATE SCHEMA IF NOT EXISTS {identifier}; SET search_path TO {identifier}"
             ))
             .await
             .map_err(|e| Error::Database(Box::new(e)))
         }
 
         tokio::spawn(async move {
-            let (connection_config, tls) =
-                match tls::configure(&config.url, config.tls_mode.as_deref()) {
-                    Ok(config) => config,
-                    Err(err) => {
-                        *error_clone.lock().await = Some(err);
-                        stale.store(true, std::sync::atomic::Ordering::Release);
-                        notify_clone.notify_waiters();
-                        return;
-                    }
-                };
+            let (connection_config, tls) = match config.driver_config() {
+                Ok(config) => config,
+                Err(err) => {
+                    *error_clone.lock().await = Some(err);
+                    stale.store(true, std::sync::atomic::Ordering::Release);
+                    notify_clone.notify_waiters();
+                    return;
+                }
+            };
             match tls {
                 SslMode::NoTls(tls) => {
                     let (client, connection) = match connection_config.connect(tls).await {
@@ -234,7 +146,9 @@ impl PostgresConnection {
                     });
 
                     if let Some(schema) = config.schema.as_ref() {
-                        if let Err(err) = select_schema(&client, schema).await {
+                        if let Err(err) =
+                            select_schema(&client, schema, config.legacy_schema.as_deref()).await
+                        {
                             *error_clone.lock().await = Some(err);
                             stale.store(true, std::sync::atomic::Ordering::Release);
                             notify_clone.notify_waiters();
@@ -264,7 +178,9 @@ impl PostgresConnection {
                     });
 
                     if let Some(schema) = config.schema.as_ref() {
-                        if let Err(err) = select_schema(&client, schema).await {
+                        if let Err(err) =
+                            select_schema(&client, schema, config.legacy_schema.as_deref()).await
+                        {
                             *error_clone.lock().await = Some(err);
                             stale.store(true, std::sync::atomic::Ordering::Release);
                             notify_clone.notify_waiters();
@@ -797,5 +713,92 @@ mod test {
             !rendered.contains("hunter2secret"),
             "PgConfig Debug leaked the DB password: {rendered}"
         );
+    }
+
+    fn test_db_url() -> String {
+        std::env::var("CDK_MINTD_DATABASE_URL")
+            .or_else(|_| std::env::var("PG_DB_URL"))
+            .unwrap_or(
+                "host=localhost user=cdk_user password=cdk_password dbname=cdk_mint port=5432"
+                    .to_owned(),
+            )
+    }
+
+    async fn raw_client() -> Client {
+        let (client, connection) = tokio_postgres::connect(&test_db_url(), NoTls)
+            .await
+            .expect("connect");
+        tokio::spawn(connection);
+        client
+    }
+
+    async fn schema_exists(client: &Client, name: &str) -> bool {
+        client
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)",
+                &[&name],
+            )
+            .await
+            .expect("query schema")
+            .get(0)
+    }
+
+    #[tokio::test]
+    async fn schema_names_with_quotes_select_exactly_that_schema() {
+        let name = format!(r#"a,"b; c_{}"#, uuid::Uuid::new_v4().simple());
+        let config = PgConfig::from(format!("{} schema='{name}'", test_db_url()).as_str());
+        MintPgDatabase::new(config)
+            .await
+            .expect("a schema name with quotes should be usable");
+
+        let client = raw_client().await;
+        let tables: i64 = client
+            .query_one(
+                "SELECT COUNT(*) FROM pg_tables WHERE schemaname = $1",
+                &[&name],
+            )
+            .await
+            .expect("count tables")
+            .get(0);
+        assert!(tables > 0, "migrations should run inside the named schema");
+
+        let identifier = name.replace('"', "\"\"");
+        client
+            .batch_execute(&format!("DROP SCHEMA \"{identifier}\" CASCADE"))
+            .await
+            .expect("drop schema");
+    }
+
+    #[tokio::test]
+    async fn quoted_schema_refuses_to_start_while_its_legacy_literal_exists() {
+        let name = format!("legacy_{}", uuid::Uuid::new_v4().simple());
+        let literal = format!("'{name}'");
+        let client = raw_client().await;
+        client
+            .batch_execute(&format!("CREATE SCHEMA \"{literal}\""))
+            .await
+            .expect("create legacy schema");
+
+        let config = PgConfig::from(format!("{} schema='{name}'", test_db_url()).as_str());
+        let error = MintPgDatabase::new(config.clone())
+            .await
+            .expect_err("legacy schema must block startup");
+        assert!(error.to_string().contains("literal name"), "{error}");
+        // The decoded schema must not have been created as an empty replacement.
+        assert!(!schema_exists(&client, &name).await);
+
+        // Without the legacy schema, the same configuration starts normally.
+        client
+            .batch_execute(&format!("DROP SCHEMA \"{literal}\""))
+            .await
+            .expect("drop legacy schema");
+        MintPgDatabase::new(config)
+            .await
+            .expect("quoted schema without a legacy literal");
+        assert!(schema_exists(&client, &name).await);
+        client
+            .batch_execute(&format!("DROP SCHEMA \"{name}\" CASCADE"))
+            .await
+            .expect("drop schema");
     }
 }
