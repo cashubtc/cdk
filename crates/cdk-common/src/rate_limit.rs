@@ -315,6 +315,20 @@ impl TokenBucket {
         }
     }
 
+    /// How long a slot reserved now would wait, without reserving it.
+    ///
+    /// Zero while pacing is disabled or the burst is not yet spent.
+    pub fn pending_delay(&self) -> Duration {
+        let state = lock(&self.inner.state);
+        if !state.enabled {
+            return Duration::ZERO;
+        }
+        state
+            .arrival_time
+            .saturating_duration_since(Instant::now())
+            .saturating_sub(state.tolerance)
+    }
+
     /// Whether the bucket carries no outstanding GCRA debt: its theoretical
     /// arrival time is at or before now, so the full burst is available again
     /// and it behaves identically to a freshly built bucket. Used to decide when
@@ -563,6 +577,18 @@ impl RateLimiterManager {
         bucket
     }
 
+    /// How long a request to `url` would wait for its origin's budget if it
+    /// were sent now, without reserving a slot or creating a bucket.
+    ///
+    /// Zero for an origin with no bucket yet: a fresh bucket starts full.
+    pub fn pacing_delay(&self, url: &Url) -> Duration {
+        let key = origin_key(url).unwrap_or_else(|| url.to_string());
+        lock(&self.buckets)
+            .get(&key)
+            .map(TokenBucket::pending_delay)
+            .unwrap_or_default()
+    }
+
     /// Replace the pacing configuration for every origin: the buckets already
     /// handed out and any created later.
     ///
@@ -734,7 +760,7 @@ pub fn origin_key(url: &Url) -> Option<String> {
 ///
 /// Only the HTTP request methods are throttled; `ws_connect`, `with_proxy`,
 /// `resolve_dns_txt` and `tls_verification_disabled` pass straight through to
-/// the inner transport.
+/// the inner transport. `pacing_delay` reports the queue a request would join.
 #[derive(Debug, Clone)]
 pub struct RateLimitedTransport<T> {
     inner: T,
@@ -789,6 +815,14 @@ impl<T: Transport> Transport for RateLimitedTransport<T> {
     /// https receiver, and only the inner transport knows how it was built.
     fn tls_verification_disabled(&self) -> bool {
         self.inner.tls_verification_disabled()
+    }
+
+    /// The wait the destination host's budget would impose on top of whatever
+    /// the inner transport adds.
+    fn pacing_delay(&self, url: &Url) -> Duration {
+        self.limiter
+            .pacing_delay(url)
+            .saturating_add(self.inner.pacing_delay(url))
     }
 
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
@@ -1275,6 +1309,29 @@ mod tests {
                 .try_acquire()
                 .await
         );
+    }
+
+    #[tokio::test]
+    async fn manager_reports_queue_delay_without_reserving() {
+        let manager = RateLimiterManager::new(config(1, 60), None);
+        let url = url();
+
+        // No bucket yet: nothing queued, and peeking creates none.
+        assert_eq!(manager.pacing_delay(&url), Duration::ZERO);
+        assert_eq!(manager.origin_count(), 0);
+
+        let bucket = manager.bucket_for(&url);
+        assert!(bucket.try_acquire().await);
+
+        // The burst of one is spent, so the next slot is about a second out.
+        let delay = manager.pacing_delay(&url);
+        assert!(delay > Duration::from_millis(900), "delay was {delay:?}");
+        assert!(delay <= Duration::from_secs(1), "delay was {delay:?}");
+        // Peeking reserved nothing.
+        assert!(manager.pacing_delay(&url) <= delay);
+
+        manager.set_enabled(false);
+        assert_eq!(manager.pacing_delay(&url), Duration::ZERO);
     }
 
     // Timing tests use a 200ms emission interval (refill 300/min) so the pace

@@ -328,8 +328,6 @@ where
         P: Serialize + Send + Sync,
         R: DeserializeOwned,
     {
-        let started = Instant::now();
-
         let retriable_window = self
             .cache_support
             .read()
@@ -343,28 +341,44 @@ where
             .map(Duration::from_secs)
             .unwrap_or_default();
 
+        let url = match &path {
+            nut19::Path::Swap => self.mint_url.join_paths(&["v1", "swap"])?,
+            nut19::Path::Custom(custom_path) => {
+                // Custom paths should be in the format "/v1/mint/{method}" or "/v1/melt/{method}"
+                // Remove leading slash if present
+                let path_str = custom_path.trim_start_matches('/');
+                let parts: Vec<&str> = path_str.split('/').collect();
+                self.mint_url.join_paths(&parts)?
+            }
+        };
+
         let transport = self.transport.clone();
+
+        // Allow for the current queue estimate. Concurrent reservations and
+        // changes to the limiter configuration can change the actual wait.
+        let started = Instant::now();
+        let deadline = if retriable_window.is_zero() {
+            started
+        } else {
+            started
+                .checked_add(transport.pacing_delay(&url))
+                .ok_or(Error::Timeout)?
+                .checked_add(retriable_window)
+                .ok_or_else(|| {
+                    Error::InvalidMintResponse("Invalid NUT-19 retry window".to_owned())
+                })?
+        };
+
         let mut retry_delay = HTTP_RETRY_INITIAL_BACKOFF;
         loop {
-            let url = match &path {
-                nut19::Path::Swap => self.mint_url.join_paths(&["v1", "swap"])?,
-                nut19::Path::Custom(custom_path) => {
-                    // Custom paths should be in the format "/v1/mint/{method}" or "/v1/melt/{method}"
-                    // Remove leading slash if present
-                    let path_str = custom_path.trim_start_matches('/');
-                    let parts: Vec<&str> = path_str.split('/').collect();
-                    self.mint_url.join_paths(&parts)?
-                }
-            };
-
             let request = async {
                 match method {
                     nut19::Method::Get => transport
-                        .http_get(url, auth_token.clone())
+                        .http_get(url.clone(), auth_token.clone())
                         .await
                         .and_then(RawResponse::json_or_status_error),
                     nut19::Method::Post => transport
-                        .http_post(url, auth_token.clone(), payload)
+                        .http_post(url.clone(), auth_token.clone(), payload)
                         .await
                         .and_then(RawResponse::json_or_status_error),
                 }
@@ -372,7 +386,7 @@ where
             let result = if retriable_window.is_zero() {
                 request.await
             } else {
-                let remaining = retriable_window.saturating_sub(started.elapsed());
+                let remaining = deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
                     return Err(Error::Timeout);
                 }
@@ -388,9 +402,9 @@ where
                 Err(http_error) => {
                     let replay_safe = http_error.is_replay_safe();
                     let error = Self::map_http_error(http_error);
-                    let elapsed = started.elapsed();
+                    let remaining = deadline.saturating_duration_since(Instant::now());
 
-                    if !replay_safe || elapsed >= retriable_window {
+                    if !replay_safe || retriable_window.is_zero() || remaining.is_zero() {
                         return Err(error);
                     }
 
@@ -398,9 +412,8 @@ where
 
                     // Back off before replaying so a struggling mint is not hammered,
                     // without ever sleeping past the end of the replay window.
-                    let remaining = retriable_window.saturating_sub(elapsed);
                     sleep(retry_delay.min(remaining)).await;
-                    if started.elapsed() >= retriable_window {
+                    if Instant::now() >= deadline {
                         return Err(error);
                     }
                     retry_delay = retry_delay.saturating_mul(2).min(HTTP_RETRY_MAX_BACKOFF);
@@ -2043,6 +2056,90 @@ mod tests {
         assert!(matches!(result, Err(Error::Timeout)));
         assert!(started.elapsed() < Duration::from_secs(5));
         assert_eq!(post_urls.lock().expect("lock").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn retriable_request_rejects_unrepresentable_window() {
+        let mut info = MintInfo::default();
+        info.nuts.nut19 = nut19::Settings {
+            ttl: Some(u64::MAX),
+            cached_endpoints: vec![nut19::CachedEndpoint::new(
+                nut19::Method::Post,
+                nut19::Path::Swap,
+            )],
+        };
+        let transport = MockTransport {
+            get_response: Arc::new(Mutex::new(Some(
+                serde_json::to_string(&info).expect("mint info"),
+            ))),
+            ..Default::default()
+        };
+        let post_urls = transport.post_urls.clone();
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client = HttpClient::with_transport(mint_url, transport, None);
+        client.get_mint_info().await.expect("read mint info");
+
+        let result = client
+            .retriable_http_request::<_, serde_json::Value>(
+                nut19::Method::Post,
+                nut19::Path::Swap,
+                None,
+                &serde_json::json!({}),
+            )
+            .await;
+        assert!(matches!(result, Err(Error::InvalidMintResponse(_))));
+        assert!(post_urls.lock().expect("lock").is_empty());
+    }
+
+    /// Requests queued behind earlier reservations get time for the known wait.
+    #[tokio::test]
+    async fn retriable_request_window_excludes_rate_limiter_queue() {
+        const REQUESTS: usize = 4;
+
+        let mock = MockTransport {
+            post_response: Arc::new(Mutex::new(Some(
+                serde_json::json!({ "ok": true }).to_string(),
+            ))),
+            ..Default::default()
+        };
+        let post_urls = mock.post_urls.clone();
+        // One request per 500ms with no burst: the last of four waits 1.5s for
+        // its slot, past the 1s replay window.
+        let limiter = RateLimiterManager::new(
+            RateLimitConfig::try_new(1, 120).expect("non-zero config"),
+            None,
+        );
+        let transport = RateLimitedTransport::with_manager(mock, limiter);
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client = HttpClient::with_transport(mint_url, transport, None);
+        *client.cache_support.write().expect("cache lock") =
+            (1, HashSet::from([(nut19::Method::Post, nut19::Path::Swap)]));
+
+        let started = Instant::now();
+        let results = futures::future::join_all((0..REQUESTS).map(|_| {
+            let client = client.clone();
+            async move {
+                client
+                    .retriable_http_request::<_, serde_json::Value>(
+                        nut19::Method::Post,
+                        nut19::Path::Swap,
+                        None,
+                        &serde_json::json!({}),
+                    )
+                    .await
+            }
+        }))
+        .await;
+
+        for result in results {
+            assert_eq!(
+                result.expect("queued request must not time out"),
+                serde_json::json!({ "ok": true })
+            );
+        }
+        assert_eq!(post_urls.lock().expect("lock").len(), REQUESTS);
+        // The limiter still paced them.
+        assert!(started.elapsed() >= Duration::from_millis(1_400));
     }
 
     #[tokio::test]

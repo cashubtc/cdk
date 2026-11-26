@@ -1,6 +1,7 @@
 //! HTTP transport trait and implementations
 
 use std::fmt::Debug;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use cashu::nuts::nut22::AuthToken;
@@ -54,6 +55,15 @@ pub trait Transport: Send + Sync + Debug + Clone {
     /// built.
     fn tls_verification_disabled(&self) -> bool {
         false
+    }
+
+    /// How long client-side pacing would hold back a request to `url` that
+    /// was sent now.
+    ///
+    /// Transports without pacing return zero. Concurrent requests can reserve
+    /// a slot after this estimate, and reconfiguration can shorten the wait.
+    fn pacing_delay(&self, _url: &Url) -> Duration {
+        Duration::ZERO
     }
 
     /// DNS resolver to get TXT records from a domain name.
