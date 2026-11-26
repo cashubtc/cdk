@@ -993,11 +993,19 @@ impl Mint {
     /// Melt
     ///
     /// Uses MeltSaga typestate pattern for atomic transaction handling with automatic rollback on failure.
+    ///
+    /// The melt completes in a task owned by the mint, whether or not the
+    /// returned [`PendingMelt`] is awaited. A mint that is stopping or stopped
+    /// does not start it, and returns [`Error::ShuttingDown`].
     #[instrument(skip_all)]
     pub async fn melt(
         self: &Arc<Self>,
         melt_request: &MeltRequest<QuoteId>,
     ) -> Result<PendingMelt, Error> {
+        // Admit the melt before it reserves anything. The permit moves into
+        // the completion task, so the mint owns the melt until it ends.
+        let permit = self.operations.admit()?;
+
         // Check max outputs limit (if change outputs are provided)
         if let Some(outputs) = melt_request.outputs() {
             let outputs_count = outputs.len();
@@ -1050,7 +1058,7 @@ impl Mint {
         let signatory = self.signatory.clone();
 
         let quote_for_spawn = quote.clone();
-        let completion = tokio::spawn(async move {
+        let completion = super::tasks::Operations::spawn(permit, async move {
             tracing::debug!(
                 "Starting background melt completion for quote: {}",
                 quote_id_for_log
