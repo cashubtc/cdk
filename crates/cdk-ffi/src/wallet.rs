@@ -226,8 +226,14 @@ impl Wallet {
     }
 
     /// Restore wallet from seed with a starting mode and custom NUT-13 options.
-    /// Stored counters track secret allocation, not completed recovery work;
-    /// lookback does not reliably resume an interrupted scan.
+    ///
+    /// On success, `Restored.next_keyset_indices` reports the next index to
+    /// scan for each keyset in this wallet. If an error interrupts the scan
+    /// after completing at least one batch, `FfiError::RestoreInterrupted`
+    /// carries the partial result and per-keyset positions that can be passed
+    /// to `RestoreStart::KeysetIndices`. Stored counters track secret
+    /// allocation, not completed recovery work; lookback does not reliably
+    /// resume an interrupted scan.
     pub async fn restore_with_opts(&self, opts: NUT13Options) -> Result<Restored, FfiError> {
         let restored = self.inner.restore_with_opts(opts.try_into()?).await?;
         Ok(restored.into())

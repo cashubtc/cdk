@@ -732,6 +732,33 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         Ok(new_counter)
     }
 
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    async fn advance_keyset_counter(
+        &self,
+        keyset_id: &Id,
+        minimum_counter: u32,
+    ) -> Result<u32, database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        let new_counter = {
+            let mut table = write_txn.open_table(KEYSET_COUNTER).map_err(Error::from)?;
+            let keyset_id_str = keyset_id.to_string();
+            let current_counter = table
+                .get(keyset_id_str.as_str())
+                .map_err(Error::from)?
+                .map(|x| x.value())
+                .unwrap_or_default();
+
+            let new_counter = current_counter.max(minimum_counter);
+            table
+                .insert(keyset_id_str.as_str(), new_counter)
+                .map_err(Error::from)?;
+
+            new_counter
+        };
+        write_txn.commit().map_err(Error::from)?;
+        Ok(new_counter)
+    }
+
     #[instrument(skip(self))]
     async fn increment_derivation_counter(
         &self,

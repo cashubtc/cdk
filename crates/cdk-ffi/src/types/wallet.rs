@@ -514,7 +514,12 @@ pub enum RestoreStart {
     #[default]
     FromZero,
     /// Inclusive starting indices keyed by encoded keyset ID.
-    /// Missing keysets start at zero.
+    /// Missing wallet keysets start at zero; unknown or duplicate keyset IDs
+    /// and indices equal to `u32::MAX` are rejected.
+    ///
+    /// Obtain per-keyset positions from `Restored.next_keyset_indices` after a
+    /// completed restore or from `FfiError::RestoreInterrupted` after an
+    /// interrupted restore.
     KeysetIndices {
         /// Map of encoded keyset IDs to inclusive starting indices.
         indices: HashMap<String, u32>,
@@ -536,16 +541,16 @@ impl TryFrom<RestoreStart> for cdk::wallet::RestoreStart {
         match start {
             RestoreStart::FromZero => Ok(Self::FromZero),
             RestoreStart::KeysetIndices { indices } => {
-                let indices = indices
-                    .into_iter()
-                    .map(|(id, index)| {
-                        let id = id
-                            .parse()
-                            .map_err(|e| FfiError::internal(format!("Invalid keyset ID: {}", e)))?;
-                        Ok((id, index))
-                    })
-                    .collect::<Result<_, FfiError>>()?;
-                Ok(Self::KeysetIndices(indices))
+                let mut parsed = HashMap::with_capacity(indices.len());
+                for (raw_id, index) in indices {
+                    let id = raw_id
+                        .parse()
+                        .map_err(|e| FfiError::internal(format!("Invalid keyset ID: {}", e)))?;
+                    if parsed.insert(id, index).is_some() {
+                        return Err(FfiError::internal(format!("Duplicate keyset ID: {}", id)));
+                    }
+                }
+                Ok(Self::KeysetIndices(parsed))
             }
             RestoreStart::Lookback { count } => Ok(Self::Lookback(count)),
         }
@@ -575,13 +580,19 @@ pub struct NUT13Options {
     /// Number of consecutive empty batches that terminate the scan
     pub max_gap: u32,
     /// Starting position, applied independently to each keyset.
+    /// Omit or pass `None` to scan every keyset from index zero.
     #[serde(default)]
-    pub start: RestoreStart,
+    #[uniffi(default = None)]
+    pub start: Option<RestoreStart>,
 }
 
 impl Default for NUT13Options {
     fn default() -> Self {
-        cdk::wallet::NUT13Options::default().into()
+        Self {
+            batch_size: cdk::wallet::NUT13Options::DEFAULT_BATCH_SIZE,
+            max_gap: cdk::wallet::NUT13Options::DEFAULT_MAX_GAP,
+            start: None,
+        }
     }
 }
 
@@ -589,7 +600,14 @@ impl TryFrom<NUT13Options> for cdk::wallet::NUT13Options {
     type Error = FfiError;
 
     fn try_from(opts: NUT13Options) -> Result<Self, Self::Error> {
-        Ok(Self::new(opts.batch_size, opts.max_gap)?.with_start(opts.start.try_into()?))
+        let start = opts
+            .start
+            .map(TryInto::try_into)
+            .transpose()?
+            .unwrap_or_default();
+        let cdk_opts = Self::new(opts.batch_size, opts.max_gap)?.with_start(start);
+        cdk_opts.validate()?;
+        Ok(cdk_opts)
     }
 }
 
@@ -598,7 +616,7 @@ impl From<cdk::wallet::NUT13Options> for NUT13Options {
         Self {
             batch_size: opts.batch_size,
             max_gap: opts.max_gap,
-            start: opts.start.into(),
+            start: Some(opts.start.into()),
         }
     }
 }
@@ -1085,11 +1103,14 @@ impl From<cdk::nuts::MeltOptions> for MeltOptions {
 }
 
 /// Restored Data
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct Restored {
     pub spent: Amount,
     pub unspent: Amount,
     pub pending: Amount,
+    /// Next derivation index to scan for each keyset in this wallet.
+    /// Pass to `RestoreStart::KeysetIndices` to continue without repeating completed batches.
+    pub next_keyset_indices: HashMap<String, u32>,
 }
 
 impl From<cdk_common::wallet::Restored> for Restored {
@@ -1098,6 +1119,11 @@ impl From<cdk_common::wallet::Restored> for Restored {
             spent: restored.spent.into(),
             unspent: restored.unspent.into(),
             pending: restored.pending.into(),
+            next_keyset_indices: restored
+                .next_keyset_indices
+                .into_iter()
+                .map(|(id, index)| (id.to_string(), index))
+                .collect(),
         }
     }
 }
@@ -1199,32 +1225,57 @@ mod tests {
             let opts = NUT13Options {
                 batch_size: 25,
                 max_gap: 2,
-                start: start.clone(),
+                start: Some(start.clone()),
             };
             let converted: cdk::wallet::NUT13Options = opts.try_into().unwrap();
             let roundtrip = NUT13Options::from(converted);
             assert_eq!(roundtrip.batch_size, 25);
             assert_eq!(roundtrip.max_gap, 2);
-            assert_eq!(roundtrip.start, start);
+            assert_eq!(roundtrip.start, Some(start));
         }
-        assert_eq!(NUT13Options::default().start, RestoreStart::FromZero);
+
+        let default_opts = NUT13Options::default();
+        assert_eq!(default_opts.start, None);
+        let converted_default: cdk::wallet::NUT13Options = default_opts.try_into().unwrap();
+        assert_eq!(converted_default.start, cdk::wallet::RestoreStart::FromZero);
     }
 
     #[test]
-    fn nut13_options_reject_invalid_keyset_ids_and_batch_options() {
-        let opts = NUT13Options {
-            start: RestoreStart::KeysetIndices {
+    fn nut13_options_reject_invalid_keyset_ids_duplicates_max_index_and_batch_options() {
+        let invalid_id = NUT13Options {
+            start: Some(RestoreStart::KeysetIndices {
                 indices: HashMap::from([("invalid".to_string(), 100)]),
-            },
+            }),
             ..Default::default()
         };
-        let err = cdk::wallet::NUT13Options::try_from(opts).unwrap_err();
+        let err = cdk::wallet::NUT13Options::try_from(invalid_id).unwrap_err();
         assert!(err.to_string().contains("Invalid keyset ID"));
+
+        let duplicate_case_id = NUT13Options {
+            start: Some(RestoreStart::KeysetIndices {
+                indices: HashMap::from([
+                    ("009a1f293253e41e".to_string(), 10),
+                    ("009A1F293253E41E".to_string(), 20),
+                ]),
+            }),
+            ..Default::default()
+        };
+        let err = cdk::wallet::NUT13Options::try_from(duplicate_case_id).unwrap_err();
+        assert!(err.to_string().contains("Duplicate keyset ID"));
+
+        let max_index = NUT13Options {
+            start: Some(RestoreStart::KeysetIndices {
+                indices: HashMap::from([("009a1f293253e41e".to_string(), u32::MAX)]),
+            }),
+            ..Default::default()
+        };
+        assert!(cdk::wallet::NUT13Options::try_from(max_index).is_err());
+
         for (batch_size, max_gap) in [(0, 1), (1, 0)] {
             let opts = NUT13Options {
                 batch_size,
                 max_gap,
-                start: RestoreStart::Lookback { count: 100 },
+                start: Some(RestoreStart::Lookback { count: 100 }),
             };
             assert!(cdk::wallet::NUT13Options::try_from(opts).is_err());
         }
@@ -1233,7 +1284,9 @@ mod tests {
     #[test]
     fn nut13_options_json_defaults_to_a_full_scan() {
         let opts: NUT13Options = serde_json::from_str(r#"{"batch_size":25,"max_gap":2}"#).unwrap();
-        assert_eq!(opts.start, RestoreStart::FromZero);
+        assert_eq!(opts.start, None);
+        let converted: cdk::wallet::NUT13Options = opts.try_into().unwrap();
+        assert_eq!(converted.start, cdk::wallet::RestoreStart::FromZero);
     }
 
     #[test]

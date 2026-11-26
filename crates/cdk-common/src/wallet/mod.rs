@@ -380,15 +380,27 @@ impl MintQuote {
     }
 }
 
-/// Amounts recovered during a restore operation
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Default)]
+/// Amounts and next scan positions recovered during a restore operation.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Restored {
-    /// Amount in the restore that has already been spent
+    /// Amount in the restore that has already been spent.
     pub spent: Amount,
-    /// Amount restored that is unspent
+    /// Amount restored that is unspent.
     pub unspent: Amount,
-    /// Amount restored that is pending
+    /// Amount restored that is pending.
     pub pending: Amount,
+    /// Next derivation index to scan for each keyset in this wallet.
+    ///
+    /// For a completed keyset scan, this is one past the highest recovered
+    /// signature index (or the keyset's starting index if nothing was
+    /// recovered). When returned inside [`Error::RestoreInterrupted`], the
+    /// interrupted keyset records the start of the failed batch while
+    /// completed keysets record their final next index and unstarted keysets
+    /// record their initial start index.
+    ///
+    /// Pass this map to [`RestoreStart::KeysetIndices`] to continue scanning
+    /// without repeating completed batches.
+    pub next_keyset_indices: HashMap<Id, u32>,
 }
 
 /// Starting position for each keyset during a seed restore.
@@ -397,7 +409,13 @@ pub enum RestoreStart {
     /// Scan every keyset from index zero.
     #[default]
     FromZero,
-    /// Inclusive starting indices by keyset ID. Missing keysets start at zero.
+    /// Inclusive starting indices by keyset ID. Missing wallet keysets start
+    /// at zero; unknown keyset IDs not belonging to this wallet are rejected.
+    /// Starting indices must be strictly less than `u32::MAX`.
+    ///
+    /// Obtain per-keyset positions from [`Restored::next_keyset_indices`] after
+    /// a completed restore or from [`Error::RestoreInterrupted`] after an
+    /// interrupted restore.
     KeysetIndices(HashMap<Id, u32>),
     /// Subtract this lookback from each keyset's stored next derivation index,
     /// clamped to zero. Keysets without a stored counter start at zero.
@@ -460,7 +478,8 @@ impl NUT13Options {
         self
     }
 
-    pub(crate) fn validate(&self) -> Result<(), Error> {
+    /// Validate NUT-13 restore options.
+    pub fn validate(&self) -> Result<(), Error> {
         if self.batch_size == 0 {
             return Err(Error::InvalidNut13Options {
                 field: "batch_size",
@@ -473,6 +492,15 @@ impl NUT13Options {
                 field: "max_gap",
                 reason: "must be greater than zero",
             });
+        }
+
+        if let RestoreStart::KeysetIndices(indices) = &self.start {
+            if indices.values().any(|&index| index == u32::MAX) {
+                return Err(Error::InvalidNut13Options {
+                    field: "start",
+                    reason: "keyset starting index must be less than u32::MAX",
+                });
+            }
         }
 
         Ok(())
@@ -1313,6 +1341,24 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn nut13_options_reject_max_u32_keyset_start_index() {
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let invalid = NUT13Options::default().with_start(RestoreStart::KeysetIndices(
+            HashMap::from([(keyset_id, u32::MAX)]),
+        ));
+        let err = invalid.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidNut13Options { field: "start", .. }
+        ));
+
+        let valid = NUT13Options::default().with_start(RestoreStart::KeysetIndices(HashMap::from(
+            [(keyset_id, u32::MAX - 1)],
+        )));
+        assert!(valid.validate().is_ok());
     }
 
     #[test]

@@ -179,6 +179,18 @@ pub trait WalletDatabase: Send + Sync {
     /// Atomically increment Keyset counter and return new value
     async fn increment_keyset_counter(&self, keyset_id: Id, count: u32) -> Result<u32, FfiError>;
 
+    /// Atomically advance Keyset counter to at least `minimum_counter` and return its new value.
+    ///
+    /// In one atomic operation, store `max(counter, minimum_counter)` and return
+    /// the stored value without decreasing an existing counter. A read followed
+    /// by a separate increment does not satisfy this contract, because concurrent
+    /// callers can observe the same counter and over-increment it.
+    async fn advance_keyset_counter(
+        &self,
+        keyset_id: Id,
+        minimum_counter: u32,
+    ) -> Result<u32, FfiError>;
+
     /// Atomically increment a namespaced derivation counter and return its new value.
     async fn increment_derivation_counter(
         &self,
@@ -747,6 +759,18 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
         let ffi_id = (*keyset_id).into();
         self.ffi_db
             .increment_keyset_counter(ffi_id, count)
+            .await
+            .map_err(into_database_error)
+    }
+
+    async fn advance_keyset_counter(
+        &self,
+        keyset_id: &cdk::nuts::Id,
+        minimum_counter: u32,
+    ) -> Result<u32, cdk::cdk_database::Error> {
+        let ffi_id = (*keyset_id).into();
+        self.ffi_db
+            .advance_keyset_counter(ffi_id, minimum_counter)
             .await
             .map_err(into_database_error)
     }
@@ -1513,6 +1537,19 @@ where
             .map_err(FfiError::internal)
     }
 
+    async fn advance_keyset_counter(
+        &self,
+        keyset_id: Id,
+        minimum_counter: u32,
+    ) -> Result<u32, FfiError> {
+        let cdk_id = keyset_id.try_into()?;
+        self.inner
+            .advance_keyset_counter(&cdk_id, minimum_counter)
+            .compat()
+            .await
+            .map_err(FfiError::internal)
+    }
+
     async fn increment_derivation_counter(
         &self,
         namespace: String,
@@ -1979,6 +2016,16 @@ macro_rules! impl_ffi_wallet_database {
                 count: u32,
             ) -> Result<u32, FfiError> {
                 self.inner.increment_keyset_counter(keyset_id, count).await
+            }
+
+            async fn advance_keyset_counter(
+                &self,
+                keyset_id: Id,
+                minimum_counter: u32,
+            ) -> Result<u32, FfiError> {
+                self.inner
+                    .advance_keyset_counter(keyset_id, minimum_counter)
+                    .await
             }
 
             async fn increment_derivation_counter(

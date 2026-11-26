@@ -1146,6 +1146,7 @@ ffi-test: ffi-generate-python
   python3 crates/cdk-ffi/tests/test_kvstore.py
   python3 crates/cdk-ffi/tests/test_rate_limit.py
   python3 crates/cdk-ffi/tests/test_payment_request.py
+  python3 crates/cdk-ffi/tests/test_restore.py
   echo "✅ Tests completed!"
 
 # Build debug version and generate Python bindings quickly (for development)

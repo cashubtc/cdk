@@ -2437,6 +2437,27 @@ async fn test_restore_after_keyset_rotation() {
         Amount::from(total),
         "Restore should recover proofs from both active and inactive keysets"
     );
+    assert_eq!(restored.next_keyset_indices.len(), 2);
+    assert!(restored
+        .next_keyset_indices
+        .values()
+        .all(|&next_index| next_index > 0));
+
+    // Starting at the reported per-keyset positions finds only subsequently minted proofs.
+    fund_wallet(&wallet, 4, None)
+        .await
+        .expect("Failed to fund wallet after restore");
+    let continued = wallet_restored
+        .restore_with_opts(cdk::wallet::NUT13Options::default().with_start(
+            cdk::wallet::RestoreStart::KeysetIndices(restored.next_keyset_indices),
+        ))
+        .await
+        .expect("Restore from reported keyset indices failed");
+    assert_eq!(continued.unspent, Amount::from(4));
+    assert_eq!(
+        wallet_restored.total_balance().await.unwrap(),
+        Amount::from(total + 4)
+    );
 
     // Starting at the stored counters finds only subsequently minted proofs.
     fund_wallet(&wallet, 8, None)
@@ -2451,7 +2472,7 @@ async fn test_restore_after_keyset_rotation() {
     assert_eq!(resumed.unspent, Amount::from(8));
     assert_eq!(
         wallet_restored.total_balance().await.unwrap(),
-        Amount::from(total + 8)
+        Amount::from(total + 12)
     );
 
     // Looking back across both keysets recovers the same proofs idempotently.
@@ -2463,10 +2484,10 @@ async fn test_restore_after_keyset_rotation() {
         )
         .await
         .expect("Restore with lookback failed");
-    assert_eq!(rescanned.unspent, Amount::from(total + 8));
+    assert_eq!(rescanned.unspent, Amount::from(total + 12));
     assert_eq!(
         wallet_restored.total_balance().await.unwrap(),
-        Amount::from(total + 8)
+        Amount::from(total + 12)
     );
 }
 
