@@ -31,6 +31,16 @@ pub enum FederationPaymentQuoteKind {
     Melt,
 }
 
+impl FederationPaymentQuoteKind {
+    /// Stable lowercase name for logs and schedule keys.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Mint => "mint",
+            Self::Melt => "melt",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FederationPaymentQuote {
     pub kind: FederationPaymentQuoteKind,
@@ -53,11 +63,7 @@ impl FederationPaymentQuote {
     }
 
     fn schedule_key(&self) -> String {
-        let prefix = match self.kind {
-            FederationPaymentQuoteKind::Mint => "mint",
-            FederationPaymentQuoteKind::Melt => "melt",
-        };
-        format!("{prefix}:{}", self.id)
+        format!("{}:{}", self.kind.as_str(), self.id)
     }
 
     /// KV key for this quote's schedule. Quote IDs may contain characters the
