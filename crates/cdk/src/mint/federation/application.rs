@@ -62,6 +62,7 @@ use cdk_federation_bark::{
 };
 use futures::future::BoxFuture;
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 use std::sync::Arc;
 
 struct FederationActiveMeltPayment {
@@ -922,7 +923,18 @@ impl Mint {
             else {
                 return Ok(None);
             };
-            if payment.amount_sat <= quote.amount_paid().value() {
+            // Internal settlements credit the quote apart from its chain
+            // outputs, which are all this observation reports.
+            let mut tx = self.localstore.begin_transaction().await?;
+            let internally_settled = self
+                .federation_internal_settlement_amount_before(&mut tx, &quote, u64::MAX)
+                .await;
+            tx.rollback().await?;
+            let chain_credited = quote
+                .amount_paid()
+                .checked_sub(&internally_settled?)
+                .map_err(|_| Error::AmountOverflow)?;
+            if payment.amount_sat <= chain_credited.value() {
                 return Ok(None);
             }
             return Ok(Some(FederationMintQuotePaymentObservation {
@@ -1935,6 +1947,151 @@ impl Mint {
         }
     }
 
+    /// Amount credited to `quote` by internal melt settlements whose melt
+    /// applied before `before_operation_index`.
+    ///
+    /// A melt paying a request of this federation settles inside the accepted
+    /// melt's application: the mint quote is credited with the melt quote id
+    /// as payment id, and no payment backend sees the payment, so no payment
+    /// observation exists for it. The accepted, applied melt is the consensus
+    /// evidence instead. A payment counts only when its melt quote is paid
+    /// for exactly this quote's request, unit and amount, and that melt
+    /// applied before the operation being checked, so each settlement counts
+    /// once and every member and replay sees the same amount.
+    pub(super) async fn federation_internal_settlement_amount_before(
+        &self,
+        tx: &mut database::mint::DynMintTransaction,
+        quote: &MintQuote,
+        before_operation_index: u64,
+    ) -> Result<Amount<CurrencyUnit>, Error> {
+        let mut total = Amount::new(0, quote.unit.clone());
+        let mut counted = HashSet::new();
+        for payment in &quote.payments {
+            let Ok(melt_quote_id) = QuoteId::from_str(&payment.payment_id) else {
+                continue;
+            };
+            if !counted.insert(melt_quote_id.clone()) {
+                continue;
+            }
+            let Some(melt_quote) = tx.get_melt_quote(&melt_quote_id).await? else {
+                continue;
+            };
+            if melt_quote.state != cdk_common::MeltQuoteState::Paid
+                || melt_quote.unit != quote.unit
+                || payment.amount.unit() != &quote.unit
+                || melt_quote.request.to_string() != quote.request
+                || melt_quote.amount().value() != payment.amount.value()
+            {
+                continue;
+            }
+            if !self
+                .federation_melt_applied_before(tx, &melt_quote_id, before_operation_index)
+                .await?
+            {
+                continue;
+            }
+            total = total
+                .checked_add(&payment.amount)
+                .map_err(|_| Error::AmountOverflow)?;
+        }
+        Ok(total)
+    }
+
+    /// Whether the accepted melt of `melt_quote` applied before
+    /// `before_operation_index`.
+    async fn federation_melt_applied_before(
+        &self,
+        tx: &mut database::mint::DynMintTransaction,
+        melt_quote: &QuoteId,
+        before_operation_index: u64,
+    ) -> Result<bool, Error> {
+        let key = FederationOperationConflictKey::Melt {
+            quote: melt_quote.to_string(),
+        };
+        let mut before = before_operation_index;
+        // A conflicting melt on the same quote is ordered but rejected; look
+        // past it for the applied one.
+        while let Some(entry) = tx
+            .get_federation_journal_entry(
+                FederationJournalEntryKey::ConflictKey(&key),
+                Some(before),
+            )
+            .await?
+        {
+            if entry.status() == FederationOperationStatus::Applied
+                && matches!(entry.envelope.operation, FederationOperation::Melt(_))
+            {
+                return Ok(true);
+            }
+            if entry.index >= before {
+                return Err(Error::Internal);
+            }
+            before = entry.index;
+        }
+        // No retained melt is ordered before the operation. A melt applied
+        // later does not count. Otherwise the melt left the retained history
+        // (a state transfer base or the retention floor), which lies at or
+        // before the operation being checked.
+        if tx
+            .get_federation_journal_entry(FederationJournalEntryKey::ConflictKey(&key), None)
+            .await?
+            .is_some_and(|entry| entry.status() == FederationOperationStatus::Applied)
+        {
+            return Ok(false);
+        }
+        let transfer_base = self
+            .localstore
+            .get_federation_checkpoint(FederationCheckpointSelector::StateTransferBase)
+            .await?
+            .map(|base| base.journal_next_index);
+        let retention_floor = self
+            .localstore
+            .get_federation_retention_floor()
+            .await?
+            .map(|floor| floor.journal_start);
+        Ok(transfer_base
+            .max(retention_floor)
+            .is_some_and(|history_start| history_start <= before_operation_index))
+    }
+
+    /// Whether consensus evidence covers `required_amount` paid to `quote`
+    /// before the operation at `before_operation_index`.
+    ///
+    /// Two kinds of evidence exist: a payment observation quorum for payments
+    /// a backend saw, and applied internal settlements. On-chain observations
+    /// report only the accepted chain outputs, so internal settlements add to
+    /// them. Other methods' observations report the quote's cumulative paid
+    /// amount, which may already include an internal settlement, so the two
+    /// are alternatives there and never add up.
+    async fn federation_mint_payment_evidence_covers_amount(
+        &self,
+        tx: &mut database::mint::DynMintTransaction,
+        quote: &MintQuote,
+        required_amount: &Amount<CurrencyUnit>,
+        observations: &[FederationPaymentObservationRecord],
+        before_operation_index: u64,
+    ) -> Result<bool, Error> {
+        let internal = self
+            .federation_internal_settlement_amount_before(tx, quote, before_operation_index)
+            .await?;
+        if &internal >= required_amount {
+            return Ok(true);
+        }
+        let observed_required = if quote.payment_method.is_onchain() {
+            required_amount
+                .checked_sub(&internal)
+                .map_err(|_| Error::AmountOverflow)?
+        } else {
+            required_amount.clone()
+        };
+        self.federation_mint_payment_quorum_covers_amount_at_or_before(
+            quote,
+            &observed_required,
+            observations,
+            before_operation_index.saturating_sub(1),
+        )
+    }
+
     fn federation_mint_payment_quorum_covers_amount_at_or_before(
         &self,
         quote: &MintQuote,
@@ -2212,6 +2369,16 @@ impl Mint {
         observations: &[FederationPaymentObservationRecord],
     ) -> Result<Option<Amount<CurrencyUnit>>, Error> {
         let mut paid_notification = None;
+        // On-chain observations report only accepted chain outputs. An
+        // internal settlement credits the quote apart from them, so it is
+        // left out when comparing; other methods report the quote's
+        // cumulative paid amount.
+        let internally_settled = if quote.payment_method.is_onchain() {
+            self.federation_internal_settlement_amount_before(tx, quote, u64::MAX)
+                .await?
+        } else {
+            Amount::new(0, quote.unit.clone())
+        };
 
         for record in observations {
             let FederationPaymentObservation::MintQuote(observation) = &record.observation else {
@@ -2226,7 +2393,11 @@ impl Mint {
                 observations,
                 record.operation_index,
             )?;
-            let observed_paid = observation.amount_paid.with_unit(quote.unit.clone());
+            let observed_paid = observation
+                .amount_paid
+                .with_unit(quote.unit.clone())
+                .checked_add(&internally_settled)
+                .map_err(|_| Error::AmountOverflow)?;
             if can_finalize && observed_paid > quote.amount_paid() {
                 self.validate_federation_onchain_payment_observation(
                     tx,
@@ -2385,7 +2556,6 @@ impl Mint {
                 existing_signatures.len(),
             )?;
 
-            let max_payment_observation_index = entry.index.saturating_sub(1);
             for (quote, amount_issued) in quotes.iter().zip(&expected_amounts) {
                 let required_amount = quote
                     .amount_issued()
@@ -2402,12 +2572,16 @@ impl Mint {
                     .into_iter()
                     .map(|observation| observation.record)
                     .collect::<Vec<_>>();
-                if !self.federation_mint_payment_quorum_covers_amount_at_or_before(
-                    quote,
-                    &required_amount,
-                    &observations,
-                    max_payment_observation_index,
-                )? {
+                if !self
+                    .federation_mint_payment_evidence_covers_amount(
+                        &mut tx,
+                        quote,
+                        &required_amount,
+                        &observations,
+                        entry.index,
+                    )
+                    .await?
+                {
                     return Err(Error::UnpaidQuote);
                 }
             }

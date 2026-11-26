@@ -3031,6 +3031,7 @@ struct FrostOnchainInternalMeltFixture {
     input_ys: Vec<PublicKey>,
     melt_request: MeltRequest<QuoteId>,
     melt_entry: FederationJournalEntry,
+    journal: InMemoryFederationJournal,
 }
 
 async fn frost_onchain_internal_melt_fixture() -> FrostOnchainInternalMeltFixture {
@@ -3176,6 +3177,7 @@ async fn frost_onchain_internal_melt_fixture() -> FrostOnchainInternalMeltFixtur
         input_ys,
         melt_request,
         melt_entry,
+        journal,
     }
 }
 
@@ -3310,6 +3312,191 @@ async fn failed_frost_onchain_internal_melt_replays_after_restart() {
         vec![fixture.melt_entry.operation_id]
     );
     assert_frost_onchain_internal_melt_finalized(&fixture, &restarted).await;
+}
+
+/// A mint of `amount` one-sat outputs on `quote`, ordered as finalized
+/// consensus orders it: a later mint on the same quote is accepted (mint
+/// operations are exempt from conflict rejection).
+fn internal_settlement_mint_entry(
+    journal: &mut InMemoryFederationJournal,
+    runtime_config: &FederationRuntimeConfig,
+    quote: &QuoteId,
+    amount: u64,
+    signing_key: Option<&SecretKey>,
+    label: &str,
+) -> FederationJournalEntry {
+    let outputs = (0..amount)
+        .map(|index| output_for_runtime(runtime_config, format!("{label} {index}").as_bytes()))
+        .collect();
+    let mut request = MintRequest {
+        quote: quote.clone(),
+        outputs,
+        signature: None,
+    };
+    if let Some(signing_key) = signing_key {
+        request.sign(signing_key).expect("nut20 signature");
+    }
+    let envelope = runtime_config
+        .mint_operation(MintInput::Single(request))
+        .expect("mint operation");
+    let evidence = cdk_common::federation::FederationJournalConsensusEvidence::new(
+        0,
+        journal.next_index(),
+        0,
+        runtime_config.member_id(),
+        0,
+    );
+    let entry = journal
+        .append_finalized_with_consensus_evidence(envelope, evidence)
+        .expect("append mint")
+        .entry()
+        .clone();
+    assert_eq!(entry.status(), FederationOperationStatus::Accepted);
+    entry
+}
+
+async fn assert_mint_quote_issued(
+    localstore: &Arc<MintSqliteDatabase>,
+    quote: &QuoteId,
+    amount: u64,
+) {
+    let stored = localstore
+        .get_mint_quote(quote)
+        .await
+        .expect("mint quote lookup")
+        .expect("mint quote");
+    assert_eq!(stored.state(), MintQuoteState::Issued);
+    assert_eq!(stored.amount_paid(), Amount::new(amount, CurrencyUnit::Sat));
+    assert_eq!(
+        stored.amount_issued(),
+        Amount::new(amount, CurrencyUnit::Sat)
+    );
+}
+
+#[tokio::test]
+async fn internally_settled_bolt11_mint_quote_mints_without_payment_observations() {
+    let runtime_config = runtime_config();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let invoice = cdk_fake_wallet::create_fake_invoice(1_000, "internal mint".to_string());
+
+    let mint_quote = QuoteId::new();
+    let mint_quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.mint_quote_operation(
+            mint_quote.clone(),
+            bolt11_quote_request(1),
+            MintQuoteResponse::Bolt11(MintQuoteBolt11Response {
+                quote: mint_quote.to_string(),
+                request: invoice.to_string(),
+                amount: Some(Amount::from(1)),
+                unit: Some(CurrencyUnit::Sat),
+                method: PaymentMethod::Known(KnownMethod::Bolt11),
+                amount_paid: Amount::ZERO,
+                amount_issued: Amount::ZERO,
+                updated_at: 0,
+                state: MintQuoteState::Unpaid,
+                expiry: None,
+                pubkey: None,
+            }),
+        ),
+    );
+    persist_and_apply_entry(&mint, &mint_quote_entry).await;
+
+    // A mint ordered before the internal settlement has no payment evidence.
+    let early_mint_entry = internal_settlement_mint_entry(
+        &mut journal,
+        &runtime_config,
+        &mint_quote,
+        1,
+        None,
+        "early internal mint output",
+    );
+    persist_journal_entry(&localstore, &early_mint_entry).await;
+    assert!(matches!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&early_mint_entry))
+            .await,
+        Err(Error::UnpaidQuote)
+    ));
+
+    let melt_quote = QuoteId::new();
+    let melt_quote_entry = appended_entry(
+        &mut journal,
+        melt_quote_op(
+            &runtime_config,
+            melt_quote.clone(),
+            MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+                request: invoice,
+                unit: CurrencyUnit::Sat,
+                options: None,
+            }),
+        ),
+    );
+    persist_and_apply_entry(&mint, &melt_quote_entry).await;
+    let melt_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .melt_operation(MeltRequest::new(
+                melt_quote.clone(),
+                vec![
+                    proof_for_runtime(&runtime_config, "internal-mint-input-one"),
+                    proof_for_runtime(&runtime_config, "internal-mint-input-two"),
+                ],
+                None,
+            ))
+            .expect("melt operation"),
+    );
+    persist_and_apply_entry(&mint, &melt_entry).await;
+
+    let mint_entry = internal_settlement_mint_entry(
+        &mut journal,
+        &runtime_config,
+        &mint_quote,
+        1,
+        None,
+        "internal mint output",
+    );
+    persist_and_apply_entry(&mint, &mint_entry).await;
+    assert_mint_quote_issued(&localstore, &mint_quote, 1).await;
+    assert!(!mint
+        .apply_accepted_federation_operation(&mint_entry)
+        .await
+        .expect("applied mint replay"));
+    assert_mint_quote_issued(&localstore, &mint_quote, 1).await;
+}
+
+#[tokio::test]
+async fn internally_settled_onchain_mint_quote_mints_exactly_the_settled_amount() {
+    let mut fixture = frost_onchain_internal_melt_fixture().await;
+    persist_and_apply_entry(&fixture.mint, &fixture.melt_entry).await;
+    let wallet_key = SecretKey::from_slice(&[24; 32]).expect("wallet key");
+
+    // Minting more than the settled amount is refused.
+    let over_mint_entry = internal_settlement_mint_entry(
+        &mut fixture.journal,
+        &fixture.runtime_config,
+        &fixture.mint_quote,
+        2,
+        Some(&wallet_key),
+        "onchain internal over mint output",
+    );
+    persist_journal_entry(&fixture.localstore, &over_mint_entry).await;
+    assert!(fixture
+        .mint
+        .apply_federation_journal_entries(std::slice::from_ref(&over_mint_entry))
+        .await
+        .is_err());
+
+    let mint_entry = internal_settlement_mint_entry(
+        &mut fixture.journal,
+        &fixture.runtime_config,
+        &fixture.mint_quote,
+        1,
+        Some(&wallet_key),
+        "onchain internal mint output",
+    );
+    persist_and_apply_entry(&fixture.mint, &mint_entry).await;
+    assert_mint_quote_issued(&fixture.localstore, &fixture.mint_quote, 1).await;
 }
 
 #[tokio::test]
