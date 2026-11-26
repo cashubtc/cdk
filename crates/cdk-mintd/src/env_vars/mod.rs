@@ -20,8 +20,6 @@ mod bdk;
 mod cln;
 #[cfg(feature = "fakewallet")]
 mod fake_wallet;
-#[cfg(feature = "federation")]
-mod federation;
 #[cfg(feature = "grpc-processor")]
 mod grpc_processor;
 #[cfg(feature = "iroh")]
@@ -48,8 +46,6 @@ pub use common::*;
 pub use database::*;
 #[cfg(feature = "fakewallet")]
 pub use fake_wallet::*;
-#[cfg(feature = "federation")]
-pub use federation::*;
 #[cfg(feature = "grpc-processor")]
 pub use grpc_processor::*;
 #[cfg(feature = "ldk-node")]
@@ -167,17 +163,6 @@ impl Settings {
         #[cfg(feature = "prometheus")]
         {
             self.prometheus = Some(self.prometheus.clone().unwrap_or_default().from_env());
-        }
-
-        #[cfg(feature = "federation")]
-        {
-            let federation = self.federation.clone().unwrap_or_default().from_env()?;
-            if federation.enabled
-                || federation.public_config_path.is_some()
-                || federation.private_config_path.is_some()
-            {
-                self.federation = Some(federation);
-            }
         }
 
         #[cfg(feature = "cln")]

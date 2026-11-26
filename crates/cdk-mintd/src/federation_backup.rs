@@ -41,37 +41,25 @@ pub(crate) async fn run_backup_manifest_command(
 
 pub(crate) async fn validate_configured_restore(
     settings: &crate::config::Settings,
+    federation: Option<&crate::FederationStartup>,
     db: &DynMintDatabase,
 ) -> Result<()> {
-    let Some(federation) = settings.federation.as_ref() else {
+    let Some(federation) = federation else {
         return Ok(());
     };
-    if !federation.enabled {
-        return Ok(());
-    }
-    let Some(manifest_path) = federation.restore_manifest_path.as_deref() else {
+    let Some(manifest_path) = settings
+        .federation
+        .as_ref()
+        .and_then(|settings| settings.restore_manifest_path.as_deref())
+    else {
         return Ok(());
     };
-    let public_config_path = federation.public_config_path.as_deref().ok_or_else(|| {
-        anyhow::anyhow!(
-            "federation.public_config_path must be set when restore validation is enabled"
-        )
-    })?;
-    let private_config_path = federation.private_config_path.as_deref().ok_or_else(|| {
-        anyhow::anyhow!(
-            "federation.private_config_path must be set when restore validation is enabled"
-        )
-    })?;
-
-    crate::validate_private_federation_config_file(private_config_path)?;
-    let public_config: FederationConfig =
-        crate::read_federation_json(public_config_path, "public federation config")?;
-    let private_config: MemberConfigPrivate =
-        crate::read_federation_json(private_config_path, "private federation config")?;
+    let public_config = federation.runtime.public_config();
+    let private_config = federation.runtime.private_config();
     let expected: FederationDatabaseBackupManifest =
         crate::read_federation_json(manifest_path, "federation database backup manifest")?;
     expected.validate_shape()?;
-    let current = build_manifest(db, &public_config, &private_config).await?;
+    let current = build_manifest(db, public_config, private_config).await?;
     expected
         .ensure_matches_current(&current)
         .context("restored federation database validation failed")?;
@@ -297,7 +285,15 @@ mod tests {
             ..Default::default()
         };
 
-        validate_configured_restore(&settings, &db)
+        let federation = crate::FederationStartup {
+            runtime: cdk::mint::FederationRuntimeConfig::new(
+                public_config.clone(),
+                private_config.clone(),
+            )
+            .expect("runtime config"),
+            dkg: None,
+        };
+        validate_configured_restore(&settings, Some(&federation), &db)
             .await
             .expect("matching restore");
 
@@ -323,7 +319,7 @@ mod tests {
         ] {
             crate::federation_files::write_private_json_file(&manifest_path, &wrong, true)
                 .expect("replace manifest");
-            let result = validate_configured_restore(&settings, &db).await;
+            let result = validate_configured_restore(&settings, Some(&federation), &db).await;
             assert!(
                 result.is_err(),
                 "wrong {label} accepted before runtime startup"

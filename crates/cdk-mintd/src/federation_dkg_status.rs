@@ -1,42 +1,33 @@
-#[cfg(feature = "federation-bdk")]
-use std::collections::BTreeMap;
+//! `cdk-mintd federation dkg-status`: argument parsing and the operator report
+//! over DKG finalization in `cdk_federation::setup::finalize`.
+
 use std::collections::BTreeSet;
-use std::fs::OpenOptions;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 #[cfg(feature = "federation-bark")]
 use std::str::FromStr;
 
 use anyhow::{bail, Context, Result};
-#[cfg(feature = "federation-bdk")]
-use cdk_common::federation::FederationFrostApplicationConfig;
-#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
-use cdk_common::federation::FederationFrostWalletConfig;
 use cdk_common::federation::{
     redact_federation_operator_message, FederationConfig, FederationDkgActivationRequest,
-    FederationDkgCeremonyRecord, FederationDkgCeremonyState, FederationDkgDriverPhase,
-    FederationDkgDriverRecords, FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgParticipantState, FederationDkgSecretShareRequest, FederationDkgSetupMethod,
-    FederationDkgTranscriptSignatureRequest, FederationFrostRootPublicConfig,
-    FederationOnchainConfirmationPolicy, MemberConfigPrivate, MemberId,
+    FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare, FederationDkgSetupMethod,
+    FederationDkgTranscriptSignatureRequest, FederationFrostRootPublicConfig, MemberConfigPrivate,
+    MemberId,
 };
-#[cfg(feature = "sqlite")]
-use cdk_common::federation::{FederationSetupFrostApplication, FederationSetupManifest};
+#[cfg(feature = "federation-bdk")]
+use cdk_federation::setup::finalize::attach_initial_frost_cdk_wallet;
 #[cfg(feature = "federation-bark")]
-use cdk_federation_bark::{
-    federation_bark_application, federation_bark_frost_applications,
-    federation_bark_recovery_application, federation_bark_recovery_setup_config,
-    federation_bark_setup_config, FederationBarkFrostApplicationConfig, FederationBarkPolicyConfig,
-    FederationBarkRecoveryApplicationConfig, FederationBarkRecoverySetupConfig,
+use cdk_federation::setup::finalize::{
+    attach_initial_frost_bark_application, FederationFrostBarkBootstrap,
 };
-#[cfg(feature = "sqlite")]
-use serde::Serialize;
+use cdk_federation::setup::finalize::{
+    dkg_driver_phase_label, finalized_member_config, validate_frost_cdk_bootstrap,
+    write_finalized_member_config, FederationDkgCompletionRecords, FederationDkgRecordSummary,
+    FederationFrostCdkBootstrap, FINAL_PRIVATE_CONFIG_FILE, FINAL_PUBLIC_CONFIG_FILE,
+};
+#[cfg(feature = "federation-bark")]
+use cdk_federation_bark::FederationBarkRecoverySetupConfig;
 
 use crate::cli::{CLIArgs, FederationDkgStatusArgs};
-
-const FINAL_PUBLIC_CONFIG_FILE: &str = "federation-public.json";
-const FINAL_PRIVATE_CONFIG_FILE: &str = "federation-private.json";
 
 pub(crate) async fn run_dkg_status_command(
     cli_args: &CLIArgs,
@@ -65,7 +56,7 @@ pub(crate) async fn run_dkg_status_command(
     if args.from_database {
         let database_records = read_database_records(cli_args).await?;
         if args.progress_only {
-            let setup_summary = DkgSetupRecordSummary::from_record_counts(&database_records);
+            let setup_summary = FederationDkgRecordSummary::from_record_counts(&database_records);
             print!(
                 "{}",
                 dkg_progress_report(&public_config, &private_config, &setup_summary)
@@ -80,8 +71,11 @@ pub(crate) async fn run_dkg_status_command(
             &mut activations,
             current_records,
         );
-        let setup_summary =
-            DkgSetupRecordSummary::from_records(&database_records, &public_config, &private_config);
+        let setup_summary = FederationDkgRecordSummary::from_records(
+            &database_records,
+            &public_config,
+            &private_config,
+        );
         let report = dkg_status_report_with_setup_records(
             &public_config,
             &private_config,
@@ -155,9 +149,9 @@ fn maybe_write_finalized_configs(
         transcript_signatures,
         activations,
     )?;
-    let cdk_bootstrap = FrostCdkBootstrap::from_args(args)?;
+    let cdk_bootstrap = frost_cdk_bootstrap_from_args(args)?;
     #[cfg(feature = "federation-bark")]
-    let bark_bootstrap = FrostBarkBootstrap::from_args(args)?;
+    let bark_bootstrap = frost_bark_bootstrap_from_args(args)?;
     #[cfg(not(feature = "federation-bark"))]
     let bark_bootstrap_requested = args.frost_bark_network.is_some()
         || args.frost_bark_ark_server_public_key.is_some()
@@ -191,112 +185,89 @@ fn maybe_write_finalized_configs(
 }
 
 #[cfg(feature = "federation-bark")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct FrostBarkBootstrap {
-    network: bitcoin::Network,
-    ark_server_public_key: bitcoin::secp256k1::PublicKey,
-    application_key_epoch: u64,
-    policy: FederationBarkPolicyConfig,
-    recovery_minimum_confirmations: u32,
-    recovery_fee_policy_version: u16,
-}
-
-#[cfg(feature = "federation-bark")]
-impl FrostBarkBootstrap {
-    fn from_args(args: &FederationDkgStatusArgs) -> Result<Option<Self>> {
-        let values = (
-            args.frost_bark_network.as_deref(),
-            args.frost_bark_ark_server_public_key.as_deref(),
-            args.frost_bark_application_key_epoch,
-            args.frost_bark_policy_config.as_deref(),
-            args.frost_bark_recovery_minimum_confirmations,
-            args.frost_bark_recovery_fee_policy_version,
-        );
-        let (
-            network,
-            ark_server_public_key,
-            application_key_epoch,
-            policy_path,
-            recovery_minimum_confirmations,
-            recovery_fee_policy_version,
-        ) = match values {
-            (None, None, None, None, None, None) => return Ok(None),
-            (
-                Some(network),
-                Some(server),
-                Some(epoch),
-                Some(policy),
-                Some(confirmations),
-                Some(fee_policy),
-            ) => (network, server, epoch, policy, confirmations, fee_policy),
-            _ => bail!(
-                "FROST Bark bootstrap requires --frost-bark-network, \
-                 --frost-bark-ark-server-public-key, --frost-bark-application-key-epoch, and \
-                 --frost-bark-policy-config, --frost-bark-recovery-minimum-confirmations, and \
-                 --frost-bark-recovery-fee-policy-version together"
-            ),
-        };
-        let network = parse_bitcoin_network(network, "FROST Bark")?;
-        let ark_server_public_key = bitcoin::secp256k1::PublicKey::from_str(ark_server_public_key)
-            .context("invalid compressed Ark server public key")?;
-        if application_key_epoch == 0 {
-            bail!("FROST Bark application epoch must be non-zero");
-        }
-        if recovery_minimum_confirmations == 0 || recovery_fee_policy_version == 0 {
-            bail!("FROST Bark recovery confirmations and fee-policy version must be non-zero");
-        }
-        let policy = crate::read_federation_json(policy_path, "Bark public policy config")?;
-        Ok(Some(Self {
-            network,
-            ark_server_public_key,
-            application_key_epoch,
-            policy,
-            recovery_minimum_confirmations,
-            recovery_fee_policy_version,
-        }))
+fn frost_bark_bootstrap_from_args(
+    args: &FederationDkgStatusArgs,
+) -> Result<Option<FederationFrostBarkBootstrap>> {
+    let values = (
+        args.frost_bark_network.as_deref(),
+        args.frost_bark_ark_server_public_key.as_deref(),
+        args.frost_bark_application_key_epoch,
+        args.frost_bark_policy_config.as_deref(),
+        args.frost_bark_recovery_minimum_confirmations,
+        args.frost_bark_recovery_fee_policy_version,
+    );
+    let (
+        network,
+        ark_server_public_key,
+        application_key_epoch,
+        policy_path,
+        recovery_minimum_confirmations,
+        recovery_fee_policy_version,
+    ) = match values {
+        (None, None, None, None, None, None) => return Ok(None),
+        (
+            Some(network),
+            Some(server),
+            Some(epoch),
+            Some(policy),
+            Some(confirmations),
+            Some(fee_policy),
+        ) => (network, server, epoch, policy, confirmations, fee_policy),
+        _ => bail!(
+            "FROST Bark bootstrap requires --frost-bark-network, \
+             --frost-bark-ark-server-public-key, --frost-bark-application-key-epoch, and \
+             --frost-bark-policy-config, --frost-bark-recovery-minimum-confirmations, and \
+             --frost-bark-recovery-fee-policy-version together"
+        ),
+    };
+    let network = parse_bitcoin_network(network, "FROST Bark")?;
+    let ark_server_public_key = bitcoin::secp256k1::PublicKey::from_str(ark_server_public_key)
+        .context("invalid compressed Ark server public key")?;
+    if application_key_epoch == 0 {
+        bail!("FROST Bark application epoch must be non-zero");
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FrostCdkBootstrap {
-    network: bitcoin::Network,
-    minimum_confirmations: u32,
-    fee_policy_version: u16,
-    application_key_epoch: u64,
-}
-
-impl FrostCdkBootstrap {
-    fn from_args(args: &FederationDkgStatusArgs) -> Result<Option<Self>> {
-        let values = (
-            args.frost_cdk_network.as_deref(),
-            args.frost_cdk_minimum_confirmations,
-            args.frost_cdk_fee_policy_version,
-            args.frost_cdk_application_key_epoch,
-        );
-        let (network, minimum_confirmations, fee_policy_version, application_key_epoch) =
-            match values {
-                (None, None, None, None) => return Ok(None),
-                (Some(network), Some(confirmations), Some(fee_policy), Some(epoch)) => {
-                    (network, confirmations, fee_policy, epoch)
-                }
-                _ => bail!(
-                    "FROST CDK bootstrap requires --frost-cdk-network, \
-                     --frost-cdk-minimum-confirmations, --frost-cdk-fee-policy-version, and \
-                     --frost-cdk-application-key-epoch together"
-                ),
-            };
-        let network = parse_bitcoin_network(network, "FROST CDK")?;
-        FederationOnchainConfirmationPolicy::new(minimum_confirmations)?;
-        if fee_policy_version == 0 || application_key_epoch == 0 {
-            bail!("FROST CDK fee-policy and application epochs must be non-zero");
-        }
-        Ok(Some(Self {
-            network,
-            minimum_confirmations,
-            fee_policy_version,
-            application_key_epoch,
-        }))
+    if recovery_minimum_confirmations == 0 || recovery_fee_policy_version == 0 {
+        bail!("FROST Bark recovery confirmations and fee-policy version must be non-zero");
     }
+    let policy = crate::read_federation_json(policy_path, "Bark public policy config")?;
+    Ok(Some(FederationFrostBarkBootstrap {
+        network,
+        ark_server_public_key,
+        application_key_epoch,
+        policy,
+        recovery_minimum_confirmations,
+        recovery_fee_policy_version,
+    }))
+}
+
+fn frost_cdk_bootstrap_from_args(
+    args: &FederationDkgStatusArgs,
+) -> Result<Option<FederationFrostCdkBootstrap>> {
+    let values = (
+        args.frost_cdk_network.as_deref(),
+        args.frost_cdk_minimum_confirmations,
+        args.frost_cdk_fee_policy_version,
+        args.frost_cdk_application_key_epoch,
+    );
+    let (network, minimum_confirmations, fee_policy_version, application_key_epoch) = match values {
+        (None, None, None, None) => return Ok(None),
+        (Some(network), Some(confirmations), Some(fee_policy), Some(epoch)) => {
+            (network, confirmations, fee_policy, epoch)
+        }
+        _ => bail!(
+            "FROST CDK bootstrap requires --frost-cdk-network, \
+                 --frost-cdk-minimum-confirmations, --frost-cdk-fee-policy-version, and \
+                 --frost-cdk-application-key-epoch together"
+        ),
+    };
+    let bootstrap = FederationFrostCdkBootstrap {
+        network: parse_bitcoin_network(network, "FROST CDK")?,
+        minimum_confirmations,
+        fee_policy_version,
+        application_key_epoch,
+    };
+    validate_frost_cdk_bootstrap(&bootstrap)?;
+    Ok(Some(bootstrap))
 }
 
 fn parse_bitcoin_network(value: &str, application: &str) -> Result<bitcoin::Network> {
@@ -310,294 +281,6 @@ fn parse_bitcoin_network(value: &str, application: &str) -> Result<bitcoin::Netw
     }
 }
 
-#[cfg(feature = "sqlite")]
-pub(crate) fn attach_manifest_frost_applications(
-    _finalized: &mut FederationDkgFinalizedMemberConfig,
-    _frost_roots: &[FederationFrostRootPublicConfig],
-    manifest: &FederationSetupManifest,
-) -> Result<()> {
-    manifest.validate(cdk_common::federation::FederationSetupUrlPolicy::AllowInsecureLocalhost)?;
-    let mut cdk_application = None;
-    #[cfg(feature = "federation-bark")]
-    let mut bark_application = None;
-    #[cfg(feature = "federation-bark")]
-    let mut bark_recovery_application = None;
-    for application in &manifest.frost_policy().applications {
-        match application {
-            FederationSetupFrostApplication::CdkOnchain {
-                application_key_epoch,
-                confirmation_policy_version,
-                minimum_confirmations,
-                fee_policy_version,
-            } => {
-                if *confirmation_policy_version != 1 {
-                    bail!("unsupported manifest CDK confirmation policy version");
-                }
-                cdk_application = Some(FrostCdkBootstrap {
-                    network: manifest.proposal.body.network.bitcoin_network(),
-                    minimum_confirmations: *minimum_confirmations,
-                    fee_policy_version: *fee_policy_version,
-                    application_key_epoch: *application_key_epoch,
-                });
-            }
-            #[cfg(feature = "federation-bark")]
-            FederationSetupFrostApplication::Extension { .. } => {
-                if let Some(setup) = federation_bark_setup_config(application)? {
-                    bark_application = Some(FrostBarkBootstrap {
-                        network: setup.network,
-                        ark_server_public_key: setup.ark_server_public_key,
-                        application_key_epoch: setup.application_key_epoch,
-                        policy: setup.policy,
-                        recovery_minimum_confirmations: 1,
-                        recovery_fee_policy_version: 1,
-                    });
-                    continue;
-                }
-                if let Some(setup) = federation_bark_recovery_setup_config(application)? {
-                    bark_recovery_application = Some(setup);
-                }
-            }
-            #[cfg(not(feature = "federation-bark"))]
-            FederationSetupFrostApplication::Extension { .. } => {}
-        }
-    }
-    #[cfg(feature = "federation-bdk")]
-    if let Some(cdk_application) = cdk_application {
-        attach_initial_frost_cdk_wallet(_finalized, _frost_roots, cdk_application)?;
-    }
-    #[cfg(not(feature = "federation-bdk"))]
-    if cdk_application.is_some() {
-        bail!("manifest enables the CDK FROST application without `federation-bdk`");
-    }
-    #[cfg(feature = "federation-bark")]
-    if let Some(bark_application) = bark_application {
-        let recovery = bark_recovery_application.ok_or_else(|| {
-            anyhow::anyhow!("manifest Bark custody application requires Bark recovery application")
-        })?;
-        attach_initial_frost_bark_application(
-            _finalized,
-            _frost_roots,
-            bark_application,
-            recovery,
-        )?;
-    } else if bark_recovery_application.is_some() {
-        bail!("manifest Bark recovery application requires Bark custody application");
-    }
-    Ok(())
-}
-
-#[cfg(feature = "federation-bdk")]
-fn attach_initial_frost_cdk_wallet(
-    finalized: &mut FederationDkgFinalizedMemberConfig,
-    frost_roots: &[FederationFrostRootPublicConfig],
-    bootstrap: FrostCdkBootstrap,
-) -> Result<()> {
-    if finalized.public_config.frost_wallet.is_some() {
-        bail!("initial FROST CDK bootstrap requires a config without an existing wallet");
-    }
-    let [root] = frost_roots else {
-        bail!("initial FROST CDK bootstrap requires exactly one root from the completed dual DKG");
-    };
-    root.validate(&finalized.public_config)?;
-    let application = FederationFrostApplicationConfig::new_cdk_onchain(
-        &finalized.public_config,
-        root,
-        bootstrap.application_key_epoch,
-        bootstrap.network,
-        FederationOnchainConfirmationPolicy::new(bootstrap.minimum_confirmations)?,
-        bootstrap.fee_policy_version,
-    )?;
-    finalized.public_config.frost_wallet = Some(FederationFrostWalletConfig::new(
-        &finalized.public_config,
-        root.clone(),
-        Some(application),
-        BTreeMap::new(),
-    )?);
-    finalized.public_config.validate()?;
-    finalized
-        .private_config
-        .validate_against_public(&finalized.public_config)?;
-    Ok(())
-}
-
-#[cfg(feature = "federation-bark")]
-fn attach_initial_frost_bark_application(
-    finalized: &mut FederationDkgFinalizedMemberConfig,
-    frost_roots: &[FederationFrostRootPublicConfig],
-    bootstrap: FrostBarkBootstrap,
-    recovery_setup: FederationBarkRecoverySetupConfig,
-) -> Result<()> {
-    let root = match finalized.public_config.frost_wallet.as_ref() {
-        Some(wallet) => wallet.root.clone(),
-        None => {
-            let [root] = frost_roots else {
-                bail!("initial FROST Bark bootstrap requires exactly one completed root");
-            };
-            root.validate(&finalized.public_config)?;
-            root.clone()
-        }
-    };
-    if federation_bark_application(&finalized.public_config)?.is_some() {
-        bail!("initial Bark bootstrap cannot replace an existing Bark application");
-    }
-    if federation_bark_recovery_application(&finalized.public_config)?.is_some() {
-        bail!("initial Bark bootstrap cannot replace an existing Bark recovery application");
-    }
-    let cdk_onchain = finalized
-        .public_config
-        .frost_wallet
-        .as_ref()
-        .and_then(|wallet| wallet.cdk_onchain_application.clone());
-    if cdk_onchain
-        .as_ref()
-        .is_some_and(|application| application.network != bootstrap.network)
-    {
-        bail!("Bark and CDK on-chain wallet networks must match");
-    }
-    let bark = FederationBarkFrostApplicationConfig::new(
-        &finalized.public_config,
-        &root,
-        bootstrap.application_key_epoch,
-        bootstrap.network,
-        bootstrap.ark_server_public_key,
-        bootstrap.policy,
-    )?;
-    if recovery_setup.network != bootstrap.network {
-        bail!("Bark custody and recovery wallet networks must match");
-    }
-    let recovery = FederationBarkRecoveryApplicationConfig::new(
-        &finalized.public_config,
-        &root,
-        recovery_setup,
-    )?;
-    let applications =
-        federation_bark_frost_applications(&finalized.public_config, &root, bark, recovery)?;
-    let upgraded = FederationFrostWalletConfig::new(
-        &finalized.public_config,
-        root,
-        cdk_onchain,
-        applications,
-    )?;
-    finalized.public_config.frost_wallet = Some(upgraded);
-    finalized.public_config.validate()?;
-    finalized
-        .private_config
-        .validate_against_public(&finalized.public_config)?;
-    Ok(())
-}
-
-pub(crate) fn finalized_member_config(
-    public_config: &FederationConfig,
-    private_config: &MemberConfigPrivate,
-    keyset_shares: &[FederationDkgMemberKeysetShare],
-    transcript_signatures: &[FederationDkgTranscriptSignatureRequest],
-    activations: &[FederationDkgActivationRequest],
-) -> Result<FederationDkgFinalizedMemberConfig> {
-    let (setup_public_config, finalized) =
-        if !public_config.keysets.is_empty() || public_config.setup_transcript.is_some() {
-            public_config.validate()?;
-            private_config.validate_against_public(public_config)?;
-            let mut setup_public_config = public_config.clone();
-            setup_public_config.keysets.clear();
-            setup_public_config.setup_transcript = None;
-            (
-                setup_public_config,
-                FederationDkgFinalizedMemberConfig {
-                    public_config: public_config.clone(),
-                    private_config: private_config.clone(),
-                },
-            )
-        } else {
-            (
-                public_config.clone(),
-                FederationDkgFinalizedMemberConfig::from_records(
-                    public_config,
-                    private_config,
-                    keyset_shares,
-                    transcript_signatures,
-                )?,
-            )
-        };
-    if finalized
-        .public_config
-        .setup_transcript
-        .as_ref()
-        .is_some_and(|transcript| {
-            transcript.payload.setup_method == FederationDkgSetupMethod::PedersenDkg
-        })
-    {
-        finalized.validate_activation_records(&setup_public_config, activations)?;
-    }
-    Ok(finalized)
-}
-
-fn write_finalized_member_config(
-    output_dir: &Path,
-    finalized: &FederationDkgFinalizedMemberConfig,
-    force: bool,
-) -> Result<(PathBuf, PathBuf)> {
-    std::fs::create_dir_all(output_dir)
-        .with_context(|| format!("failed to create {}", output_dir.display()))?;
-    let public_path = output_dir.join(FINAL_PUBLIC_CONFIG_FILE);
-    let private_path = output_dir.join(FINAL_PRIVATE_CONFIG_FILE);
-    if !force {
-        for path in [&public_path, &private_path] {
-            if path.exists() {
-                bail!(
-                    "{} already exists; pass --force to replace finalized DKG config material",
-                    path.display()
-                );
-            }
-        }
-    }
-
-    write_final_config_file(&private_path, &finalized.private_config, force, true)?;
-    write_final_config_file(&public_path, &finalized.public_config, force, false)?;
-    Ok((public_path, private_path))
-}
-
-pub(crate) fn write_final_config_file<T>(
-    path: &Path,
-    value: &T,
-    force: bool,
-    private: bool,
-) -> Result<()>
-where
-    T: serde::Serialize + ?Sized,
-{
-    let mut options = OpenOptions::new();
-    options.write(true);
-    if force {
-        options.create(true).truncate(true);
-    } else {
-        options.create_new(true);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-
-        options.mode(if private { 0o600 } else { 0o644 });
-    }
-    let mut file = options
-        .open(path)
-        .with_context(|| format!("failed to create {}", path.display()))?;
-    serde_json::to_writer_pretty(&mut file, value)
-        .with_context(|| format!("failed to serialize {}", path.display()))?;
-    file.write_all(b"\n")
-        .with_context(|| format!("failed to write {}", path.display()))?;
-    file.sync_all()
-        .with_context(|| format!("failed to sync {}", path.display()))?;
-    #[cfg(unix)]
-    if private {
-        use std::os::unix::fs::PermissionsExt;
-
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("failed to protect {}", path.display()))?;
-    }
-
-    Ok(())
-}
-
 fn print_written_config_status(paths: Option<&(PathBuf, PathBuf)>) {
     if paths.is_some() {
         println!(
@@ -606,7 +289,7 @@ fn print_written_config_status(paths: Option<&(PathBuf, PathBuf)>) {
     }
 }
 
-async fn read_database_records(cli_args: &CLIArgs) -> Result<DkgCompletionRecords> {
+async fn read_database_records(cli_args: &CLIArgs) -> Result<FederationDkgCompletionRecords> {
     let work_dir = crate::get_work_directory(cli_args).await?;
     let settings = crate::load_database_bootstrap_settings()?;
     #[cfg(feature = "sqlcipher")]
@@ -618,256 +301,14 @@ async fn read_database_records(cli_args: &CLIArgs) -> Result<DkgCompletionRecord
             .await
             .context("failed to open mint database for federation DKG status")?;
 
-    read_database_records_from_database(&db).await
-}
-
-pub(crate) async fn read_database_records_from_database(
-    db: &cdk_common::database::DynMintDatabase,
-) -> Result<DkgCompletionRecords> {
-    Ok(DkgCompletionRecords {
-        participant_states: db
-            .get_federation_dkg_participant_states()
-            .await
-            .context("failed to read persisted local DKG participant states")?,
-        commitments: db
-            .get_federation_dkg_commitments()
-            .await
-            .context("failed to read persisted DKG commitment records")?,
-        reveals: db
-            .get_federation_dkg_reveals()
-            .await
-            .context("failed to read persisted DKG reveal records")?,
-        secret_share_contributions: db
-            .get_federation_dkg_secret_share_contributions()
-            .await
-            .context("failed to read persisted DKG secret-share contribution records")?,
-        keyset_shares: db
-            .get_federation_dkg_member_keyset_shares()
-            .await
-            .context("failed to read persisted DKG keyset-share records")?,
-        transcript_signatures: db
-            .get_federation_dkg_transcript_signatures()
-            .await
-            .context("failed to read persisted DKG transcript-signature records")?,
-        activations: db
-            .get_federation_dkg_activations()
-            .await
-            .context("failed to read persisted DKG activation records")?,
-        ceremonies: db
-            .get_federation_dkg_ceremonies()
-            .await
-            .context("failed to read persisted DKG ceremony lifecycle records")?,
-        frost_roots: db
-            .get_federation_frost_root_public_configs()
-            .await
-            .context("failed to read persisted FROST root public configs")?,
-    })
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(crate) struct DkgCompletionRecords {
-    participant_states: Vec<FederationDkgParticipantState>,
-    commitments: Vec<FederationDkgParticipantCommitment>,
-    reveals: Vec<FederationDkgParticipantCommitmentReveal>,
-    secret_share_contributions: Vec<FederationDkgSecretShareRequest>,
-    keyset_shares: Vec<FederationDkgMemberKeysetShare>,
-    transcript_signatures: Vec<FederationDkgTranscriptSignatureRequest>,
-    activations: Vec<FederationDkgActivationRequest>,
-    ceremonies: Vec<FederationDkgCeremonyRecord>,
-    frost_roots: Vec<FederationFrostRootPublicConfig>,
-}
-
-impl DkgCompletionRecords {
-    fn records_for_current_ceremony(&self) -> Result<Self> {
-        if self.ceremonies.is_empty() {
-            return Ok(self.clone());
-        }
-        let current = self
-            .ceremonies
-            .iter()
-            .filter(|record| record.replacement_ceremony_id.is_none())
-            .filter(|record| record.state != FederationDkgCeremonyState::Aborted)
-            .collect::<Vec<_>>();
-        if current.len() > 1 {
-            bail!("multiple unreplaced DKG ceremony lifecycle records are durable");
-        }
-        let mut selected = self.clone();
-        let Some(ceremony_id) = current.first().map(|record| record.ceremony_id) else {
-            selected.participant_states.clear();
-            selected.commitments.clear();
-            selected.reveals.clear();
-            selected.secret_share_contributions.clear();
-            selected.keyset_shares.clear();
-            selected.transcript_signatures.clear();
-            selected.activations.clear();
-            return Ok(selected);
-        };
-        selected
-            .participant_states
-            .retain(|state| state.ceremony_id() == ceremony_id);
-        selected
-            .commitments
-            .retain(|commitment| commitment.ceremony_id == ceremony_id);
-        selected
-            .reveals
-            .retain(|reveal| reveal.ceremony_id == ceremony_id);
-        selected
-            .secret_share_contributions
-            .retain(|contribution| contribution.ceremony_id == ceremony_id);
-        selected
-            .keyset_shares
-            .retain(|share| share.public_ceremony.ceremony_id() == ceremony_id);
-        selected
-            .activations
-            .retain(|activation| activation.ceremony_id == ceremony_id);
-        selected
-            .frost_roots
-            .retain(|root| root.ceremony_id == ceremony_id);
-        Ok(selected)
-    }
-
-    #[cfg(feature = "sqlite")]
-    pub(crate) fn frost_roots(&self) -> Result<&[FederationFrostRootPublicConfig]> {
-        if self.ceremonies.is_empty() {
-            return Ok(&self.frost_roots);
-        }
-        let current = self
-            .ceremonies
-            .iter()
-            .filter(|record| record.replacement_ceremony_id.is_none())
-            .filter(|record| record.state != FederationDkgCeremonyState::Aborted)
-            .collect::<Vec<_>>();
-        let [current] = current.as_slice() else {
-            bail!("exactly one current DKG ceremony is required for finalization");
-        };
-        if self
-            .frost_roots
-            .iter()
-            .any(|root| root.ceremony_id != current.ceremony_id)
-        {
-            bail!("persisted FROST roots include a different DKG ceremony");
-        }
-        Ok(&self.frost_roots)
-    }
-
-    #[cfg(feature = "sqlite")]
-    pub(crate) fn finalization_progress(
-        &self,
-        public_config: &FederationConfig,
-        private_config: &MemberConfigPrivate,
-    ) -> (
-        FederationSetupDkgProgress,
-        Option<FederationDkgFinalizedMemberConfig>,
-    ) {
-        let summary = DkgSetupRecordSummary::from_records(self, public_config, private_config);
-        let current = self.records_for_current_ceremony();
-        let confirmed_members = current
-            .as_ref()
-            .map(|records| {
-                records
-                    .activations
-                    .iter()
-                    .map(|activation| activation.signer)
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .collect()
-            })
-            .unwrap_or_default();
-        let confirmation_digests = current
-            .as_ref()
-            .map(|records| {
-                records
-                    .activations
-                    .iter()
-                    .map(|activation| activation.final_config_digest.to_string())
-                    .collect::<BTreeSet<_>>()
-            })
-            .unwrap_or_default();
-        let dkg_confirmation_digest = match confirmation_digests.len() {
-            1 => confirmation_digests.iter().next().cloned(),
-            _ => None,
-        };
-        let (finalized, transcript_hash, error) = match current.and_then(|records| {
-            let finalized = finalized_member_config(
-                public_config,
-                private_config,
-                &records.keyset_shares,
-                &records.transcript_signatures,
-                &records.activations,
-            )?;
-            let transcript_hash = finalized
-                .public_config
-                .setup_transcript
-                .as_ref()
-                .map(|transcript| transcript.transcript_hash.to_string());
-            Ok((finalized, transcript_hash))
-        }) {
-            Ok((finalized, transcript_hash)) => (Some(finalized), transcript_hash, None),
-            Err(err) => (
-                None,
-                None,
-                Some(redact_federation_operator_message(&err.to_string())),
-            ),
-        };
-        let error = if confirmation_digests.len() > 1 {
-            Some("conflicting durable DKG final-config confirmation digests".to_string())
-        } else {
-            error
-        };
-        let phase = summary.driver_phase.map(dkg_driver_phase_label).unwrap_or(
-            if summary.driver_error.is_some() {
-                "invalid"
-            } else {
-                "not_started"
-            },
-        );
-        let progress = FederationSetupDkgProgress {
-            phase: phase.to_string(),
-            participant_states: summary.participant_states,
-            commitments: summary.commitments,
-            reveals: summary.reveals,
-            secret_share_contributions: summary.secret_share_contributions,
-            keyset_shares: summary.keyset_shares,
-            transcript_signatures: summary.transcript_signatures,
-            final_config_confirmations: summary.activations,
-            frost_root_public_configs: summary.frost_root_public_configs,
-            confirmed_members,
-            finalized_ready: finalized.is_some(),
-            dkg_confirmation_digest,
-            final_config_digest: None,
-            transcript_hash,
-            error: summary.driver_error.or(error),
-        };
-        (progress, finalized)
-    }
-}
-
-/// Stable, secret-free local setup view derived from durable DKG records.
-#[cfg(feature = "sqlite")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct FederationSetupDkgProgress {
-    pub(crate) phase: String,
-    pub(crate) participant_states: usize,
-    pub(crate) commitments: usize,
-    pub(crate) reveals: usize,
-    pub(crate) secret_share_contributions: usize,
-    pub(crate) keyset_shares: usize,
-    pub(crate) transcript_signatures: usize,
-    pub(crate) final_config_confirmations: usize,
-    pub(crate) frost_root_public_configs: usize,
-    pub(crate) confirmed_members: Vec<MemberId>,
-    pub(crate) finalized_ready: bool,
-    pub(crate) dkg_confirmation_digest: Option<String>,
-    pub(crate) final_config_digest: Option<String>,
-    pub(crate) transcript_hash: Option<String>,
-    pub(crate) error: Option<String>,
+    FederationDkgCompletionRecords::read(&db).await
 }
 
 fn merge_dkg_records(
     keyset_shares: &mut Vec<FederationDkgMemberKeysetShare>,
     transcript_signatures: &mut Vec<FederationDkgTranscriptSignatureRequest>,
     activations: &mut Vec<FederationDkgActivationRequest>,
-    records: DkgCompletionRecords,
+    records: FederationDkgCompletionRecords,
 ) {
     extend_unique(keyset_shares, records.keyset_shares);
     extend_unique(transcript_signatures, records.transcript_signatures);
@@ -881,140 +322,6 @@ where
     for item in source {
         if !target.contains(&item) {
             target.push(item);
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-struct DkgSetupRecordSummary {
-    ceremony_lifecycle: Vec<String>,
-    participant_states: usize,
-    commitments: usize,
-    reveals: usize,
-    secret_share_contributions: usize,
-    keyset_shares: usize,
-    transcript_signatures: usize,
-    activations: usize,
-    frost_root_public_configs: usize,
-    participant_state_members: BTreeSet<MemberId>,
-    participant_state_ceremonies: BTreeSet<String>,
-    commitment_members: BTreeSet<MemberId>,
-    reveal_members: BTreeSet<MemberId>,
-    secret_share_senders: BTreeSet<MemberId>,
-    secret_share_receivers: BTreeSet<MemberId>,
-    driver_phase: Option<FederationDkgDriverPhase>,
-    driver_error: Option<String>,
-}
-
-impl DkgSetupRecordSummary {
-    fn from_record_counts(records: &DkgCompletionRecords) -> Self {
-        Self {
-            ceremony_lifecycle: records
-                .ceremonies
-                .iter()
-                .map(|record| {
-                    let successor = record
-                        .replacement_ceremony_id
-                        .map(|ceremony_id| ceremony_id.to_string())
-                        .unwrap_or_else(|| "none".to_string());
-                    format!(
-                        "{}:{}:replacement={successor}",
-                        record.ceremony_id,
-                        record.state.as_str()
-                    )
-                })
-                .collect(),
-            participant_states: records.participant_states.len(),
-            commitments: records.commitments.len(),
-            reveals: records.reveals.len(),
-            secret_share_contributions: records.secret_share_contributions.len(),
-            keyset_shares: records.keyset_shares.len(),
-            transcript_signatures: records.transcript_signatures.len(),
-            activations: records.activations.len(),
-            frost_root_public_configs: records.frost_roots.len(),
-            participant_state_members: records
-                .participant_states
-                .iter()
-                .map(FederationDkgParticipantState::member_id)
-                .collect(),
-            participant_state_ceremonies: records
-                .participant_states
-                .iter()
-                .map(|state| state.ceremony_id().to_string())
-                .collect(),
-            commitment_members: records
-                .commitments
-                .iter()
-                .map(|commitment| commitment.member_id)
-                .collect(),
-            reveal_members: records
-                .reveals
-                .iter()
-                .map(|reveal| reveal.member_id)
-                .collect(),
-            secret_share_senders: records
-                .secret_share_contributions
-                .iter()
-                .map(|contribution| contribution.sender)
-                .collect(),
-            secret_share_receivers: records
-                .secret_share_contributions
-                .iter()
-                .map(|contribution| contribution.receiver)
-                .collect(),
-            driver_phase: None,
-            driver_error: None,
-        }
-    }
-
-    fn from_records(
-        records: &DkgCompletionRecords,
-        public_config: &FederationConfig,
-        private_config: &MemberConfigPrivate,
-    ) -> Self {
-        let selected = match records.records_for_current_ceremony() {
-            Ok(selected) => selected,
-            Err(err) => {
-                return Self {
-                    driver_error: Some(redact_federation_operator_message(&err.to_string())),
-                    ..Self::from_record_counts(records)
-                };
-            }
-        };
-        let local_participants = selected
-            .participant_states
-            .iter()
-            .filter(|state| state.member_id() == private_config.member_id)
-            .collect::<Vec<_>>();
-        let (driver_phase, driver_error) = match local_participants.as_slice() {
-            [] => (None, None),
-            [participant] => {
-                let driver_records = FederationDkgDriverRecords {
-                    commitments: selected.commitments.clone(),
-                    reveals: selected.reveals.clone(),
-                    secret_share_contributions: selected.secret_share_contributions.clone(),
-                    keyset_shares: selected.keyset_shares.clone(),
-                    transcript_signatures: selected.transcript_signatures.clone(),
-                    activations: selected.activations.clone(),
-                };
-                match driver_records.plan(public_config, private_config, participant) {
-                    Ok(plan) => (Some(plan.phase), None),
-                    Err(err) => (
-                        None,
-                        Some(redact_federation_operator_message(&err.to_string())),
-                    ),
-                }
-            }
-            _ => (
-                None,
-                Some("multiple local participant states require ceremony selection".to_string()),
-            ),
-        };
-
-        Self {
-            driver_phase,
-            driver_error,
-            ..Self::from_record_counts(records)
         }
     }
 }
@@ -1064,14 +371,14 @@ fn dkg_status_report_with_activations(
         keyset_shares,
         transcript_signatures,
         activations,
-        &DkgSetupRecordSummary::default(),
+        &FederationDkgRecordSummary::default(),
     )
 }
 
 fn dkg_progress_report(
     setup_public_config: &FederationConfig,
     local_private_config: &MemberConfigPrivate,
-    setup_records: &DkgSetupRecordSummary,
+    setup_records: &FederationDkgRecordSummary,
 ) -> String {
     let mut text = format!(
         "Federation {} DKG progress for member {}\n",
@@ -1087,7 +394,7 @@ fn dkg_status_report_with_setup_records(
     keyset_shares: &[FederationDkgMemberKeysetShare],
     transcript_signatures: &[FederationDkgTranscriptSignatureRequest],
     activations: &[FederationDkgActivationRequest],
-    setup_records: &DkgSetupRecordSummary,
+    setup_records: &FederationDkgRecordSummary,
 ) -> DkgStatusReport {
     let keyset_ids = keyset_shares
         .iter()
@@ -1131,7 +438,7 @@ fn dkg_status_report_with_setup_records(
         display_member_set(&transcript_signers),
         display_member_set(&activation_signers)
     ));
-    if setup_records != &DkgSetupRecordSummary::default() {
+    if setup_records != &FederationDkgRecordSummary::default() {
         let phase = setup_records
             .driver_phase
             .map(dkg_driver_phase_label)
@@ -1246,7 +553,7 @@ fn dkg_status_report_with_setup_records(
 
 fn append_setup_record_summary(
     text: &mut String,
-    setup_records: &DkgSetupRecordSummary,
+    setup_records: &FederationDkgRecordSummary,
     phase: &str,
 ) {
     if !setup_records.ceremony_lifecycle.is_empty() {
@@ -1298,21 +605,6 @@ fn setup_method_label(setup_method: FederationDkgSetupMethod) -> &'static str {
     match setup_method {
         FederationDkgSetupMethod::TrustedDealer => "trusted_dealer",
         FederationDkgSetupMethod::PedersenDkg => "pedersen_dkg",
-    }
-}
-
-fn dkg_driver_phase_label(phase: FederationDkgDriverPhase) -> &'static str {
-    match phase {
-        FederationDkgDriverPhase::Commitment => "commitment",
-        FederationDkgDriverPhase::Reveal => "reveal",
-        FederationDkgDriverPhase::SecretShares => "share_delivery",
-        FederationDkgDriverPhase::LocalKeysetShare => "local_keyset_share",
-        FederationDkgDriverPhase::TranscriptSignature => "transcript_signature",
-        FederationDkgDriverPhase::Activation => "activation",
-        FederationDkgDriverPhase::FrostRound1 => "frost_round_1",
-        FederationDkgDriverPhase::FrostRound2 => "frost_round_2",
-        FederationDkgDriverPhase::FrostConfirmation => "frost_confirmation",
-        FederationDkgDriverPhase::Complete => "complete",
     }
 }
 

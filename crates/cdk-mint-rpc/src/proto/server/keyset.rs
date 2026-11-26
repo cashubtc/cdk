@@ -25,17 +25,15 @@ impl KeysetService for MintRPCServer {
         let keyset_version = match request.keyset_version.as_deref() {
             Some("v1") | Some("00") => KeySetVersion::Version00,
             Some("v2") | Some("01") => KeySetVersion::Version01,
-            Some("v3") | Some("02") => KeySetVersion::from_proto_i32(3)
-                .map_err(|_| Status::invalid_argument("BLS keysets are not enabled"))?,
+            Some("v3") | Some("02") => KeySetVersion::Version02,
             Some(version) => {
                 return Err(Status::invalid_argument(format!(
                     "Invalid keyset version: {version}"
                 )));
             }
-            None => match request.use_keyset_v2 {
-                Some(true) => KeySetVersion::Version01,
-                Some(false) => KeySetVersion::Version00,
-                None => KeySetVersion::from_proto_i32(3).unwrap_or(KeySetVersion::Version01),
+            None => match request.use_keyset_v2.unwrap_or(true) {
+                true => KeySetVersion::Version01,
+                false => KeySetVersion::Version00,
             },
         };
 
@@ -88,5 +86,51 @@ mod tests {
         assert_eq!(response.unit, "sat");
         assert_eq!(response.amounts, vec![1, 2, 4, 8]);
         assert_eq!(response.input_fee_ppk, 1);
+    }
+
+    #[tokio::test]
+    async fn rotate_next_keyset_without_a_version_creates_a_v2_keyset() {
+        let server = create_test_rpc_server().await;
+
+        let response = KeysetService::rotate_next_keyset(
+            &server,
+            Request::new(crate::keyset::RotateNextKeysetRequest {
+                keyset_version: None,
+                unit: "sat".to_string(),
+                amounts: vec![1, 2, 4, 8],
+                input_fee_ppk: None,
+                use_keyset_v2: None,
+                final_expiry: None,
+            }),
+        )
+        .await
+        .expect("rotation without a version selector succeeds")
+        .into_inner();
+
+        let id = cdk::nuts::Id::from_str(&response.id).expect("keyset id");
+        assert_eq!(id.get_version(), KeySetVersion::Version01);
+    }
+
+    #[tokio::test]
+    async fn rotate_next_keyset_honours_an_explicit_v3_version() {
+        let server = create_test_rpc_server().await;
+
+        let response = KeysetService::rotate_next_keyset(
+            &server,
+            Request::new(crate::keyset::RotateNextKeysetRequest {
+                keyset_version: Some("v3".to_string()),
+                unit: "sat".to_string(),
+                amounts: vec![1, 2, 4, 8],
+                input_fee_ppk: None,
+                use_keyset_v2: None,
+                final_expiry: None,
+            }),
+        )
+        .await
+        .expect("explicit v3 rotation succeeds")
+        .into_inner();
+
+        let id = cdk::nuts::Id::from_str(&response.id).expect("keyset id");
+        assert_eq!(id.get_version(), KeySetVersion::Version02);
     }
 }

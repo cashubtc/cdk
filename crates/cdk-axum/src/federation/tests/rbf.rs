@@ -16,17 +16,19 @@ use cdk::federation::{
     FederationTransactionRecipientOutput, FederationTransactionScope, FederationTransactionState,
     FederationWalletLivenessSchedule,
 };
-use cdk_bitcoin_wallet::{
-    ChainSource, EsploraConfig, FederatedBdkWallet, FederatedWalletConfig, FederatedWalletKeychain,
-    FederatedWalletScope,
-};
 use cdk_common::bitcoin::hashes::Hash;
 use cdk_common::bitcoin::{
     absolute, blockdata::constants::genesis_block, transaction, Amount as BitcoinAmount, Block,
     FeeRate, Network as BitcoinNetwork, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut,
     Txid, Witness,
 };
-use cdk_frost::{MemoryNonceStore, ParticipantKeyManager, SecretEncryptionKey};
+use cdk_federation::test_support::cdk_bitcoin_wallet::{
+    ChainSource, EsploraConfig, FederatedBdkWallet, FederatedWalletConfig, FederatedWalletKeychain,
+    FederatedWalletScope,
+};
+use cdk_federation::test_support::cdk_frost::{
+    MemoryNonceStore, ParticipantKeyManager, SecretEncryptionKey,
+};
 
 use super::super::frost_signing::{
     FederationFrostSigningCoordinator, FederationFrostSigningRuntime,
@@ -562,7 +564,10 @@ impl RbfFederation {
                 attempt,
                 plan.signer_set
                     .iter()
-                    .map(|member| cdk_frost::MemberId::new(member.get()).expect("signer"))
+                    .map(|member| {
+                        cdk_federation::test_support::cdk_frost::MemberId::new(member.get())
+                            .expect("signer")
+                    })
                     .collect(),
             )
             .await

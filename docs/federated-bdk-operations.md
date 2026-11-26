@@ -16,9 +16,6 @@ onchain_backend = "federated-bdk"
 
 [federation.onchain_wallet]
 enabled = true
-network = "bitcoin"
-minimum_confirmations = 6
-fee_policy_version = 1
 chain_source_type = "bitcoinrpc"
 chain_source_scope = "independent"
 chain_source_id = "member-core-primary"
@@ -30,15 +27,16 @@ request_timeout_secs = 15
 sync_interval_secs = 15
 ```
 
-The network, confirmation depth, and fee-policy version must exactly match the
-active public FROST application. Timeouts, retry counts, and Esplora concurrency
+The network, confirmation depth, and fee-policy version come from the active
+public FROST application; the member configuration does not restate them.
+Timeouts, retry counts, and Esplora concurrency
 are bounded. Configuration fails closed when the public wallet, active
 application, local sealed share, or chain source is missing; when standalone
 `[bdk]` configuration is present; or when `onchain_backend = "bdk"` is mixed
 with an active federated wallet.
 
-Environment overrides use the `CDK_MINTD_FEDERATION_ONCHAIN_WALLET_*` variables.
-Credentials and endpoints are redacted from debug output and status.
+There are no environment overrides; the database-backed mint configuration is
+the only source. Credentials and endpoints are redacted from debug output and status.
 
 ## Chain-source choice
 

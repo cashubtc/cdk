@@ -76,11 +76,7 @@ use self::operator_routes::{
 #[cfg(feature = "federation-bdk")]
 use self::operator_routes::{post_wallet_rebroadcast, post_wallet_transaction_status};
 pub(super) use self::private_request::admit_private_request;
-pub use self::setup::{
-    create_federation_setup_router, FederationSetupCoordinatorService,
-    FederationSetupCoordinatorServiceConfig, FederationSetupHttpClient, FederationSetupHttpError,
-    FederationSetupHttpErrorCode,
-};
+pub use self::setup::create_federation_setup_router;
 use self::state_transfer_routes::{post_state_transfer, post_state_transfer_window};
 use self::status_routes::{post_local_status, post_status};
 

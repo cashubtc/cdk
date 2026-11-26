@@ -160,20 +160,25 @@ pub(crate) fn validate_listener_selection(settings: &Settings) -> Result<()> {
 #[cfg(feature = "federation")]
 pub(crate) fn validate_federation_roster(
     settings: &Settings,
+    federation: Option<&cdk::mint::FederationRuntimeConfig>,
     runtime: Option<&MintdIrohRuntime>,
 ) -> Result<()> {
-    validate_federation_roster_endpoint(settings, runtime.map(|runtime| runtime.node.endpoint_id()))
+    validate_federation_roster_endpoint(
+        settings,
+        federation,
+        runtime.map(|runtime| runtime.node.endpoint_id()),
+    )
 }
 
 #[cfg(feature = "federation")]
 pub(crate) fn validate_federation_roster_endpoint(
     settings: &Settings,
+    federation: Option<&cdk::mint::FederationRuntimeConfig>,
     local_endpoint_id: Option<EndpointId>,
 ) -> Result<()> {
-    let Some(_) = settings.federation.as_ref().filter(|value| value.enabled) else {
+    let Some(configured) = federation else {
         return Ok(());
     };
-    let configured = crate::configured_federation_runtime(settings)?;
     let public = configured.public_config();
     let local_member = configured.member_id();
     let mut owners = BTreeMap::<EndpointId, cdk::federation::MemberId>::new();

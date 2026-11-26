@@ -29,7 +29,8 @@ pub struct CLIArgs {
     #[arg(
         short,
         long,
-        help = "Legacy startup flag; use `config init` or `config apply` instead",
+        global = true,
+        help = "Protected setup config for `federation setup` commands; as a startup flag it is obsolete, use `config init` or `config apply` instead",
         required = false
     )]
     pub config: Option<PathBuf>,
@@ -50,6 +51,30 @@ pub struct CLIArgs {
     pub enable_logging: bool,
     #[command(subcommand)]
     pub command: Option<Commands>,
+}
+
+impl CLIArgs {
+    /// The `--config` path, when the selected command reads one.
+    ///
+    /// Only the `federation setup` ceremony commands take `--config` (their
+    /// protected local setup config). For every other command it is an
+    /// obsolete startup flag and this returns `None`.
+    pub fn command_config(&self) -> Option<&std::path::Path> {
+        match &self.command {
+            #[cfg(feature = "federation")]
+            Some(Commands::Federation(args))
+                if matches!(args.command, FederationCommand::Setup(_)) =>
+            {
+                self.config.as_deref()
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `--config` was given to a command that does not read it.
+    pub fn has_obsolete_config(&self) -> bool {
+        self.config.is_some() && self.command_config().is_none()
+    }
 }
 
 /// Commands exposed by the `cdk-mintd` binary.
@@ -169,6 +194,82 @@ pub struct ApplyConfigArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_definition_is_consistent() {
+        use clap::CommandFactory;
+
+        CLIArgs::command().debug_assert();
+    }
+
+    #[test]
+    fn config_flag_is_global_and_rejected_outside_setup() {
+        for argv in [
+            vec!["cdk-mintd", "--config", "legacy.toml"],
+            vec!["cdk-mintd", "-c", "legacy.toml"],
+            vec![
+                "cdk-mintd",
+                "config",
+                "apply",
+                "--file",
+                "mint.toml",
+                "-c",
+                "legacy.toml",
+            ],
+            vec!["cdk-mintd", "config", "show", "--config", "legacy.toml"],
+        ] {
+            let args = CLIArgs::try_parse_from(&argv)
+                .unwrap_or_else(|error| panic!("{argv:?} should parse: {error}"));
+            assert_eq!(
+                args.config.as_deref(),
+                Some(std::path::Path::new("legacy.toml"))
+            );
+            assert!(args.has_obsolete_config(), "{argv:?}");
+            assert_eq!(args.command_config(), None);
+        }
+        let args = CLIArgs::try_parse_from(["cdk-mintd", "config", "show"]).expect("parses");
+        assert!(!args.has_obsolete_config());
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn setup_commands_read_the_global_config_flag() {
+        for argv in [
+            vec![
+                "cdk-mintd",
+                "federation",
+                "setup",
+                "propose",
+                "--config",
+                "setup.json",
+            ],
+            vec![
+                "cdk-mintd",
+                "federation",
+                "setup",
+                "activate",
+                "-c",
+                "setup.json",
+            ],
+            vec![
+                "cdk-mintd",
+                "--config",
+                "setup.json",
+                "federation",
+                "setup",
+                "status",
+            ],
+        ] {
+            let args = CLIArgs::try_parse_from(&argv)
+                .unwrap_or_else(|error| panic!("{argv:?} should parse: {error}"));
+            assert_eq!(
+                args.command_config(),
+                Some(std::path::Path::new("setup.json")),
+                "{argv:?}"
+            );
+            assert!(!args.has_obsolete_config(), "{argv:?}");
+        }
+    }
 
     #[test]
     fn parses_configuration_commands() {
@@ -442,7 +543,7 @@ pub enum FederationSetupCommand {
     /// Join a setup using a protected invitation file.
     Join(FederationSetupJoinArgs),
     /// Freeze the complete enrollment and policy set into one proposal.
-    Propose(FederationSetupConfigArgs),
+    Propose,
     /// Review the exact proposal that this member may approve.
     Review(FederationSetupReviewArgs),
     /// Approve exactly one previously reviewed proposal hash.
@@ -452,15 +553,12 @@ pub enum FederationSetupCommand {
     /// Show authenticated setup progress and persist a ready manifest.
     Status(FederationSetupStatusArgs),
     /// Validate, publish, and explicitly activate this member's final config.
-    Activate(FederationSetupActivateArgs),
+    Activate,
 }
 
 #[cfg(feature = "federation")]
 #[derive(Debug, Clone, Args)]
 pub struct FederationSetupCreateArgs {
-    /// Protected local setup config path.
-    #[arg(long)]
-    pub config: PathBuf,
     /// Directory for protected local identity and invitation files.
     #[arg(long)]
     pub state_dir: PathBuf,
@@ -550,9 +648,6 @@ pub struct FederationSetupCreateArgs {
 #[cfg(feature = "federation")]
 #[derive(Debug, Clone, Args)]
 pub struct FederationSetupInviteArgs {
-    /// Protected local setup config path.
-    #[arg(long)]
-    pub config: PathBuf,
     /// Member slot receiving the invitation.
     #[arg(long)]
     pub member: u16,
@@ -570,9 +665,6 @@ pub struct FederationSetupJoinArgs {
     /// Protected invitation credential file received from the creator.
     #[arg(long)]
     pub invitation_file: PathBuf,
-    /// Protected local setup config path.
-    #[arg(long)]
-    pub config: PathBuf,
     /// Directory for this operator's protected local identity.
     #[arg(long)]
     pub state_dir: PathBuf,
@@ -592,18 +684,7 @@ pub struct FederationSetupJoinArgs {
 
 #[cfg(feature = "federation")]
 #[derive(Debug, Clone, Args)]
-pub struct FederationSetupConfigArgs {
-    /// Protected local setup config path.
-    #[arg(long)]
-    pub config: PathBuf,
-}
-
-#[cfg(feature = "federation")]
-#[derive(Debug, Clone, Args)]
 pub struct FederationSetupReviewArgs {
-    /// Protected local setup config path.
-    #[arg(long)]
-    pub config: PathBuf,
     /// Print the bounded stable machine-readable review document.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub json: bool,
@@ -612,9 +693,6 @@ pub struct FederationSetupReviewArgs {
 #[cfg(feature = "federation")]
 #[derive(Debug, Clone, Args)]
 pub struct FederationSetupApproveArgs {
-    /// Protected local setup config path.
-    #[arg(long)]
-    pub config: PathBuf,
     /// Exact proposal hash displayed by `setup review`.
     #[arg(long)]
     pub proposal_hash: String,
@@ -623,9 +701,6 @@ pub struct FederationSetupApproveArgs {
 #[cfg(feature = "federation")]
 #[derive(Debug, Clone, Args)]
 pub struct FederationSetupServeArgs {
-    /// Protected creator setup config path.
-    #[arg(long)]
-    pub config: PathBuf,
     /// Socket address for the isolated setup-only HTTP service.
     #[arg(long)]
     pub listen: std::net::SocketAddr,
@@ -643,20 +718,9 @@ pub struct FederationSetupServeArgs {
 #[cfg(feature = "federation")]
 #[derive(Debug, Clone, Args)]
 pub struct FederationSetupStatusArgs {
-    /// Protected local setup config path.
-    #[arg(long)]
-    pub config: PathBuf,
     /// Print the stable machine-readable status document.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub json: bool,
-}
-
-#[cfg(feature = "federation")]
-#[derive(Debug, Clone, Args)]
-pub struct FederationSetupActivateArgs {
-    /// Protected local setup config path.
-    #[arg(long)]
-    pub config: PathBuf,
 }
 
 #[cfg(feature = "federation")]

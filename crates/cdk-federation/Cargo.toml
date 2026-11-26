@@ -24,15 +24,16 @@ federation-bark = [
     "cdk/federation-bark",
     "cdk-bark/federation-bark",
 ]
-iroh = ["cdk/iroh", "dep:cdk-iroh"]
+iroh = ["cdk/iroh", "dep:cdk-iroh", "dep:http", "dep:bytes"]
 prometheus = ["dep:cdk-prometheus", "cdk-common/prometheus"]
 # Test-only hooks and constructors used by cdk-axum's federation tests.
-test-utils = ["cdk-common/test"]
+test-utils = ["cdk-common/test", "dep:musig2"]
 
 [dependencies]
 aleph-bft.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
+bytes = { version = "1", optional = true }
 cdk = { workspace = true, features = ["mint", "federation"] }
 cdk-common = { workspace = true, features = ["federation"] }
 cdk-bitcoin-wallet = { workspace = true, optional = true }
@@ -46,6 +47,8 @@ cdk-http-client = { workspace = true, features = ["bitreq", "reqwest"] }
 cdk-iroh = { workspace = true, optional = true }
 cdk-prometheus = { workspace = true, optional = true }
 futures.workspace = true
+http = { version = "1", optional = true }
+musig2 = { workspace = true, optional = true }
 parity-scale-codec.workspace = true
 serde.workspace = true
 serde_json.workspace = true

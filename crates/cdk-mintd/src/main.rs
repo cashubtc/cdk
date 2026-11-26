@@ -18,7 +18,7 @@ fn main() -> Result<()> {
         Some(Commands::Config(config))
             if matches!(&config.command, ConfigCommands::Migrate(_))
     );
-    if args.config.is_some() || (args.seed_file.is_some() && !is_migration) {
+    if args.has_obsolete_config() || (args.seed_file.is_some() && !is_migration) {
         bail!(
                 "--config and --seed-file are no longer startup inputs; migrate a legacy document with `cdk-mintd config migrate --file <old> --output <new>`, import one with `cdk-mintd config init --existing-mint --file <path>`, initialize a new mint with `cdk-mintd config init --new-mint --file <path>`, or replace it with `cdk-mintd config apply --file <path>`"
             );

@@ -1,19 +1,21 @@
 #[cfg(feature = "federation-bark")]
 use cdk::federation::FederationBarkVirtualMusigPartialRequest;
 use cdk::federation::FederationFrostCommitmentRequest;
-use cdk_frost::{
+use cdk_federation::test_support::cdk_frost::{
     advance_dkg, derive_application_public, finish_dkg, start_dkg, ApplicationAuthorization,
     ApplicationRegistration, AuthorizationRequest, AuthorizedSigningRequest, DkgContext,
     DkgRound1Package, DkgRound2Package, MemoryNonceStore, ParticipantKeyManager, RootKeyEpoch,
     SecretEncryptionKey, SigningAuthorizationScope, SigningDerivation, SigningSessionContext,
 };
 #[cfg(feature = "federation-bark")]
-use cdk_frost::{CustodyProtocol, ThresholdDhRequest, VirtualMusigTranscript};
-use cdk_frost_bip32::application_registration;
+use cdk_federation::test_support::cdk_frost::{
+    CustodyProtocol, ThresholdDhRequest, VirtualMusigTranscript,
+};
+use cdk_federation::test_support::cdk_frost_bip32::application_registration;
 #[cfg(feature = "federation-bark")]
-use musig2::secp::Scalar as MusigScalar;
+use cdk_federation::test_support::musig2::secp::Scalar as MusigScalar;
 #[cfg(feature = "federation-bark")]
-use musig2::{BinaryEncoding, SecNonce};
+use cdk_federation::test_support::musig2::{BinaryEncoding, SecNonce};
 
 use super::*;
 
@@ -33,13 +35,13 @@ impl ApplicationAuthorization for TestAuthorizationAdapter {
     fn authorize(
         &self,
         request: &AuthorizationRequest,
-    ) -> Result<AuthorizedSigningRequest, cdk_frost::Error> {
+    ) -> Result<AuthorizedSigningRequest, cdk_federation::test_support::cdk_frost::Error> {
         if request.payload() != self.payload
             || request.application_id() != self.registration.id()
             || request.application_key_epoch() != self.registration.key_epoch()
             || request.derivation_version() != self.registration.derivation_version()
         {
-            return Err(cdk_frost::Error::Application(
+            return Err(cdk_federation::test_support::cdk_frost::Error::Application(
                 "test authorization mismatch".to_string(),
             ));
         }
@@ -54,9 +56,11 @@ pub(super) fn frost_roots(
     federation_id: [u8; 32],
     members: u16,
     threshold: u16,
-) -> Vec<cdk_frost::CanonicalRootKeyPackage> {
+) -> Vec<cdk_federation::test_support::cdk_frost::CanonicalRootKeyPackage> {
     let participants = (1..=members)
-        .map(|member| cdk_frost::MemberId::new(member).expect("member"))
+        .map(|member| {
+            cdk_federation::test_support::cdk_frost::MemberId::new(member).expect("member")
+        })
         .collect::<BTreeSet<_>>();
     let context = DkgContext::new(
         federation_id,
@@ -70,7 +74,12 @@ pub(super) fn frost_roots(
         .iter()
         .copied()
         .map(|participant| {
-            start_dkg(context.clone(), participant, cdk_frost::rand_core::OsRng).expect("start DKG")
+            start_dkg(
+                context.clone(),
+                participant,
+                cdk_federation::test_support::cdk_frost::rand_core::OsRng,
+            )
+            .expect("start DKG")
         })
         .collect::<Vec<_>>();
     let public_round1 = round1
@@ -90,8 +99,10 @@ pub(super) fn frost_roots(
         .collect::<Vec<_>>();
     let mut roots = Vec::with_capacity(round2.len());
     for local_index in 0..round2.len() {
-        let local = cdk_frost::MemberId::new(u16::try_from(local_index + 1).expect("member index"))
-            .expect("member");
+        let local = cdk_federation::test_support::cdk_frost::MemberId::new(
+            u16::try_from(local_index + 1).expect("member index"),
+        )
+        .expect("member");
         let incoming = round2
             .iter()
             .enumerate()
@@ -127,7 +138,9 @@ async fn run_live_signing_case(
     let public = derive_application_public(roots[0].public(), registration)
         .expect("application public package");
     let signer_set = (1..=threshold)
-        .map(|member| cdk_frost::MemberId::new(member).expect("signer"))
+        .map(|member| {
+            cdk_federation::test_support::cdk_frost::MemberId::new(member).expect("signer")
+        })
         .collect::<Vec<_>>();
     let scope = SigningAuthorizationScope::new(
         public_config.federation_id.to_bytes(),
@@ -387,7 +400,7 @@ async fn catching_up_member_refuses_frost_commitments_before_nonce_creation() {
         .expect("register application");
     let (context, _, authorization, request) = transport_request_fixture(
         public.federation_id,
-        vec![cdk_frost::MemberId::new(1).expect("first signer")],
+        vec![cdk_federation::test_support::cdk_frost::MemberId::new(1).expect("first signer")],
     );
     let manager = Arc::new(tokio::sync::Mutex::new(manager));
     let runtime = super::super::frost_signing::FederationFrostSigningRuntime::for_test(
@@ -429,7 +442,7 @@ async fn catching_up_member_refuses_frost_commitments_before_nonce_creation() {
 
 fn transport_request_fixture(
     federation_id: cdk::federation::FederationId,
-    signers: Vec<cdk_frost::MemberId>,
+    signers: Vec<cdk_federation::test_support::cdk_frost::MemberId>,
 ) -> (
     SigningSessionContext,
     SigningDerivation,
@@ -470,8 +483,8 @@ async fn frost_private_rest_times_out_and_enforces_outbound_backpressure() {
     let (_, _, _, request) = transport_request_fixture(
         public.federation_id,
         vec![
-            cdk_frost::MemberId::new(1).expect("first"),
-            cdk_frost::MemberId::new(2).expect("second"),
+            cdk_federation::test_support::cdk_frost::MemberId::new(1).expect("first"),
+            cdk_federation::test_support::cdk_frost::MemberId::new(2).expect("second"),
         ],
     );
     let sync_config = FederationPeerSyncConfig {
@@ -526,7 +539,7 @@ async fn frost_coordinator_rejects_threshold_minus_one_before_transport() {
     let public = derive_application_public(roots[0].public(), registration).expect("public");
     let (context, derivation, authorization, _) = transport_request_fixture(
         public_config.federation_id,
-        vec![cdk_frost::MemberId::new(1).expect("one signer")],
+        vec![cdk_federation::test_support::cdk_frost::MemberId::new(1).expect("one signer")],
     );
     let client = FederationRestPeerClient::new(
         RouterFederationTransportRegistry::default(),
@@ -563,7 +576,8 @@ async fn bark_custody_transport_rotates_attempts_and_retries_exact_results() {
         message,
     )
     .expect("Bark authorization scope");
-    let member = |value| cdk_frost::MemberId::new(value).expect("member");
+    let member =
+        |value| cdk_federation::test_support::cdk_frost::MemberId::new(value).expect("member");
     let initial = SigningSessionContext::new_for_protocol(
         scope.clone(),
         1,
@@ -719,10 +733,12 @@ async fn bark_custody_transport_rotates_attempts_and_retries_exact_results() {
         commitments
     );
 
-    let target = cdk_frost::derive_signing_public(&public, &derivation)
-        .expect("derived Bark signing target");
+    let target =
+        cdk_federation::test_support::cdk_frost::derive_signing_public(&public, &derivation)
+            .expect("derived Bark signing target");
     let user_key =
-        musig2::secp::Point::try_from(&target.output_group_key()).expect("virtual user key");
+        cdk_federation::test_support::musig2::secp::Point::try_from(&target.output_group_key())
+            .expect("virtual user key");
     let server_secret = MusigScalar::try_from([161; 32]).expect("server scalar");
     let server_key = server_secret.base_point_mul();
     let server_nonce = SecNonce::new(

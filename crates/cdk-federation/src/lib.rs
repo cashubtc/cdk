@@ -27,10 +27,17 @@ pub use cdk_frost::rand_core::OsRng;
 
 #[doc(hidden)]
 pub use self::bootstrap::*;
+pub use self::construction::{FederationNodeConfig, FederationNodeMode, PreparedFederationNode};
 #[doc(hidden)]
 pub use self::mint_state::*;
 #[doc(hidden)]
 pub use self::state::*;
+
+mod construction;
+pub mod setup;
+#[cfg(feature = "test-utils")]
+#[doc(hidden)]
+pub mod test_support;
 
 #[doc(hidden)]
 pub mod aleph_bft_latency;

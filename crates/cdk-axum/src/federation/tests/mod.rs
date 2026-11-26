@@ -6,7 +6,6 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use aleph_bft::{default_delay_config, Network, NodeIndex, Recipient};
 use async_trait::async_trait;
 use bip39::Mnemonic;
 use cdk::cdk_database::{
@@ -62,9 +61,12 @@ use cdk_common::database::mint::{CompletedOperationsDatabase, FederationApplicat
 use cdk_common::database::MintFederationJournalDatabase;
 use cdk_common::mint::Operation;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription, FakeWallet};
+use cdk_federation::test_support::aleph_bft::{
+    default_delay_config, Network, NodeIndex, Recipient,
+};
+use cdk_federation::test_support::parity_scale_codec::{Decode, Encode};
 use cdk_http_client::{HttpError, RawResponse, Transport};
 use futures::Stream;
-use parity_scale_codec::{Decode, Encode};
 use serde::Serialize;
 use tower::ServiceExt;
 #[cfg(feature = "prometheus")]

@@ -25,17 +25,17 @@ bdk = ["dep:cdk-bdk", "cdk-bdk/bitcoin-rpc", "cdk-bdk/electrum", "cdk-bdk/esplor
 grpc-processor = ["dep:cdk-payment-processor", "cdk-signatory/grpc"]
 sqlcipher = ["sqlite", "cdk-sqlite/sqlcipher"]
 redis = ["cdk-axum/redis"]
-prometheus = ["cdk/prometheus", "dep:cdk-prometheus", "cdk-sqlite?/prometheus", "cdk-axum/prometheus"]
+prometheus = ["cdk/prometheus", "dep:cdk-prometheus", "cdk-sqlite?/prometheus", "cdk-axum/prometheus", "cdk-federation?/prometheus"]
 info-page = ["cdk-axum/info-page"]
-iroh = ["cdk/iroh", "cdk-axum/iroh", "dep:cdk-iroh", "cdk-iroh/server"]
-federation = ["cdk/federation", "cdk-common/federation", "cdk-axum/federation", "cdk-sqlite?/federation", "cdk-postgres?/federation"]
+iroh = ["cdk/iroh", "cdk-axum/iroh", "dep:cdk-iroh", "cdk-iroh/server", "cdk-federation?/iroh"]
+federation = ["cdk/federation", "cdk-common/federation", "cdk-axum/federation", "dep:cdk-federation", "cdk-sqlite?/federation", "cdk-postgres?/federation"]
 # Federated on-chain payments are independent from the base consensus runtime.
-federation-bdk = ["federation", "bdk", "cdk-axum/federation-bdk"]
+federation-bdk = ["federation", "bdk", "cdk-axum/federation-bdk", "cdk-federation/federation-bdk"]
 # Federated Bark is deliberately separate so ordinary federation builds do not
 # resolve or compile the Bark dependency graph.
-federation-bark = ["federation", "dep:cdk-bark", "dep:cdk-federation-bark", "cdk/federation-bark", "cdk-bark/federation-bark", "cdk-axum/federation-bark", "cdk-sqlite?/federation-bark", "cdk-postgres?/federation-bark"]
+federation-bark = ["federation", "dep:cdk-bark", "dep:cdk-federation-bark", "cdk/federation-bark", "cdk-bark/federation-bark", "cdk-axum/federation-bark", "cdk-federation/federation-bark", "cdk-sqlite?/federation-bark", "cdk-postgres?/federation-bark"]
 # Local/regtest-only trusted-dealer setup and runtime admission.
-federation-test-utils = ["cdk-common/test", "federation", "fakewallet", "cdk/wallet", "cdk-sqlite?/wallet", "cdk-bark?/federation-test-utils"]
+federation-test-utils = ["cdk-common/test", "federation", "cdk-federation/test-utils", "fakewallet", "cdk/wallet", "cdk-sqlite?/wallet", "cdk-bark?/federation-test-utils"]
 
 [dependencies]
 futures.workspace = true
@@ -60,6 +60,7 @@ cdk-bdk = { workspace = true, optional = true }
 cdk-bark = { workspace = true, optional = true }
 cdk-federation-bark = { workspace = true, optional = true }
 cdk-axum.workspace = true
+cdk-federation = { workspace = true, optional = true }
 cdk-signatory.workspace = true
 cdk-mint-rpc = { workspace = true, optional = true }
 cdk-payment-processor = { workspace = true, optional = true }

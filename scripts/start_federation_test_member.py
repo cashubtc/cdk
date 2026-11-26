@@ -38,6 +38,7 @@ def main():
     overrides = (
         ("CDK_MINTD_FAKE_WALLET_MIN_DELAY", "fake_wallet", "min_delay_time", int),
         ("CDK_MINTD_FAKE_WALLET_MAX_DELAY", "fake_wallet", "max_delay_time", int),
+        ("CDK_MINTD_FEDERATION_ENABLED", "federation", "enabled", lambda value: value.strip().lower() == "true"),
         ("CDK_MINTD_FEDERATION_PUBLIC_CONFIG_PATH", "federation", "public_config_path", str),
         ("CDK_MINTD_FEDERATION_PRIVATE_CONFIG_PATH", "federation", "private_config_path", str),
         ("CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS", "federation.peer_sync", "operation_submission_timeout_secs", int),

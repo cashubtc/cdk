@@ -1090,7 +1090,8 @@ pub struct FakeWalletKeysetRotation {
     /// Input fee in parts per thousand
     #[serde(default)]
     pub input_fee_ppk: u64,
-    /// Keyset version: "v1" (Version00), "v2" (Version01), or "v3" (Version02)
+    /// Keyset version: "v1" (Version00, the default), "v2" (Version01), or
+    /// "v3" (Version02, federation builds only)
     #[serde(default = "default_keyset_version")]
     pub version: String,
     /// If true, the keyset will be created with a past expiry (expired)
@@ -1100,7 +1101,7 @@ pub struct FakeWalletKeysetRotation {
 
 #[cfg(feature = "fakewallet")]
 fn default_keyset_version() -> String {
-    "v3".to_string()
+    "v1".to_string()
 }
 
 #[cfg(feature = "fakewallet")]
@@ -1510,6 +1511,9 @@ pub struct Federation {
 }
 
 /// Member-local Bark networking, storage, and secret configuration.
+///
+/// The Bitcoin network and the Ark server come from the accepted Bark
+/// application in the federation config.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg(feature = "federation-bark")]
 #[serde(deny_unknown_fields)]
@@ -1517,10 +1521,6 @@ pub struct FederationBarkWallet {
     /// Explicitly enable the federated Bark runtime.
     #[serde(default)]
     pub enabled: bool,
-    /// Expected accepted Bitcoin network.
-    pub network: Option<String>,
-    /// Expected accepted Ark server public key.
-    pub ark_server_public_key: Option<String>,
     /// Ark gRPC endpoint.
     pub server_address: Option<String>,
     /// Optional Ark access token.
@@ -1565,8 +1565,6 @@ impl Default for FederationBarkWallet {
     fn default() -> Self {
         Self {
             enabled: false,
-            network: None,
-            ark_server_public_key: None,
             server_address: None,
             server_access_token: None,
             esplora_url: None,
@@ -1592,8 +1590,6 @@ impl fmt::Debug for FederationBarkWallet {
         formatter
             .debug_struct("FederationBarkWallet")
             .field("enabled", &self.enabled)
-            .field("network", &self.network)
-            .field("ark_server_public_key", &self.ark_server_public_key)
             .field("server_address", &"<redacted>")
             .field("server_access_token", &"<redacted>")
             .field("esplora_url", &"<redacted>")
@@ -1614,6 +1610,9 @@ impl fmt::Debug for FederationBarkWallet {
 }
 
 /// Local chain access for the federated watch-only BDK wallet.
+///
+/// The Bitcoin network, confirmation depth and transaction policy come from
+/// the active CDK on-chain application in the federation config.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg(feature = "federation")]
 #[serde(deny_unknown_fields)]
@@ -1621,12 +1620,6 @@ pub struct FederationOnchainWallet {
     /// Enable the local watch-only wallet when public config activates it.
     #[serde(default)]
     pub enabled: bool,
-    /// Expected consensus Bitcoin network; must match the active application config.
-    pub network: Option<String>,
-    /// Expected consensus confirmation depth; must match the active application config.
-    pub minimum_confirmations: Option<u32>,
-    /// Expected consensus transaction policy version; must match the active application config.
-    pub fee_policy_version: Option<u16>,
     /// `bitcoinrpc` or `esplora`.
     #[serde(default = "default_federation_onchain_source_type")]
     pub chain_source_type: String,
@@ -1665,9 +1658,6 @@ impl fmt::Debug for FederationOnchainWallet {
         formatter
             .debug_struct("FederationOnchainWallet")
             .field("enabled", &self.enabled)
-            .field("network", &self.network)
-            .field("minimum_confirmations", &self.minimum_confirmations)
-            .field("fee_policy_version", &self.fee_policy_version)
             .field("chain_source_type", &self.chain_source_type)
             .field("chain_source_scope", &self.chain_source_scope)
             .field("chain_source_id", &self.chain_source_id)
@@ -1686,9 +1676,6 @@ impl Default for FederationOnchainWallet {
     fn default() -> Self {
         Self {
             enabled: false,
-            network: None,
-            minimum_confirmations: None,
-            fee_policy_version: None,
             chain_source_type: default_federation_onchain_source_type(),
             chain_source_scope: default_federation_onchain_source_scope(),
             chain_source_id: None,
