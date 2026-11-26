@@ -34,6 +34,17 @@ const FEE_ESTIMATION_TIMEOUT_MILLIS: u64 = 3_000;
 const FALLBACK_FEE_RATE_SAT_PER_VB: u64 = 2;
 const ALLOWED_FEE_TARGET_BLOCKS: [u32; 3] = [1, 6, 144];
 const MINIMUM_REPLACEMENT_FEE_DELTA_SAT_PER_KWU: u64 = 250;
+/// Inputs a quoted fee reserve pays for at the quoted rate.
+const QUOTE_FEE_INPUTS: usize = 4;
+/// Quoted fee reserves cover this multiple of the quoted fee: room for a fee
+/// rate rise before the payment is built, or for one replacement.
+const QUOTE_FEE_HEADROOM: u64 = 2;
+/// Fixed virtual bytes of a transaction: version, locktime, counts, segwit marker.
+const TRANSACTION_OVERHEAD_VBYTES: u64 = 11;
+/// Upper bound of one key-path Taproot input with its witness.
+const TAPROOT_INPUT_VBYTES: u64 = 58;
+/// Upper bound of one standard output (P2TR and P2WSH are the largest).
+const OUTPUT_VBYTES: u64 = 43;
 
 /// Proposer-local source class permitted by a consensus fee-policy version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,6 +124,90 @@ impl FederationOnchainTransactionPolicy {
     #[must_use]
     pub fn permits_fee_target(self, target_blocks: u32) -> bool {
         self.allowed_fee_target_blocks.contains(&target_blocks)
+    }
+
+    /// Conservative virtual size of a federation wallet transaction with
+    /// `input_count` key-path Taproot inputs and `output_count` outputs.
+    #[must_use]
+    pub fn estimated_vbytes(input_count: usize, output_count: usize) -> u64 {
+        let inputs = u64::try_from(input_count).unwrap_or(u64::MAX);
+        let outputs = u64::try_from(output_count).unwrap_or(u64::MAX);
+        TRANSACTION_OVERHEAD_VBYTES
+            .saturating_add(inputs.saturating_mul(TAPROOT_INPUT_VBYTES))
+            .saturating_add(outputs.saturating_mul(OUTPUT_VBYTES))
+    }
+
+    /// Lowest fee rate this policy permits, in satoshis per virtual byte.
+    #[must_use]
+    pub fn minimum_fee_rate_sat_per_vb(self) -> u64 {
+        self.minimum_fee_rate_sat_per_kwu.div_ceil(250).max(1)
+    }
+
+    /// Fee reserve quoted for one payment at `rate_sat_per_vb`.
+    ///
+    /// A payment spends only the inputs it needs (see
+    /// [`Self::select_payment_inputs`]), so the reserve covers a payment with
+    /// one recipient, change and up to four inputs at twice the quoted rate.
+    /// That leaves room for the rate to rise before the payment is built, or
+    /// for one replacement, and covers about ten inputs at the quoted rate.
+    /// The wallet gets back as change whatever the transaction does not use.
+    #[must_use]
+    pub fn quote_fee_reserve_sat(self, rate_sat_per_vb: u64) -> u64 {
+        Self::estimated_vbytes(QUOTE_FEE_INPUTS, 2)
+            .saturating_mul(rate_sat_per_vb.max(1))
+            .saturating_mul(QUOTE_FEE_HEADROOM)
+            .min(self.maximum_absolute_fee_sat)
+    }
+
+    /// Choose the inputs and fee rate of a payment transaction.
+    ///
+    /// `utxos` are the spendable wallet outputs with their values. Inputs are
+    /// taken largest first (ties by outpoint, so every proposer agrees) until
+    /// they pay `recipients_sat` to `recipient_count` outputs and keep the
+    /// change above `change_dust_sat` even if the fee grows to
+    /// `maximum_fee_sat`, so the change can fund any replacement the reserves
+    /// allow. The fee rate is `fee_rate_sat_per_vb`, lowered when needed so
+    /// the fee stays within `maximum_fee_sat`, the payments'
+    /// accepted reserves, but never below the policy minimum. Returns `None`
+    /// when no selection within the policy's `maximum_inputs` satisfies this.
+    #[must_use]
+    pub fn select_payment_inputs(
+        self,
+        utxos: &[(cdk_common::bitcoin::OutPoint, u64)],
+        recipients_sat: u64,
+        recipient_count: usize,
+        fee_rate_sat_per_vb: u64,
+        maximum_fee_sat: u64,
+        change_dust_sat: u64,
+    ) -> Option<(Vec<cdk_common::bitcoin::OutPoint>, u64)> {
+        let mut ordered = utxos.to_vec();
+        ordered.sort_by(|left, right| right.1.cmp(&left.1).then(left.0.cmp(&right.0)));
+        let minimum_rate = self.minimum_fee_rate_sat_per_vb();
+        let output_count = recipient_count.saturating_add(1);
+        let mut input_sum = 0_u64;
+        for (index, (_, value)) in ordered.iter().enumerate().take(self.maximum_inputs) {
+            input_sum = input_sum.saturating_add(*value);
+            let vbytes = Self::estimated_vbytes(index.saturating_add(1), output_count);
+            let rate = fee_rate_sat_per_vb.min(maximum_fee_sat / vbytes.max(1));
+            if rate < minimum_rate {
+                // More inputs only make the transaction larger.
+                return None;
+            }
+            // The change keeps the whole reserve above dust, so it can
+            // absorb a replacement fee up to the accepted reserves.
+            let required = recipients_sat
+                .saturating_add(maximum_fee_sat.max(vbytes.saturating_mul(rate)))
+                .saturating_add(change_dust_sat);
+            if input_sum >= required {
+                let selected = ordered
+                    .iter()
+                    .take(index.saturating_add(1))
+                    .map(|(outpoint, _)| *outpoint)
+                    .collect();
+                return Some((selected, rate));
+            }
+        }
+        None
     }
 
     /// Minimum absolute fee increase for a replacement of `weight` units.

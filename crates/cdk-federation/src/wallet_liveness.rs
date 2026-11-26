@@ -421,7 +421,7 @@ impl FederationWalletLivenessWorker {
         wallet.ensure_ready(0).await.map_err(|error| {
             cdk::Error::Custom(format!("federated BDK wallet is not ready: {error}"))
         })?;
-        let mut spendable = chain_state
+        let spendable = chain_state
             .utxos()
             .filter(|utxo| {
                 utxo.state == FederationWalletUtxoState::Spendable
@@ -429,9 +429,7 @@ impl FederationWalletLivenessWorker {
                     && utxo.allocation.application_id == batch.scope.application_id
                     && utxo.allocation.application_key_epoch == batch.scope.application_key_epoch
             })
-            .take(FEDERATION_MAX_ONCHAIN_PROPOSAL_INPUTS)
             .collect::<Vec<_>>();
-        spendable.sort_by_key(|utxo| utxo.outpoint);
         if spendable.is_empty() {
             return Err(cdk::Error::Custom(
                 "no consensus-spendable federation wallet UTXO is available".to_string(),
@@ -471,10 +469,6 @@ impl FederationWalletLivenessWorker {
             .iter()
             .map(|intent| (intent.destination_script.clone(), intent.amount_sat))
             .collect::<Vec<_>>();
-        let outpoints = spendable
-            .iter()
-            .map(|utxo| utxo.outpoint)
-            .collect::<Vec<_>>();
         let policy =
             cdk::mint::FederationOnchainTransactionPolicy::for_version(batch.scope.policy_version)?;
         let target_blocks = batch
@@ -495,6 +489,13 @@ impl FederationWalletLivenessWorker {
         let fee_rate_sat_per_vb =
             bounded_fee_rate(policy, wallet.fetch_fee_rate_sat_per_vb(target_blocks)).await;
         fee_timer.finish(super::latency::FederationLatencyOutcome::Success);
+        let (outpoints, fee_rate_sat_per_vb) = payment_inputs(
+            policy,
+            batch,
+            &spendable,
+            fee_rate_sat_per_vb,
+            &change_script,
+        )?;
         let fee_rate = FeeRate::from_sat_per_vb(fee_rate_sat_per_vb)
             .ok_or_else(|| cdk::Error::Custom("invalid first-release fee rate".to_string()))?;
         let psbt_timer = super::latency::FederationLatencyTimer::start(
@@ -922,6 +923,59 @@ fn wallet_for_scope(
             && wallet_scope.application_id() == scope.application_id.to_bytes()
             && wallet_scope.application_key_epoch() == scope.application_key_epoch
     })
+}
+
+/// Inputs and fee rate for a batch's payment transaction.
+///
+/// Only the inputs the payments need are spent, so payers fund their own
+/// payment and not a sweep of the whole wallet. When no selection fits the
+/// accepted fee reserves (for example a payment needing more inputs than its
+/// reserve covers even at the minimum rate), the transaction falls back to
+/// spending the first spendable outputs by outpoint, as before, and fails
+/// later if its fee still exceeds the reserves.
+fn payment_inputs(
+    policy: cdk::mint::FederationOnchainTransactionPolicy,
+    batch: &FederationOnchainPaymentBatch,
+    spendable: &[&cdk::federation::FederationWalletUtxo],
+    fee_rate_sat_per_vb: u64,
+    change_script: &cdk_common::bitcoin::ScriptBuf,
+) -> Result<(Vec<cdk_common::bitcoin::OutPoint>, u64), cdk::Error> {
+    let recipients_sat = batch.intents.iter().try_fold(0_u64, |sum, intent| {
+        sum.checked_add(intent.amount_sat)
+            .ok_or_else(|| cdk::Error::Custom("payment batch amount overflow".to_string()))
+    })?;
+    let maximum_fee_sat = batch
+        .intents
+        .iter()
+        .try_fold(0_u64, |sum, intent| {
+            sum.checked_add(intent.maximum_fee_sat)
+                .ok_or_else(|| cdk::Error::Custom("payment batch fee cap overflow".to_string()))
+        })?
+        .min(policy.maximum_absolute_fee_sat);
+    let values = spendable
+        .iter()
+        .map(|utxo| (utxo.outpoint, utxo.txout.value.to_sat()))
+        .collect::<Vec<_>>();
+    let change_dust_sat = cdk_common::bitcoin::TxOut::minimal_non_dust(change_script.clone())
+        .value
+        .to_sat();
+    if let Some(selection) = policy.select_payment_inputs(
+        &values,
+        recipients_sat,
+        batch.intents.len(),
+        fee_rate_sat_per_vb,
+        maximum_fee_sat,
+        change_dust_sat,
+    ) {
+        return Ok(selection);
+    }
+    let mut outpoints = values
+        .iter()
+        .map(|(outpoint, _)| *outpoint)
+        .take(FEDERATION_MAX_ONCHAIN_PROPOSAL_INPUTS)
+        .collect::<Vec<_>>();
+    outpoints.sort();
+    Ok((outpoints, fee_rate_sat_per_vb))
 }
 
 fn fee_contributions(

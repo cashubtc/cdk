@@ -24,6 +24,7 @@ use cdk_common::federation::{
 
 use super::address_allocation::runtime_with_address_application;
 use super::*;
+use crate::mint::FederationOnchainTransactionPolicy;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ProposalOptions {
@@ -1275,4 +1276,91 @@ fn aleph_bft_journal_rejects_same_batch_and_shared_utxo_competitors() {
         ),
         Err(FederationError::ConflictingOperation { .. })
     ));
+}
+
+fn policy_v1() -> FederationOnchainTransactionPolicy {
+    FederationOnchainTransactionPolicy::for_version(1).expect("policy version 1")
+}
+
+fn selection_outpoint(seed: u8) -> OutPoint {
+    OutPoint::new(Txid::from_byte_array([seed; 32]), 0)
+}
+
+#[test]
+fn quoted_fee_reserve_covers_a_small_payment_and_follows_the_rate() {
+    let policy = policy_v1();
+    // One recipient, change and four inputs: 11 + 4 * 58 + 2 * 43 = 329 vB,
+    // reserved at twice the quoted rate.
+    assert_eq!(
+        FederationOnchainTransactionPolicy::estimated_vbytes(4, 2),
+        329
+    );
+    assert_eq!(policy.quote_fee_reserve_sat(1), 658);
+    assert_eq!(policy.quote_fee_reserve_sat(2), 1_316);
+    assert_eq!(policy.quote_fee_reserve_sat(25), 16_450);
+    // The previous fixed reserve at 1 sat/vB was 1,989 sat (24 inputs + 500).
+    assert!(policy.quote_fee_reserve_sat(1) < 1_989);
+    assert_eq!(
+        policy.quote_fee_reserve_sat(u64::MAX),
+        policy.maximum_absolute_fee_sat
+    );
+    assert_eq!(policy.minimum_fee_rate_sat_per_vb(), 1);
+}
+
+#[test]
+fn payment_inputs_are_selected_largest_first_and_only_as_needed() {
+    let policy = policy_v1();
+    let utxos = [
+        (selection_outpoint(1), 1_000),
+        (selection_outpoint(2), 50_000),
+        (selection_outpoint(3), 3_000),
+        (selection_outpoint(4), 50_000),
+        (selection_outpoint(5), 2_000),
+    ];
+    let reserve = policy.quote_fee_reserve_sat(1);
+
+    // One large output pays a small payment; ties are broken by outpoint.
+    let (inputs, rate) = policy
+        .select_payment_inputs(&utxos, 2_000, 1, 1, reserve, 330)
+        .expect("selection");
+    assert_eq!(inputs, vec![selection_outpoint(2)]);
+    assert_eq!(rate, 1);
+
+    // Without large outputs, inputs are added until amount, fee and change fit.
+    let small = [
+        (selection_outpoint(1), 1_000),
+        (selection_outpoint(3), 3_000),
+        (selection_outpoint(5), 2_000),
+    ];
+    let (inputs, rate) = policy
+        .select_payment_inputs(&small, 4_000, 1, 1, reserve, 330)
+        .expect("selection");
+    assert_eq!(inputs, vec![selection_outpoint(3), selection_outpoint(5)]);
+    assert_eq!(rate, 1);
+
+    // Not enough funds for amount, fee and change.
+    assert!(policy
+        .select_payment_inputs(&small, 5_800, 1, 1, reserve, 330)
+        .is_none());
+}
+
+#[test]
+fn payment_fee_rate_is_lowered_to_fit_the_accepted_reserves() {
+    let policy = policy_v1();
+    let utxos = (1..=12)
+        .map(|seed| (selection_outpoint(seed), 1_000))
+        .collect::<Vec<_>>();
+    // Quoted at 1 sat/vB, built when the estimate is 10 sat/vB: a one-input
+    // payment (11 + 58 + 86 = 155 vB) pays 4 sat/vB within the 658 sat reserve.
+    let (inputs, rate) = policy
+        .select_payment_inputs(&[(selection_outpoint(20), 2_000)], 300, 1, 10, 658, 330)
+        .expect("selection");
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(rate, 4);
+
+    // Ten inputs (11 + 580 + 86 = 677 vB) no longer fit 658 sat at the
+    // 1 sat/vB minimum, so there is no selection.
+    assert!(policy
+        .select_payment_inputs(&utxos, 9_000, 1, 1, 658, 330)
+        .is_none());
 }

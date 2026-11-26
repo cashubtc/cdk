@@ -21,9 +21,6 @@ use cdk_common::payment::{
 use cdk_common::{Amount, CurrencyUnit, MeltQuoteState};
 use futures::{stream, Stream};
 
-const QUOTE_INPUT_COUNT: u64 = 24;
-const QUOTE_FIXED_SAFETY_SAT: u64 = 500;
-
 /// Watch-only payment-interface boundary used only by federation-aware mint routes.
 #[derive(Debug, Clone)]
 pub(crate) struct FederatedBdkPaymentAdapter {
@@ -100,15 +97,9 @@ impl FederatedBdkPaymentAdapter {
     }
 
     fn quote_fee_sat(&self, rate_sat_per_vb: u64) -> u64 {
-        // Conservative key-path Taproot estimate: version/locktime/varints,
-        // 24 inputs including witnesses, one recipient, and one change output.
-        let estimated_vbytes = 11_u64
-            .saturating_add(QUOTE_INPUT_COUNT.saturating_mul(58))
-            .saturating_add(2_u64.saturating_mul(43));
-        estimated_vbytes
-            .saturating_mul(rate_sat_per_vb)
-            .saturating_add(QUOTE_FIXED_SAFETY_SAT)
-            .min(self.policy.maximum_absolute_fee_sat)
+        // The payment spends only the inputs it needs; unused reserve returns
+        // to the wallet as change.
+        self.policy.quote_fee_reserve_sat(rate_sat_per_vb)
     }
 
     fn consensus_only_error() -> cdk_common::payment::Error {
