@@ -118,14 +118,18 @@ use crate::nuts::nut00::ProofsMethods;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum DerivationCounterNamespace {
     P2pk,
+    /// BIP32 NUT-20 quote keys, for mints without an identity pubkey
     Nut20Quote,
+    /// NUT-13 type `0x04` quote lock keys: one counter per mint identity
+    QuoteLock(PublicKey),
 }
 
 impl DerivationCounterNamespace {
-    const fn as_str(self) -> &'static str {
+    fn as_str(self) -> String {
         match self {
-            Self::P2pk => "p2pk",
-            Self::Nut20Quote => "nut20_quote",
+            Self::P2pk => "p2pk".to_string(),
+            Self::Nut20Quote => "nut20_quote".to_string(),
+            Self::QuoteLock(mint_pubkey) => format!("nut13_quote:{}", mint_pubkey.to_hex()),
         }
     }
 }
@@ -1168,7 +1172,7 @@ impl Wallet {
     ) -> Result<u32, Error> {
         Ok(self
             .localstore
-            .reserve_derivation_index(namespace.as_str(), minimum_index)
+            .reserve_derivation_index(&namespace.as_str(), minimum_index)
             .await?)
     }
 
