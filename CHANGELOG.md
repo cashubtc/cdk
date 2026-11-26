@@ -15,6 +15,7 @@
 
 - cdk: **BREAKING** - `KeysetRotation::use_keyset_v2: bool` is replaced by `keyset_id_type: KeySetVersion`.
 - cdk-mintd: **BREAKING** - `Info::from_env` now returns `Result<Info, config::ConfigError>` to report invalid keyset version overrides.
+- cdk-common: **BREAKING** - `MakePaymentResponse` gained optional `bolt12_payer_proof_inputs`. Downstream `MintPayment` backends that construct the struct with a literal must set the field, or use `MakePaymentResponse::new(...)` which leaves it unset.
 
 ### Fixed
 

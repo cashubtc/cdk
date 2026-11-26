@@ -125,12 +125,14 @@ impl MintPayment for ControllableBackend {
             DispatchBehavior::Pending => Ok(MakePaymentResponse {
                 payment_lookup_id,
                 payment_proof: None,
+                bolt12_payer_proof_inputs: None,
                 status: MeltQuoteState::Pending,
                 total_spent: Amount::ZERO.with_unit(CurrencyUnit::Sat),
             }),
             DispatchBehavior::Paid => Ok(MakePaymentResponse {
                 payment_lookup_id,
                 payment_proof: Some("preimage".to_string()),
+                bolt12_payer_proof_inputs: None,
                 status: MeltQuoteState::Paid,
                 total_spent: self.spent_amount.clone(),
             }),
@@ -159,6 +161,7 @@ impl MintPayment for ControllableBackend {
         Ok(MakePaymentResponse {
             payment_lookup_id: payment_identifier.clone(),
             payment_proof: Some("preimage".to_string()),
+            bolt12_payer_proof_inputs: None,
             status,
             total_spent,
         })

@@ -401,6 +401,7 @@ async fn finalize_paid_melt_outcome(
         total_spent: total_spent.clone(),
         payment_lookup_id: payment_response.payment_lookup_id.clone(),
         payment_proof: payment_response.payment_proof.clone(),
+        bolt12_payer_proof_inputs: payment_response.bolt12_payer_proof_inputs.clone(),
     };
     tx.update_acquired_saga_with_finalization_data(
         &mut acquired_saga,
@@ -421,6 +422,7 @@ async fn finalize_paid_melt_outcome(
         payment_response.payment_proof.clone(),
         &payment_response.payment_lookup_id,
         Some(saga.operation_id),
+        payment_response.bolt12_payer_proof_inputs.clone(),
     )
     .await?;
 
@@ -428,6 +430,7 @@ async fn finalize_paid_melt_outcome(
     // built from it are accurate.
     quote.state = MeltQuoteState::Paid;
     quote.payment_proof = payment_response.payment_proof.clone();
+    quote.bolt12_payer_proof_inputs = payment_response.bolt12_payer_proof_inputs.clone();
     quote.request_lookup_id = Some(payment_response.payment_lookup_id.clone());
 
     Ok(())
@@ -602,6 +605,7 @@ mod tests {
                 .clone()
                 .expect("bolt11 quote should have a lookup id"),
             payment_proof: None,
+            bolt12_payer_proof_inputs: None,
             status: MeltQuoteState::Failed,
             total_spent: quote.amount(),
         };
@@ -672,6 +676,7 @@ mod tests {
         let payment_response = MakePaymentResponse {
             payment_lookup_id: PaymentIdentifier::CustomId("paid_outcome_lookup".to_string()),
             payment_proof: Some("paid_outcome_preimage".to_string()),
+            bolt12_payer_proof_inputs: None,
             status: MeltQuoteState::Paid,
             total_spent: Amount::from(9_250).with_unit(CurrencyUnit::Sat),
         };
@@ -886,6 +891,7 @@ mod tests {
             let unknown_response = MakePaymentResponse {
                 payment_lookup_id: lookup_id.clone(),
                 payment_proof: None,
+                bolt12_payer_proof_inputs: None,
                 status: MeltQuoteState::Unknown,
                 total_spent: quote.amount(),
             };
@@ -911,6 +917,7 @@ mod tests {
             let failed_response = MakePaymentResponse {
                 payment_lookup_id: lookup_id,
                 payment_proof: None,
+                bolt12_payer_proof_inputs: None,
                 status: MeltQuoteState::Failed,
                 total_spent: quote.amount(),
             };
@@ -1023,6 +1030,7 @@ mod tests {
                         .clone()
                         .expect("bolt11 quote should have a lookup id"),
                     payment_proof: None,
+                    bolt12_payer_proof_inputs: None,
                     status: fresh_status,
                     total_spent: quote.amount(),
                 };
@@ -1112,6 +1120,7 @@ mod tests {
         let payment_response = MakePaymentResponse {
             payment_lookup_id: PaymentIdentifier::CustomId("failed_after_paid_lookup".to_string()),
             payment_proof: None,
+            bolt12_payer_proof_inputs: None,
             status: MeltQuoteState::Failed,
             total_spent: paid_quote.amount(),
         };
@@ -1230,6 +1239,7 @@ mod tests {
         let paid_response = MakePaymentResponse {
             payment_lookup_id: PaymentIdentifier::CustomId("paid_event_lookup".to_string()),
             payment_proof: Some("paid_event_preimage".to_string()),
+            bolt12_payer_proof_inputs: None,
             status: MeltQuoteState::Paid,
             total_spent: Amount::from(9_250).with_unit(CurrencyUnit::Sat),
         };
@@ -1248,6 +1258,7 @@ mod tests {
         let failed_response = MakePaymentResponse {
             payment_lookup_id: PaymentIdentifier::CustomId("stale_failed_lookup".to_string()),
             payment_proof: None,
+            bolt12_payer_proof_inputs: None,
             status: MeltQuoteState::Failed,
             total_spent: stale_quote.amount(),
         };
@@ -1381,6 +1392,7 @@ mod tests {
                 "internal_settlement_failed_lookup".to_string(),
             ),
             payment_proof: None,
+            bolt12_payer_proof_inputs: None,
             status: MeltQuoteState::Failed,
             total_spent: quote.amount(),
         };
@@ -1494,6 +1506,7 @@ mod tests {
             total_spent: Amount::from(9_250).with_unit(CurrencyUnit::Sat),
             payment_lookup_id: PaymentIdentifier::CustomId("paid_lookup".to_string()),
             payment_proof: Some("paid_preimage".to_string()),
+            bolt12_payer_proof_inputs: None,
         };
         let mut tx = mint.localstore.begin_transaction().await.unwrap();
         let mut saga = tx
@@ -1519,6 +1532,7 @@ mod tests {
         let failed_response = MakePaymentResponse {
             payment_lookup_id: PaymentIdentifier::CustomId("failed_lookup".to_string()),
             payment_proof: None,
+            bolt12_payer_proof_inputs: None,
             status: MeltQuoteState::Failed,
             total_spent: quote.amount(),
         };
@@ -1587,6 +1601,7 @@ mod tests {
             total_spent: Amount::from(9_250).with_unit(CurrencyUnit::Sat),
             payment_lookup_id: PaymentIdentifier::CustomId("paid_lookup".to_string()),
             payment_proof: Some("paid_preimage".to_string()),
+            bolt12_payer_proof_inputs: None,
         };
         let mut tx = mint.localstore.begin_transaction().await.unwrap();
         let mut saga = tx
@@ -1606,6 +1621,7 @@ mod tests {
         let payment_response = MakePaymentResponse {
             payment_lookup_id: PaymentIdentifier::CustomId("pending_outcome_lookup".to_string()),
             payment_proof: None,
+            bolt12_payer_proof_inputs: None,
             status: MeltQuoteState::Pending,
             total_spent: quote.amount(),
         };
@@ -1674,6 +1690,7 @@ mod tests {
         let payment_response = MakePaymentResponse {
             payment_lookup_id: PaymentIdentifier::CustomId("unknown_outcome_lookup".to_string()),
             payment_proof: None,
+            bolt12_payer_proof_inputs: None,
             status: MeltQuoteState::Unknown,
             total_spent: quote.amount(),
         };
@@ -1737,6 +1754,7 @@ mod tests {
         let payment_response = MakePaymentResponse {
             payment_lookup_id: PaymentIdentifier::CustomId("unit_mismatch_lookup".to_string()),
             payment_proof: Some("unit_mismatch_preimage".to_string()),
+            bolt12_payer_proof_inputs: None,
             status: MeltQuoteState::Paid,
             total_spent: Amount::from(9_250).with_unit(CurrencyUnit::Usd),
         };

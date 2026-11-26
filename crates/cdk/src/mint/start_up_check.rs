@@ -121,6 +121,7 @@ impl Mint {
         payment_proof: Option<String>,
         payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
         operation_id: uuid::Uuid,
+        bolt12_payer_proof_inputs: Option<cdk_common::payment::Bolt12PayerProofInputs>,
     ) -> Result<(), Error> {
         tracing::info!("Finalizing paid melt quote {} during startup", quote.id);
 
@@ -135,6 +136,7 @@ impl Mint {
             payment_proof,
             payment_lookup_id,
             Some(operation_id),
+            bolt12_payer_proof_inputs,
         )
         .await?;
 
@@ -186,6 +188,7 @@ impl Mint {
         Ok(Some(crate::cdk_payment::MakePaymentResponse {
             payment_lookup_id,
             payment_proof: None,
+            bolt12_payer_proof_inputs: None,
             status: MeltQuoteState::Paid,
             total_spent: quote.amount(),
         }))
@@ -200,6 +203,7 @@ impl Mint {
             return Ok(Some(crate::cdk_payment::MakePaymentResponse {
                 payment_lookup_id: finalization_data.payment_lookup_id.clone(),
                 payment_proof: finalization_data.payment_proof.clone(),
+                bolt12_payer_proof_inputs: finalization_data.bolt12_payer_proof_inputs.clone(),
                 status: MeltQuoteState::Paid,
                 total_spent: finalization_data.total_spent.clone(),
             }));
@@ -647,6 +651,8 @@ impl Mint {
                             };
                             let payment_lookup_id = payment_response.payment_lookup_id.clone();
                             let payment_proof = payment_response.payment_proof.clone();
+                            let bolt12_payer_proof_inputs =
+                                payment_response.bolt12_payer_proof_inputs.clone();
 
                             if let Err(err) = self
                                 .finalize_paid_melt_quote(
@@ -655,6 +661,7 @@ impl Mint {
                                     payment_proof.clone(),
                                     &payment_lookup_id,
                                     saga.operation_id,
+                                    bolt12_payer_proof_inputs.clone(),
                                 )
                                 .await
                             {
@@ -668,6 +675,7 @@ impl Mint {
 
                             quote.state = MeltQuoteState::Paid;
                             quote.payment_proof = payment_proof;
+                            quote.bolt12_payer_proof_inputs = bolt12_payer_proof_inputs;
                             quote.request_lookup_id = Some(payment_lookup_id);
 
                             tracing::info!(
@@ -721,6 +729,7 @@ impl Mint {
                                         payment_response.payment_proof,
                                         &payment_lookup_id,
                                         saga.operation_id,
+                                        payment_response.bolt12_payer_proof_inputs,
                                     )
                                     .await
                                 {

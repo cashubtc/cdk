@@ -97,6 +97,7 @@ pub(crate) async fn persist_melt_finalization_handoff(
         total_spent: payment_response.total_spent.clone(),
         payment_lookup_id: payment_response.payment_lookup_id.clone(),
         payment_proof: payment_response.payment_proof.clone(),
+        bolt12_payer_proof_inputs: payment_response.bolt12_payer_proof_inputs.clone(),
     };
 
     tx.update_acquired_saga_with_finalization_data(
@@ -718,6 +719,7 @@ pub(crate) async fn finalize_melt_core(
     total_spent: Amount<CurrencyUnit>,
     payment_proof: Option<String>,
     payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
+    bolt12_payer_proof_inputs: Option<cdk_common::payment::Bolt12PayerProofInputs>,
 ) -> Result<(Proofs, MeltQuote), Error> {
     // Validate quote amount vs payment amount
     if quote.amount() > total_spent {
@@ -780,7 +782,10 @@ pub(crate) async fn finalize_melt_core(
         // Payment is already done - continue finalization but no change will be returned
     }
 
+    quote.bolt12_payer_proof_inputs = bolt12_payer_proof_inputs;
+
     // Keep ownership until finalization cleanup commits.
+    // Update quote state to Paid
     if let Err(err) = tx
         .update_melt_quote_state(&mut quote, MeltQuoteState::Paid, payment_proof.clone())
         .await
@@ -870,6 +875,7 @@ pub async fn finalize_melt_quote(
     payment_proof: Option<String>,
     payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
     operation_id: Option<uuid::Uuid>,
+    bolt12_payer_proof_inputs: Option<cdk_common::payment::Bolt12PayerProofInputs>,
 ) -> Result<Option<Vec<BlindSignature>>, Error> {
     tracing::debug!("Finalizing melt quote {}", quote.id);
 
@@ -1007,6 +1013,7 @@ pub async fn finalize_melt_quote(
             total_spent.clone(),
             payment_proof.clone(),
             payment_lookup_id,
+            bolt12_payer_proof_inputs,
         )
         .await?;
 

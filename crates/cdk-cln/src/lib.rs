@@ -560,6 +560,7 @@ impl MintPayment for Cln {
             Ok(pay_response) => MakePaymentResponse {
                 payment_lookup_id,
                 payment_proof: Some(hex::encode(pay_response.payment_preimage.to_vec())),
+                bolt12_payer_proof_inputs: None,
                 status: MeltQuoteState::Paid,
                 total_spent: Amount::new(pay_response.amount_sent_msat.msat(), CurrencyUnit::Msat),
             },
@@ -927,6 +928,7 @@ impl MintPayment for Cln {
                 Ok(MakePaymentResponse {
                     payment_lookup_id: payment_identifier.clone(),
                     payment_proof: pays_response.preimage.map(|p| hex::encode(p.to_vec())),
+                    bolt12_payer_proof_inputs: None,
                     status,
                     total_spent: pays_response
                         .amount_sent_msat
@@ -938,6 +940,7 @@ impl MintPayment for Cln {
             None => Ok(MakePaymentResponse {
                 payment_lookup_id: payment_identifier.clone(),
                 payment_proof: None,
+                bolt12_payer_proof_inputs: None,
                 status: missing_payment_state,
                 total_spent: Amount::new(0, CurrencyUnit::Msat),
             }),
@@ -1331,6 +1334,7 @@ fn outgoing_payment_response_with_status(
     MakePaymentResponse {
         payment_lookup_id: payment_identifier.clone(),
         payment_proof: None,
+        bolt12_payer_proof_inputs: None,
         status,
         total_spent: Amount::new(0, CurrencyUnit::Msat),
     }

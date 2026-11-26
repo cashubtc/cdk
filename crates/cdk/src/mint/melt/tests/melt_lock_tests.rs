@@ -280,6 +280,7 @@ async fn finalize_and_rollback_with_wrong_lock_token_are_refused() {
             .clone()
             .expect("bolt11 quote should have a lookup id"),
         Some(wrong_operation_id),
+        None,
     )
     .await
     .unwrap_err();
@@ -395,6 +396,7 @@ async fn in_doubt_payment_releases_lock_and_later_poll_resolves() {
     let paid_response = MakePaymentResponse {
         payment_lookup_id: PaymentIdentifier::PaymentHash(*invoice.payment_hash().as_ref()),
         payment_proof: Some("preimage".to_string()),
+        bolt12_payer_proof_inputs: None,
         status: MeltQuoteState::Paid,
         total_spent: Amount::from(9_250).with_unit(CurrencyUnit::Sat),
     };
@@ -554,6 +556,7 @@ async fn status_poll_replays_finalizing_handoff_after_lease_expires() {
             total_spent: Amount::from(9_250).with_unit(CurrencyUnit::Sat),
             payment_lookup_id: PaymentIdentifier::CustomId("saved-payment".to_string()),
             payment_proof: Some("saved-preimage".to_string()),
+            bolt12_payer_proof_inputs: None,
         };
         let mut tx = mint.localstore().begin_transaction().await.unwrap();
         let mut saga = tx
@@ -725,6 +728,7 @@ async fn recovery_preserves_success_after_release_failure() {
                             *invoice.payment_hash().as_ref(),
                         ),
                         payment_proof: Some("saved-preimage".to_string()),
+                        bolt12_payer_proof_inputs: None,
                         status: MeltQuoteState::Paid,
                         total_spent: Amount::from(9_250).with_unit(CurrencyUnit::Sat),
                     },
