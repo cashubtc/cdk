@@ -2,7 +2,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use cdk_sql_common::stmt::query;
-use rusqlite::Connection;
+use sqlite_thin::Connection;
 
 use super::{Fixture, Phase, Release, Transaction};
 

@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use cdk_sql_common::pool::DatabasePool;
 use cdk_sql_common::stmt::query;
-use rusqlite::Connection;
+use sqlite_thin::Connection;
 
 use super::TestDirectory;
 use crate::common::{Config, SqliteConnectionManager};
@@ -37,7 +37,7 @@ async fn contended_sqlite_write_leaves_executor_available_to_release_holder() {
             .execute(connection.as_ref())
             .await
     });
-    // Sending the signal does not yield the writer. An inline rusqlite busy
+    // Sending the signal does not yield the writer. An inline SQLite busy
     // wait therefore starves this same-thread COMMIT until its timeout expires.
     waiting.await.unwrap();
     holder.execute_batch("COMMIT").unwrap();

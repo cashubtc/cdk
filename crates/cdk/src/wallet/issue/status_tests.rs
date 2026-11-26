@@ -178,7 +178,7 @@ async fn quote_status_propagates_reload_failures() {
             client.set_mint_quote_status_response(&quote.id, paid_response(&quote));
             client
                 .push_post_batch_check_mint_quote_status_response(Ok(vec![paid_response(&quote)]));
-            let connection = rusqlite::Connection::open(&path).unwrap();
+            let connection = sqlite_thin::Connection::open(&path).unwrap();
             let action = match missing {
                 true => "DELETE FROM mint_quote WHERE id = NEW.id;",
                 false => "UPDATE mint_quote SET state = 'invalid-state' WHERE id = NEW.id;",

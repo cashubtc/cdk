@@ -88,17 +88,6 @@ corresponding dependency changes in the same change. Preserve its MSRV-compatibl
 versions. For a full dependency refresh, run `just update-msrv-lock` from the
 repository root. It updates both root lockfiles and reapplies the MSRV pins.
 
-Also check both lockfiles in the independent
-[`tests/rusqlite-compat` workspace](tests/rusqlite-compat/README.md). Refresh
-any affected entries in the same change, preserving the minimum supported
-rusqlite version in `Cargo.lock.min` and the maximum in `Cargo.lock`.
-Follow the fixture README for the MSRV update procedure. Verify both endpoints
-from the repository root with the same locked builds CI runs:
-
-```sh
-nix build -L .#checks.x86_64-linux.rusqlite-compat-{min,max}
-```
-
 ## Workspace Lint Rules (Cargo.toml)
 
 These are enforced workspace-wide:
