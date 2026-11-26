@@ -1687,6 +1687,100 @@ where
     Ok(pruned)
 }
 
+/// Store one finalized item and advance the finalized-item frontier.
+async fn insert_federation_aleph_bft_finalized_item<RM>(
+    transaction: &mut SQLTransaction<RM>,
+    item: &FederationAlephBftFinalizedItem,
+) -> Result<(), Error>
+where
+    RM: DatabasePool + 'static,
+{
+    let rows_affected = query(
+        r#"
+        INSERT INTO federation_aleph_bft_finalized_items
+        (
+            accepted_item_index,
+            session,
+            unit_finalization_index,
+            unit_submitting_member,
+            unit_index,
+            item_index_in_unit,
+            operation_id,
+            status,
+            unit_body_hash,
+            item_json
+        )
+        VALUES
+        (
+            :accepted_item_index,
+            :session,
+            :unit_finalization_index,
+            :unit_submitting_member,
+            :unit_index,
+            :item_index_in_unit,
+            :operation_id,
+            :status,
+            :unit_body_hash,
+            :item_json
+        )
+        ON CONFLICT (accepted_item_index)
+        DO UPDATE SET
+            session = EXCLUDED.session,
+            unit_finalization_index = EXCLUDED.unit_finalization_index,
+            unit_submitting_member = EXCLUDED.unit_submitting_member,
+            unit_index = EXCLUDED.unit_index,
+            item_index_in_unit = EXCLUDED.item_index_in_unit,
+            operation_id = EXCLUDED.operation_id,
+            status = EXCLUDED.status,
+            unit_body_hash = EXCLUDED.unit_body_hash,
+            item_json = EXCLUDED.item_json
+        WHERE federation_aleph_bft_finalized_items.session = EXCLUDED.session
+          AND federation_aleph_bft_finalized_items.unit_finalization_index = EXCLUDED.unit_finalization_index
+          AND federation_aleph_bft_finalized_items.unit_submitting_member = EXCLUDED.unit_submitting_member
+          AND federation_aleph_bft_finalized_items.unit_index = EXCLUDED.unit_index
+          AND federation_aleph_bft_finalized_items.item_index_in_unit = EXCLUDED.item_index_in_unit
+          AND (
+                federation_aleph_bft_finalized_items.operation_id = EXCLUDED.operation_id
+                OR (
+                    federation_aleph_bft_finalized_items.operation_id IS NULL
+                    AND EXCLUDED.operation_id IS NULL
+                )
+              )
+          AND federation_aleph_bft_finalized_items.status = EXCLUDED.status
+          AND federation_aleph_bft_finalized_items.unit_body_hash = EXCLUDED.unit_body_hash
+          AND federation_aleph_bft_finalized_items.item_json = EXCLUDED.item_json
+        "#,
+    )?
+    .bind("accepted_item_index", item.accepted_item_index as i64)
+    .bind("session", item.session as i64)
+    .bind(
+        "unit_finalization_index",
+        item.unit_finalization_index as i64,
+    )
+    .bind(
+        "unit_submitting_member",
+        i64::from(item.unit_submitting_member.get()),
+    )
+    .bind("unit_index", item.unit_index as i64)
+    .bind("item_index_in_unit", item.item_index_in_unit as i64)
+    .bind(
+        "operation_id",
+        item.operation_id.map(|operation_id| operation_id.to_string()),
+    )
+    .bind("status", aleph_bft_finalized_item_status_to_str(item.status))
+    .bind("unit_body_hash", item.unit_body_hash.to_hex())
+    .bind("item_json", serde_json::to_string(item)?)
+    .execute(&transaction.inner)
+    .await?;
+    if rows_affected == 0 {
+        return Err(federation_aleph_bft_finalized_item_conflict_error(item));
+    }
+
+    advance_federation_finalized_item_frontier(transaction).await?;
+
+    Ok(())
+}
+
 #[async_trait]
 impl<RM> FederationJournalTransaction for SQLTransaction<RM>
 where
@@ -1764,18 +1858,12 @@ where
         Ok(())
     }
 
-    async fn get_federation_journal_entry_by_operation_id(
+    async fn get_federation_journal_entry(
         &mut self,
-        operation_id: FederationOperationId,
+        key: FederationJournalEntryKey<'_>,
+        before: Option<u64>,
     ) -> Result<Option<FederationJournalEntry>, Self::Err> {
-        query(federation_journal_entry_select!(
-            "WHERE operation_id = :operation_id ORDER BY operation_index DESC LIMIT 1"
-        ))?
-        .bind("operation_id", operation_id.to_string())
-        .fetch_one(&self.inner)
-        .await?
-        .map(sql_row_to_federation_journal_entry)
-        .transpose()
+        federation_journal_entry(&self.inner, key, before).await
     }
 
     async fn add_federation_journal_entry(
@@ -1985,7 +2073,7 @@ where
                 prune_unreferenced_nonquorum_checkpoint(self, previous_checkpoint_id).await?;
             }
         }
-        self.prune_federation_checkpoints().await?;
+        prune_federation_checkpoint_retention(self).await?;
         Ok(())
     }
 
@@ -2131,7 +2219,7 @@ where
         .bind("quorum_json", serde_json::to_string(&stored_quorum)?)
         .execute(&self.inner)
         .await?;
-        self.prune_federation_checkpoints().await?;
+        prune_federation_checkpoint_retention(self).await?;
         Ok(())
     }
 
@@ -2181,7 +2269,7 @@ where
                 .bind("state_key", FEDERATION_CHECKPOINT_STATE_KEY)
                 .execute(&self.inner)
                 .await?;
-                self.prune_federation_checkpoints().await?;
+                prune_federation_checkpoint_retention(self).await?;
                 return Ok(());
             }
         };
@@ -2207,7 +2295,7 @@ where
         .bind("state_key", FEDERATION_CHECKPOINT_STATE_KEY)
         .execute(&self.inner)
         .await?;
-        self.prune_federation_checkpoints().await?;
+        prune_federation_checkpoint_retention(self).await?;
         Ok(())
     }
 
@@ -2350,10 +2438,6 @@ where
         Ok(())
     }
 
-    async fn prune_federation_checkpoints(&mut self) -> Result<u64, Self::Err> {
-        prune_federation_checkpoint_retention(self).await
-    }
-
     async fn prune_federation_history(
         &mut self,
         limit: u64,
@@ -2391,92 +2475,13 @@ where
         Ok(())
     }
 
-    async fn add_federation_aleph_bft_finalized_item(
+    async fn add_federation_aleph_bft_finalized_items(
         &mut self,
-        item: &FederationAlephBftFinalizedItem,
+        items: &[FederationAlephBftFinalizedItem],
     ) -> Result<(), Self::Err> {
-        let rows_affected = query(
-            r#"
-            INSERT INTO federation_aleph_bft_finalized_items
-            (
-                accepted_item_index,
-                session,
-                unit_finalization_index,
-                unit_submitting_member,
-                unit_index,
-                item_index_in_unit,
-                operation_id,
-                status,
-                unit_body_hash,
-                item_json
-            )
-            VALUES
-            (
-                :accepted_item_index,
-                :session,
-                :unit_finalization_index,
-                :unit_submitting_member,
-                :unit_index,
-                :item_index_in_unit,
-                :operation_id,
-                :status,
-                :unit_body_hash,
-                :item_json
-            )
-            ON CONFLICT (accepted_item_index)
-            DO UPDATE SET
-                session = EXCLUDED.session,
-                unit_finalization_index = EXCLUDED.unit_finalization_index,
-                unit_submitting_member = EXCLUDED.unit_submitting_member,
-                unit_index = EXCLUDED.unit_index,
-                item_index_in_unit = EXCLUDED.item_index_in_unit,
-                operation_id = EXCLUDED.operation_id,
-                status = EXCLUDED.status,
-                unit_body_hash = EXCLUDED.unit_body_hash,
-                item_json = EXCLUDED.item_json
-            WHERE federation_aleph_bft_finalized_items.session = EXCLUDED.session
-              AND federation_aleph_bft_finalized_items.unit_finalization_index = EXCLUDED.unit_finalization_index
-              AND federation_aleph_bft_finalized_items.unit_submitting_member = EXCLUDED.unit_submitting_member
-              AND federation_aleph_bft_finalized_items.unit_index = EXCLUDED.unit_index
-              AND federation_aleph_bft_finalized_items.item_index_in_unit = EXCLUDED.item_index_in_unit
-              AND (
-                    federation_aleph_bft_finalized_items.operation_id = EXCLUDED.operation_id
-                    OR (
-                        federation_aleph_bft_finalized_items.operation_id IS NULL
-                        AND EXCLUDED.operation_id IS NULL
-                    )
-                  )
-              AND federation_aleph_bft_finalized_items.status = EXCLUDED.status
-              AND federation_aleph_bft_finalized_items.unit_body_hash = EXCLUDED.unit_body_hash
-              AND federation_aleph_bft_finalized_items.item_json = EXCLUDED.item_json
-            "#,
-        )?
-        .bind("accepted_item_index", item.accepted_item_index as i64)
-        .bind("session", item.session as i64)
-        .bind(
-            "unit_finalization_index",
-            item.unit_finalization_index as i64,
-        )
-        .bind(
-            "unit_submitting_member",
-            i64::from(item.unit_submitting_member.get()),
-        )
-        .bind("unit_index", item.unit_index as i64)
-        .bind("item_index_in_unit", item.item_index_in_unit as i64)
-        .bind(
-            "operation_id",
-            item.operation_id.map(|operation_id| operation_id.to_string()),
-        )
-        .bind("status", aleph_bft_finalized_item_status_to_str(item.status))
-        .bind("unit_body_hash", item.unit_body_hash.to_hex())
-        .bind("item_json", serde_json::to_string(item)?)
-        .execute(&self.inner)
-        .await?;
-        if rows_affected == 0 {
-            return Err(federation_aleph_bft_finalized_item_conflict_error(item));
+        for item in items {
+            insert_federation_aleph_bft_finalized_item(self, item).await?;
         }
-
-        advance_federation_finalized_item_frontier(self).await?;
 
         Ok(())
     }
@@ -2749,6 +2754,301 @@ where
     }
 }
 
+/// SQL bounds of an index range: start, exclusive end and row limit, each
+/// saturated to the SQL integer range.
+fn sql_index_range(range: FederationIndexRange) -> (i64, i64, i64) {
+    let start = i64::try_from(range.start).unwrap_or(i64::MAX);
+    let end = range
+        .end
+        .map_or(i64::MAX, |end| i64::try_from(end).unwrap_or(i64::MAX));
+    let limit = range
+        .limit
+        .map_or(i64::MAX, |limit| i64::try_from(limit).unwrap_or(i64::MAX));
+    (start, end, limit)
+}
+
+/// The latest accepted journal entry for `key`, ordered before `before`
+/// when it is given.
+async fn federation_journal_entry<C>(
+    connection: &C,
+    key: FederationJournalEntryKey<'_>,
+    before: Option<u64>,
+) -> Result<Option<FederationJournalEntry>, Error>
+where
+    C: DatabaseExecutor,
+{
+    let row = match (key, before) {
+        (FederationJournalEntryKey::Operation(operation_id), None) => {
+            query(federation_journal_entry_select!(
+                "WHERE operation_id = :operation_id ORDER BY operation_index DESC LIMIT 1"
+            ))?
+            .bind("operation_id", operation_id.to_string())
+            .fetch_one(connection)
+            .await?
+        }
+        (FederationJournalEntryKey::Operation(operation_id), Some(next_index)) => {
+            query(federation_journal_entry_select!(
+                "WHERE operation_id = :operation_id
+                   AND operation_index < :next_index
+                 ORDER BY operation_index DESC
+                 LIMIT 1"
+            ))?
+            .bind("operation_id", operation_id.to_string())
+            .bind("next_index", next_index as i64)
+            .fetch_one(connection)
+            .await?
+        }
+        (FederationJournalEntryKey::ConflictKey(conflict_key), None) => {
+            query(federation_journal_entry_select!(
+                "WHERE operation_index = (
+                    SELECT MAX(operation_index)
+                    FROM federation_journal_conflict_keys
+                    WHERE conflict_key_json = :conflict_key_json
+                )"
+            ))?
+            .bind("conflict_key_json", serde_json::to_string(conflict_key)?)
+            .fetch_one(connection)
+            .await?
+        }
+        (FederationJournalEntryKey::ConflictKey(conflict_key), Some(next_index)) => {
+            query(federation_journal_entry_select!(
+                "WHERE operation_index = (
+                    SELECT MAX(operation_index)
+                    FROM federation_journal_conflict_keys
+                    WHERE conflict_key_json = :conflict_key_json
+                      AND operation_index < :next_index
+                )"
+            ))?
+            .bind("conflict_key_json", serde_json::to_string(conflict_key)?)
+            .bind("next_index", next_index as i64)
+            .fetch_one(connection)
+            .await?
+        }
+    };
+    row.map(sql_row_to_federation_journal_entry).transpose()
+}
+
+/// The stored checkpoint `selector` names.
+async fn federation_checkpoint<C>(
+    connection: &C,
+    selector: FederationCheckpointSelector,
+) -> Result<Option<FederationCheckpoint>, Error>
+where
+    C: DatabaseExecutor,
+{
+    match selector {
+        FederationCheckpointSelector::Id(checkpoint_id) => query(
+            r#"
+            SELECT checkpoint_id, checkpoint_json
+            FROM federation_checkpoints
+            WHERE checkpoint_id = :checkpoint_id
+            "#,
+        )?
+        .bind("checkpoint_id", checkpoint_id.to_string())
+        .fetch_one(connection)
+        .await?
+        .map(sql_row_to_federation_checkpoint)
+        .transpose(),
+        FederationCheckpointSelector::Latest(kind) => query(
+            r#"
+            SELECT checkpoint_id, checkpoint_json
+            FROM federation_checkpoints
+            WHERE checkpoint_kind = :checkpoint_kind
+            ORDER BY
+                scheduled_checkpoint_sequence DESC,
+                finalized_next_item_index DESC,
+                journal_next_index DESC,
+                checkpoint_id DESC
+            LIMIT 1
+            "#,
+        )?
+        .bind("checkpoint_kind", checkpoint_kind_to_str(kind))
+        .fetch_one(connection)
+        .await?
+        .map(sql_row_to_federation_checkpoint)
+        .transpose(),
+        FederationCheckpointSelector::NextScheduled(scheduled_checkpoint_sequence) => {
+            let Some(sequence) = scheduled_checkpoint_sequence.checked_add(1) else {
+                return Ok(None);
+            };
+            let sequence = i64::try_from(sequence).map_err(|_| {
+                Error::Internal("Checkpoint sequence exceeds SQL range".to_string())
+            })?;
+            let checkpoint = query(
+                r#"
+                SELECT checkpoint_id, checkpoint_json
+                FROM federation_checkpoints
+                WHERE checkpoint_kind = 'scheduled'
+                    AND scheduled_checkpoint_sequence = :sequence
+                ORDER BY finalized_next_item_index ASC, checkpoint_id ASC
+                LIMIT 1
+                "#,
+            )?
+            .bind("sequence", sequence)
+            .fetch_one(connection)
+            .await?
+            .map(sql_row_to_federation_checkpoint)
+            .transpose()?;
+            if checkpoint.as_ref().is_some_and(|checkpoint| {
+                checkpoint.kind != FederationCheckpointKind::Scheduled
+                    || checkpoint.scheduled_checkpoint_sequence != sequence as u64
+            }) {
+                return Err(Error::Internal(
+                    "Federation scheduled checkpoint index returned an invalid next candidate"
+                        .to_string(),
+                ));
+            }
+            Ok(checkpoint)
+        }
+        FederationCheckpointSelector::Trusted => query(
+            r#"
+            SELECT c.checkpoint_id, c.checkpoint_json
+            FROM federation_checkpoint_state AS s
+            INNER JOIN federation_checkpoints AS c
+                ON c.checkpoint_id = s.trusted_checkpoint_id
+            WHERE s.state_key = :state_key
+            "#,
+        )?
+        .bind("state_key", FEDERATION_CHECKPOINT_STATE_KEY)
+        .fetch_one(connection)
+        .await?
+        .map(sql_row_to_federation_checkpoint)
+        .transpose(),
+        FederationCheckpointSelector::StateTransferBase => {
+            federation_state_transfer_base(connection).await
+        }
+    }
+}
+
+/// The stored assembled quorum of the checkpoint `selector` names.
+async fn federation_checkpoint_quorum<C>(
+    connection: &C,
+    selector: FederationCheckpointSelector,
+) -> Result<Option<FederationCheckpointQuorum>, Error>
+where
+    C: DatabaseExecutor,
+{
+    match selector {
+        FederationCheckpointSelector::Id(checkpoint_id) => query(
+            r#"
+            SELECT checkpoint_id, quorum_json
+            FROM federation_checkpoint_quorums
+            WHERE checkpoint_id = :checkpoint_id
+            "#,
+        )?
+        .bind("checkpoint_id", checkpoint_id.to_string())
+        .fetch_one(connection)
+        .await?
+        .map(sql_row_to_federation_checkpoint_quorum)
+        .transpose(),
+        FederationCheckpointSelector::Latest(kind) => {
+            let quorum = query(
+                r#"
+                SELECT q.checkpoint_id, q.quorum_json
+                FROM federation_checkpoint_quorums AS q
+                INNER JOIN federation_checkpoints AS c
+                    ON c.checkpoint_id = q.checkpoint_id
+                WHERE c.checkpoint_kind = :checkpoint_kind
+                ORDER BY
+                    c.scheduled_checkpoint_sequence DESC,
+                    c.finalized_next_item_index DESC,
+                    c.journal_next_index DESC,
+                    c.checkpoint_id DESC
+                LIMIT 1
+                "#,
+            )?
+            .bind("checkpoint_kind", checkpoint_kind_to_str(kind))
+            .fetch_one(connection)
+            .await?
+            .map(sql_row_to_federation_checkpoint_quorum)
+            .transpose()?;
+            if quorum
+                .as_ref()
+                .is_some_and(|quorum| quorum.checkpoint.kind != kind)
+            {
+                return Err(Error::Internal(
+                    "Federation checkpoint kind index does not match the stored quorum".to_string(),
+                ));
+            }
+            Ok(quorum)
+        }
+        FederationCheckpointSelector::NextScheduled(scheduled_checkpoint_sequence) => {
+            let Some(next_scheduled_checkpoint_sequence) =
+                scheduled_checkpoint_sequence.checked_add(1)
+            else {
+                return Ok(None);
+            };
+            let quorum = query(
+                r#"
+                SELECT q.checkpoint_id, q.quorum_json
+                FROM federation_checkpoint_quorums AS q
+                INNER JOIN federation_checkpoints AS c
+                    ON c.checkpoint_id = q.checkpoint_id
+                WHERE c.checkpoint_kind = :checkpoint_kind
+                    AND c.scheduled_checkpoint_sequence = :scheduled_checkpoint_sequence
+                ORDER BY
+                    c.scheduled_checkpoint_sequence ASC,
+                    c.finalized_next_item_index ASC,
+                    c.journal_next_index ASC,
+                    c.checkpoint_id ASC
+                LIMIT 1
+                "#,
+            )?
+            .bind(
+                "checkpoint_kind",
+                checkpoint_kind_to_str(FederationCheckpointKind::Scheduled),
+            )
+            .bind(
+                "scheduled_checkpoint_sequence",
+                next_scheduled_checkpoint_sequence as i64,
+            )
+            .fetch_one(connection)
+            .await?
+            .map(sql_row_to_federation_checkpoint_quorum)
+            .transpose()?;
+            if quorum.as_ref().is_some_and(|quorum| {
+                quorum.checkpoint.kind != FederationCheckpointKind::Scheduled
+                    || quorum.checkpoint.scheduled_checkpoint_sequence
+                        != next_scheduled_checkpoint_sequence
+            }) {
+                return Err(Error::Internal(
+                    "Federation scheduled checkpoint index returned an invalid next quorum"
+                        .to_string(),
+                ));
+            }
+            Ok(quorum)
+        }
+        FederationCheckpointSelector::Trusted => query(
+            r#"
+            SELECT q.checkpoint_id, q.quorum_json
+            FROM federation_checkpoint_state AS s
+            INNER JOIN federation_checkpoint_quorums AS q
+                ON q.checkpoint_id = s.trusted_checkpoint_id
+            WHERE s.state_key = :state_key
+            "#,
+        )?
+        .bind("state_key", FEDERATION_CHECKPOINT_STATE_KEY)
+        .fetch_one(connection)
+        .await?
+        .map(sql_row_to_federation_checkpoint_quorum)
+        .transpose(),
+        FederationCheckpointSelector::StateTransferBase => query(
+            r#"
+            SELECT q.checkpoint_id, q.quorum_json
+            FROM federation_checkpoint_state AS s
+            INNER JOIN federation_checkpoint_quorums AS q
+                ON q.checkpoint_id = s.state_transfer_base_checkpoint_id
+            WHERE s.state_key = :state_key
+            "#,
+        )?
+        .bind("state_key", FEDERATION_CHECKPOINT_STATE_KEY)
+        .fetch_one(connection)
+        .await?
+        .map(sql_row_to_federation_checkpoint_quorum)
+        .transpose(),
+    }
+}
+
 #[async_trait]
 impl<RM> FederationJournalDatabase for SQLMintDatabase<RM>
 where
@@ -2787,15 +3087,23 @@ where
 
     async fn get_federation_journal_entries(
         &self,
+        range: FederationIndexRange,
     ) -> Result<Vec<FederationJournalEntry>, Self::Err> {
         let conn = self
             .pool
             .get()
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
+        let (start, end, limit) = sql_index_range(range);
         query(federation_journal_entry_select!(
-            "ORDER BY operation_index ASC"
+            "WHERE operation_index >= :start
+             AND operation_index < :end
+             ORDER BY operation_index ASC
+             LIMIT :limit"
         ))?
+        .bind("start", start)
+        .bind("end", end)
+        .bind("limit", limit)
         .fetch_all(&*conn)
         .await?
         .into_iter()
@@ -2823,143 +3131,17 @@ where
         .transpose()
     }
 
-    async fn get_federation_journal_entry_by_operation_id(
+    async fn get_federation_journal_entry(
         &self,
-        operation_id: FederationOperationId,
+        key: FederationJournalEntryKey<'_>,
+        before: Option<u64>,
     ) -> Result<Option<FederationJournalEntry>, Self::Err> {
         let conn = self
             .pool
             .get()
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
-        query(federation_journal_entry_select!(
-            "WHERE operation_id = :operation_id ORDER BY operation_index DESC LIMIT 1"
-        ))?
-        .bind("operation_id", operation_id.to_string())
-        .fetch_one(&*conn)
-        .await?
-        .map(sql_row_to_federation_journal_entry)
-        .transpose()
-    }
-
-    async fn get_federation_journal_entry_by_conflict_key(
-        &self,
-        conflict_key: &FederationOperationConflictKey,
-    ) -> Result<Option<FederationJournalEntry>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        query(federation_journal_entry_select!(
-            "WHERE operation_index = (
-                SELECT MAX(operation_index)
-                FROM federation_journal_conflict_keys
-                WHERE conflict_key_json = :conflict_key_json
-            )"
-        ))?
-        .bind("conflict_key_json", serde_json::to_string(conflict_key)?)
-        .fetch_one(&*conn)
-        .await?
-        .map(sql_row_to_federation_journal_entry)
-        .transpose()
-    }
-
-    async fn get_federation_journal_entry_by_operation_id_before(
-        &self,
-        operation_id: FederationOperationId,
-        next_index: u64,
-    ) -> Result<Option<FederationJournalEntry>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        query(federation_journal_entry_select!(
-            "WHERE operation_id = :operation_id
-               AND operation_index < :next_index
-             ORDER BY operation_index DESC
-             LIMIT 1"
-        ))?
-        .bind("operation_id", operation_id.to_string())
-        .bind("next_index", next_index as i64)
-        .fetch_one(&*conn)
-        .await?
-        .map(sql_row_to_federation_journal_entry)
-        .transpose()
-    }
-
-    async fn get_federation_journal_entry_by_conflict_key_before(
-        &self,
-        conflict_key: &FederationOperationConflictKey,
-        next_index: u64,
-    ) -> Result<Option<FederationJournalEntry>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        query(federation_journal_entry_select!(
-            "WHERE operation_index = (
-                SELECT MAX(operation_index)
-                FROM federation_journal_conflict_keys
-                WHERE conflict_key_json = :conflict_key_json
-                  AND operation_index < :next_index
-            )"
-        ))?
-        .bind("conflict_key_json", serde_json::to_string(conflict_key)?)
-        .bind("next_index", next_index as i64)
-        .fetch_one(&*conn)
-        .await?
-        .map(sql_row_to_federation_journal_entry)
-        .transpose()
-    }
-
-    async fn get_federation_journal_entries_from(
-        &self,
-        next_index: u64,
-    ) -> Result<Vec<FederationJournalEntry>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        query(federation_journal_entry_select!(
-            "WHERE operation_index >= :next_index ORDER BY operation_index ASC"
-        ))?
-        .bind("next_index", next_index as i64)
-        .fetch_all(&*conn)
-        .await?
-        .into_iter()
-        .map(sql_row_to_federation_journal_entry)
-        .collect()
-    }
-
-    async fn get_federation_journal_entries_range(
-        &self,
-        next_index: u64,
-        end_index_exclusive: u64,
-        limit: usize,
-    ) -> Result<Vec<FederationJournalEntry>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        query(federation_journal_entry_select!(
-            "WHERE operation_index >= :next_index
-             AND operation_index < :end_index_exclusive
-             ORDER BY operation_index ASC
-             LIMIT :limit"
-        ))?
-        .bind("next_index", next_index as i64)
-        .bind("end_index_exclusive", end_index_exclusive as i64)
-        .bind("limit", limit as i64)
-        .fetch_all(&*conn)
-        .await?
-        .into_iter()
-        .map(sql_row_to_federation_journal_entry)
-        .collect()
+        federation_journal_entry(&*conn, key, before).await
     }
 
     async fn get_federation_dkg_member_sequences(
@@ -3026,128 +3208,14 @@ where
 
     async fn get_federation_checkpoint(
         &self,
-        checkpoint_id: FederationCheckpointId,
+        selector: FederationCheckpointSelector,
     ) -> Result<Option<FederationCheckpoint>, Self::Err> {
         let conn = self
             .pool
             .get()
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
-        query(
-            r#"
-            SELECT checkpoint_id, checkpoint_json
-            FROM federation_checkpoints
-            WHERE checkpoint_id = :checkpoint_id
-            "#,
-        )?
-        .bind("checkpoint_id", checkpoint_id.to_string())
-        .fetch_one(&*conn)
-        .await?
-        .map(sql_row_to_federation_checkpoint)
-        .transpose()
-    }
-
-    async fn get_latest_federation_checkpoint(
-        &self,
-        kind: FederationCheckpointKind,
-    ) -> Result<Option<FederationCheckpoint>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        query(
-            r#"
-            SELECT checkpoint_id, checkpoint_json
-            FROM federation_checkpoints
-            WHERE checkpoint_kind = :checkpoint_kind
-            ORDER BY
-                scheduled_checkpoint_sequence DESC,
-                finalized_next_item_index DESC,
-                journal_next_index DESC,
-                checkpoint_id DESC
-            LIMIT 1
-            "#,
-        )?
-        .bind("checkpoint_kind", checkpoint_kind_to_str(kind))
-        .fetch_one(&*conn)
-        .await?
-        .map(sql_row_to_federation_checkpoint)
-        .transpose()
-    }
-
-    async fn get_next_federation_scheduled_checkpoint(
-        &self,
-        scheduled_checkpoint_sequence: u64,
-    ) -> Result<Option<FederationCheckpoint>, Self::Err> {
-        let Some(sequence) = scheduled_checkpoint_sequence.checked_add(1) else {
-            return Ok(None);
-        };
-        let sequence = i64::try_from(sequence)
-            .map_err(|_| Error::Internal("Checkpoint sequence exceeds SQL range".to_string()))?;
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        let checkpoint = query(
-            r#"
-            SELECT checkpoint_id, checkpoint_json
-            FROM federation_checkpoints
-            WHERE checkpoint_kind = 'scheduled'
-                AND scheduled_checkpoint_sequence = :sequence
-            ORDER BY finalized_next_item_index ASC, checkpoint_id ASC
-            LIMIT 1
-            "#,
-        )?
-        .bind("sequence", sequence)
-        .fetch_one(&*conn)
-        .await?
-        .map(sql_row_to_federation_checkpoint)
-        .transpose()?;
-        if checkpoint.as_ref().is_some_and(|checkpoint| {
-            checkpoint.kind != FederationCheckpointKind::Scheduled
-                || checkpoint.scheduled_checkpoint_sequence != sequence as u64
-        }) {
-            return Err(Error::Internal(
-                "Federation scheduled checkpoint index returned an invalid next candidate"
-                    .to_string(),
-            ));
-        }
-        Ok(checkpoint)
-    }
-
-    async fn get_federation_checkpoints_after(
-        &self,
-        finalized_next_item_index: u64,
-    ) -> Result<Vec<FederationCheckpoint>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        query(
-            r#"
-            SELECT checkpoint_id, checkpoint_json
-            FROM federation_checkpoints
-            WHERE finalized_next_item_index > :finalized_next_item_index
-            ORDER BY
-                finalized_next_item_index ASC,
-                journal_next_index ASC,
-                scheduled_checkpoint_sequence ASC,
-                checkpoint_kind DESC,
-                checkpoint_id ASC
-            "#,
-        )?
-        .bind(
-            "finalized_next_item_index",
-            finalized_next_item_index as i64,
-        )
-        .fetch_all(&*conn)
-        .await?
-        .into_iter()
-        .map(sql_row_to_federation_checkpoint)
-        .collect()
+        federation_checkpoint(&*conn, selector).await
     }
 
     async fn get_federation_checkpoint_signatures(
@@ -3177,142 +3245,14 @@ where
 
     async fn get_federation_checkpoint_quorum(
         &self,
-        checkpoint_id: FederationCheckpointId,
+        selector: FederationCheckpointSelector,
     ) -> Result<Option<FederationCheckpointQuorum>, Self::Err> {
         let conn = self
             .pool
             .get()
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
-        query(
-            r#"
-            SELECT checkpoint_id, quorum_json
-            FROM federation_checkpoint_quorums
-            WHERE checkpoint_id = :checkpoint_id
-            "#,
-        )?
-        .bind("checkpoint_id", checkpoint_id.to_string())
-        .fetch_one(&*conn)
-        .await?
-        .map(sql_row_to_federation_checkpoint_quorum)
-        .transpose()
-    }
-
-    async fn get_latest_federation_checkpoint_quorum(
-        &self,
-        kind: FederationCheckpointKind,
-    ) -> Result<Option<FederationCheckpointQuorum>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        let quorum = query(
-            r#"
-            SELECT q.checkpoint_id, q.quorum_json
-            FROM federation_checkpoint_quorums AS q
-            INNER JOIN federation_checkpoints AS c
-                ON c.checkpoint_id = q.checkpoint_id
-            WHERE c.checkpoint_kind = :checkpoint_kind
-            ORDER BY
-                c.scheduled_checkpoint_sequence DESC,
-                c.finalized_next_item_index DESC,
-                c.journal_next_index DESC,
-                c.checkpoint_id DESC
-            LIMIT 1
-            "#,
-        )?
-        .bind("checkpoint_kind", checkpoint_kind_to_str(kind))
-        .fetch_one(&*conn)
-        .await?
-        .map(sql_row_to_federation_checkpoint_quorum)
-        .transpose()?;
-        if quorum
-            .as_ref()
-            .is_some_and(|quorum| quorum.checkpoint.kind != kind)
-        {
-            return Err(Error::Internal(
-                "Federation checkpoint kind index does not match the stored quorum".to_string(),
-            ));
-        }
-        Ok(quorum)
-    }
-
-    async fn get_next_federation_scheduled_checkpoint_quorum(
-        &self,
-        scheduled_checkpoint_sequence: u64,
-    ) -> Result<Option<FederationCheckpointQuorum>, Self::Err> {
-        let Some(next_scheduled_checkpoint_sequence) = scheduled_checkpoint_sequence.checked_add(1)
-        else {
-            return Ok(None);
-        };
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        let quorum = query(
-            r#"
-            SELECT q.checkpoint_id, q.quorum_json
-            FROM federation_checkpoint_quorums AS q
-            INNER JOIN federation_checkpoints AS c
-                ON c.checkpoint_id = q.checkpoint_id
-            WHERE c.checkpoint_kind = :checkpoint_kind
-                AND c.scheduled_checkpoint_sequence = :scheduled_checkpoint_sequence
-            ORDER BY
-                c.scheduled_checkpoint_sequence ASC,
-                c.finalized_next_item_index ASC,
-                c.journal_next_index ASC,
-                c.checkpoint_id ASC
-            LIMIT 1
-            "#,
-        )?
-        .bind(
-            "checkpoint_kind",
-            checkpoint_kind_to_str(FederationCheckpointKind::Scheduled),
-        )
-        .bind(
-            "scheduled_checkpoint_sequence",
-            next_scheduled_checkpoint_sequence as i64,
-        )
-        .fetch_one(&*conn)
-        .await?
-        .map(sql_row_to_federation_checkpoint_quorum)
-        .transpose()?;
-        if quorum.as_ref().is_some_and(|quorum| {
-            quorum.checkpoint.kind != FederationCheckpointKind::Scheduled
-                || quorum.checkpoint.scheduled_checkpoint_sequence
-                    != next_scheduled_checkpoint_sequence
-        }) {
-            return Err(Error::Internal(
-                "Federation scheduled checkpoint index returned an invalid next quorum".to_string(),
-            ));
-        }
-        Ok(quorum)
-    }
-
-    async fn get_trusted_federation_checkpoint_quorum(
-        &self,
-    ) -> Result<Option<FederationCheckpointQuorum>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        query(
-            r#"
-            SELECT q.checkpoint_id, q.quorum_json
-            FROM federation_checkpoint_state AS s
-            INNER JOIN federation_checkpoint_quorums AS q
-                ON q.checkpoint_id = s.trusted_checkpoint_id
-            WHERE s.state_key = :state_key
-            "#,
-        )?
-        .bind("state_key", FEDERATION_CHECKPOINT_STATE_KEY)
-        .fetch_one(&*conn)
-        .await?
-        .map(sql_row_to_federation_checkpoint_quorum)
-        .transpose()
+        federation_checkpoint_quorum(&*conn, selector).await
     }
 
     async fn get_federation_state_snapshots(
@@ -3353,17 +3293,6 @@ where
         federation_state_transfer_window_start(&*conn, checkpoint).await
     }
 
-    async fn get_federation_state_transfer_base(
-        &self,
-    ) -> Result<Option<FederationCheckpoint>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        federation_state_transfer_base(&*conn).await
-    }
-
     async fn get_federation_retention_floor(
         &self,
     ) -> Result<Option<FederationRetentionFloor>, Self::Err> {
@@ -3389,134 +3318,56 @@ where
 
     async fn get_federation_aleph_bft_finalized_items(
         &self,
+        range: FederationIndexRange,
     ) -> Result<Vec<FederationAlephBftFinalizedItem>, Self::Err> {
         let conn = self
             .pool
             .get()
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
+        let (start, end, limit) = sql_index_range(range);
         query(federation_aleph_bft_finalized_item_select!(
-            "ORDER BY accepted_item_index ASC"
-        ))?
-        .fetch_all(&*conn)
-        .await?
-        .into_iter()
-        .map(sql_row_to_federation_aleph_bft_finalized_item)
-        .collect()
-    }
-
-    async fn get_federation_aleph_bft_finalized_items_from(
-        &self,
-        accepted_item_index: u64,
-    ) -> Result<Vec<FederationAlephBftFinalizedItem>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        query(federation_aleph_bft_finalized_item_select!(
-            "WHERE accepted_item_index >= :accepted_item_index ORDER BY accepted_item_index ASC"
-        ))?
-        .bind("accepted_item_index", accepted_item_index as i64)
-        .fetch_all(&*conn)
-        .await?
-        .into_iter()
-        .map(sql_row_to_federation_aleph_bft_finalized_item)
-        .collect()
-    }
-
-    async fn get_federation_aleph_bft_finalized_items_range(
-        &self,
-        accepted_item_index: u64,
-        end_item_index_exclusive: u64,
-        limit: usize,
-    ) -> Result<Vec<FederationAlephBftFinalizedItem>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        query(federation_aleph_bft_finalized_item_select!(
-            "WHERE accepted_item_index >= :accepted_item_index
-             AND accepted_item_index < :end_item_index_exclusive
+            "WHERE accepted_item_index >= :start
+             AND accepted_item_index < :end
              ORDER BY accepted_item_index ASC
              LIMIT :limit"
         ))?
-        .bind("accepted_item_index", accepted_item_index as i64)
-        .bind("end_item_index_exclusive", end_item_index_exclusive as i64)
-        .bind("limit", limit as i64)
+        .bind("start", start)
+        .bind("end", end)
+        .bind("limit", limit)
         .fetch_all(&*conn)
         .await?
         .into_iter()
         .map(sql_row_to_federation_aleph_bft_finalized_item)
         .collect()
-    }
-
-    async fn get_federation_aleph_bft_backup_bytes(
-        &self,
-        session: u64,
-    ) -> Result<Option<Vec<u8>>, Self::Err> {
-        let chunks = self.get_federation_aleph_bft_backup_chunks(session).await?;
-        if chunks.is_empty() {
-            return Ok(None);
-        }
-
-        Ok(Some(chunks.concat()))
     }
 
     async fn get_federation_aleph_bft_backup_chunks(
         &self,
         session: u64,
+        range: FederationIndexRange,
     ) -> Result<Vec<Vec<u8>>, Self::Err> {
         let conn = self
             .pool
             .get()
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
+        let (start, end, limit) = sql_index_range(range);
         let rows = query(
             r#"
             SELECT backup_bytes
             FROM federation_aleph_bft_backups
             WHERE session = :session
-            ORDER BY chunk_index ASC
-            "#,
-        )?
-        .bind("session", session as i64)
-        .fetch_all(&*conn)
-        .await?;
-
-        let mut chunks = Vec::with_capacity(rows.len());
-        for mut row in rows {
-            let bytes = row.remove(0);
-            chunks.push(column_as_binary!(&bytes).to_vec());
-        }
-
-        Ok(chunks)
-    }
-
-    async fn get_federation_aleph_bft_backup_chunks_from(
-        &self,
-        session: u64,
-        from_chunk: u64,
-        limit: usize,
-    ) -> Result<Vec<Vec<u8>>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        let rows = query(
-            r#"
-            SELECT backup_bytes
-            FROM federation_aleph_bft_backups
-            WHERE session = :session AND chunk_index >= :from_chunk
+              AND chunk_index >= :start
+              AND chunk_index < :end
             ORDER BY chunk_index ASC
             LIMIT :limit
             "#,
         )?
         .bind("session", session as i64)
-        .bind("from_chunk", from_chunk as i64)
-        .bind("limit", limit as i64)
+        .bind("start", start)
+        .bind("end", end)
+        .bind("limit", limit)
         .fetch_all(&*conn)
         .await?;
 

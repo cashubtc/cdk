@@ -1,5 +1,9 @@
 //! AlephBFT waits, latency probes and synthetic checkpoint history.
 
+use cdk_common::database::mint::{
+    FederationCheckpointSelector, FederationIndexRange, FederationJournalEntryKey,
+};
+
 use super::*;
 
 pub(super) async fn queue_local_aleph_bft_unit(
@@ -262,7 +266,7 @@ pub(super) async fn operation_terminal_within(
     if let Some(entry) = state
         .mint
         .localstore()
-        .get_federation_journal_entry_by_operation_id(operation_id)
+        .get_federation_journal_entry(FederationJournalEntryKey::Operation(operation_id), None)
         .await
         .expect("operation status lookup")
     {
@@ -375,10 +379,10 @@ pub(super) async fn wait_for_aleph_bft_backup_bytes(state: &MintState, session_i
             let backup_bytes = state
                 .mint
                 .localstore()
-                .get_federation_aleph_bft_backup_bytes(session_id)
+                .get_federation_aleph_bft_backup_chunks(session_id, FederationIndexRange::ALL)
                 .await
                 .expect("AlephBFT backup byte lookup")
-                .unwrap_or_default();
+                .concat();
             if !backup_bytes.is_empty() {
                 return backup_bytes;
             }
@@ -417,10 +421,10 @@ pub(super) async fn wait_for_aleph_bft_backup_bytes_longer_than(
             let backup_bytes = state
                 .mint
                 .localstore()
-                .get_federation_aleph_bft_backup_bytes(session_id)
+                .get_federation_aleph_bft_backup_chunks(session_id, FederationIndexRange::ALL)
                 .await
                 .expect("AlephBFT backup byte lookup")
-                .unwrap_or_default();
+                .concat();
             if backup_bytes.len() > previous_len {
                 return backup_bytes;
             }
@@ -600,8 +604,11 @@ pub(super) async fn build_synthetic_checkpoint_history(
     let base_entry = state
         .mint
         .localstore()
-        .get_federation_journal_entry_by_operation_id(
-            base_envelope.operation_id().expect("base operation id"),
+        .get_federation_journal_entry(
+            FederationJournalEntryKey::Operation(
+                base_envelope.operation_id().expect("base operation id"),
+            ),
+            None,
         )
         .await
         .expect("load synthetic history conflict anchor")
@@ -775,7 +782,7 @@ pub(super) async fn wait_for_applied_operation_with_context(
     let journal_operation_ids = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("contextual apply wait journal")
         .into_iter()
@@ -909,7 +916,7 @@ pub(super) async fn sync_and_certify_partitioned_member(
                 let trusted_checkpoint = state
                     .mint
                     .localstore()
-                    .get_trusted_federation_checkpoint_quorum()
+                    .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
                     .await
                     .expect("partition recovery timeout checkpoint")
                     .map(|quorum| quorum.checkpoint.id().expect("trusted checkpoint id"));

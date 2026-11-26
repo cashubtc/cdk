@@ -27,9 +27,10 @@ use cdk_common::federation::{
     FederationSetupInvitationId, FederationSetupInvitationRecord, FederationSetupInvitationState,
     FederationSetupLocalRole, FederationSetupManifest, FederationSetupParticipantPhase,
     FederationSetupProposal, FederationSetupProposalBody, FederationSetupProposalHash,
-    FederationSetupProposalReview, FederationSetupProtocolVersions, FederationSetupSession,
-    FederationSetupUrlPolicy, MemberConfigPrivate, MemberId, ThresholdParams,
-    FEDERATION_SETUP_MAX_INVITATION_LIFETIME_SECS, FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
+    FederationSetupProposalReview, FederationSetupProtocolVersions, FederationSetupRecord,
+    FederationSetupSession, FederationSetupStep, FederationSetupUrlPolicy, MemberConfigPrivate,
+    MemberId, ThresholdParams, FEDERATION_SETUP_MAX_INVITATION_LIFETIME_SECS,
+    FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
 };
 #[cfg(feature = "sqlite")]
 use cdk_common::federation::{
@@ -1142,7 +1143,11 @@ async fn activate_setup_with_faults(
         .await
         .context("failed to begin local activation transaction")?;
     transaction
-        .activate_federation_setup(&session, &activated, &activation)
+        .advance_federation_setup_session(
+            &session,
+            &activated,
+            FederationSetupStep::Activate(&activation),
+        )
         .await
         .context("failed to persist local setup activation")?;
     #[cfg(test)]
@@ -1442,7 +1447,11 @@ where
                 .await
                 .context("failed to begin local manifest replay transaction")?;
             transaction
-                .store_federation_setup_manifest(&session, &certified, manifest)
+                .advance_federation_setup_session(
+                    &session,
+                    &certified,
+                    FederationSetupStep::Certify(manifest),
+                )
                 .await
                 .context("failed to certify the local manifest replay")?;
             transaction
@@ -1472,7 +1481,11 @@ where
         .await
         .context("failed to begin setup manifest transaction")?;
     transaction
-        .store_federation_setup_manifest(&session, &certified, manifest)
+        .advance_federation_setup_session(
+            &session,
+            &certified,
+            FederationSetupStep::Certify(manifest),
+        )
         .await
         .context("failed to persist certified setup manifest")?;
     transaction
@@ -2117,9 +2130,13 @@ where
     let mut tx = Database::begin_transaction(db)
         .await
         .context("failed to begin proposal publication transaction")?;
-    tx.publish_federation_setup_proposal(&session, &published, &proposal)
-        .await
-        .context("failed to persist federation setup proposal")?;
+    tx.advance_federation_setup_session(
+        &session,
+        &published,
+        FederationSetupStep::PublishProposal(&proposal),
+    )
+    .await
+    .context("failed to persist federation setup proposal")?;
     tx.commit()
         .await
         .context("failed to commit federation setup proposal")?;
@@ -2146,9 +2163,13 @@ where
             let mut tx = Database::begin_transaction(db)
                 .await
                 .context("failed to begin proposal review transaction")?;
-            tx.review_federation_setup_proposal(&session, &reviewed, &proposal)
-                .await
-                .context("failed to persist reviewed setup proposal")?;
+            tx.advance_federation_setup_session(
+                &session,
+                &reviewed,
+                FederationSetupStep::ReviewProposal(&proposal),
+            )
+            .await
+            .context("failed to persist reviewed setup proposal")?;
             tx.commit()
                 .await
                 .context("failed to commit reviewed setup proposal")?;
@@ -2243,9 +2264,16 @@ where
             let mut tx = Database::begin_transaction(db)
                 .await
                 .context("failed to begin setup approval transaction")?;
-            tx.fence_federation_setup_approval(&session, &approved, &proposal, &approval)
-                .await
-                .context("failed to persist setup approval fence")?;
+            tx.advance_federation_setup_session(
+                &session,
+                &approved,
+                FederationSetupStep::FenceApproval {
+                    proposal: &proposal,
+                    approval: &approval,
+                },
+            )
+            .await
+            .context("failed to persist setup approval fence")?;
             tx.commit()
                 .await
                 .context("failed to commit setup approval fence")?;
@@ -2256,7 +2284,7 @@ where
         let mut tx = Database::begin_transaction(db)
             .await
             .context("failed to begin local coordinator approval transaction")?;
-        tx.add_federation_setup_approval(&approval)
+        tx.add_federation_setup_record(FederationSetupRecord::Approval(&approval))
             .await
             .context("failed to persist local coordinator approval")?;
         tx.commit()
@@ -2485,12 +2513,16 @@ where
             let enrolled = initial
                 .with_participant_phase(FederationSetupParticipantPhase::Enrolled, now_unix)
                 .context("failed to construct creator enrollment transition")?;
-            tx.record_federation_setup_enrollment(&initial, &enrolled, &secrets.enrollment)
-                .await
-                .context("failed to persist creator enrollment")?;
+            tx.advance_federation_setup_session(
+                &initial,
+                &enrolled,
+                FederationSetupStep::Enroll(&secrets.enrollment),
+            )
+            .await
+            .context("failed to persist creator enrollment")?;
         }
         _ => {
-            tx.add_federation_setup_enrollment(&secrets.enrollment)
+            tx.add_federation_setup_record(FederationSetupRecord::Enrollment(&secrets.enrollment))
                 .await
                 .context("creator enrollment retry conflicted")?;
         }
@@ -2528,7 +2560,7 @@ where
             .await
             .context("failed to persist joining setup session")?;
     }
-    tx.add_federation_setup_enrollment(&secrets.enrollment)
+    tx.add_federation_setup_record(FederationSetupRecord::Enrollment(&secrets.enrollment))
         .await
         .context("failed to persist exact pending enrollment")?;
     tx.commit()
@@ -2555,9 +2587,13 @@ where
     let mut tx = Database::begin_transaction(db)
         .await
         .context("failed to begin accepted enrollment transaction")?;
-    tx.record_federation_setup_enrollment(&session, &enrolled, &secrets.enrollment)
-        .await
-        .context("failed to persist accepted enrollment transition")?;
+    tx.advance_federation_setup_session(
+        &session,
+        &enrolled,
+        FederationSetupStep::Enroll(&secrets.enrollment),
+    )
+    .await
+    .context("failed to persist accepted enrollment transition")?;
     tx.commit()
         .await
         .context("failed to commit accepted enrollment transition")

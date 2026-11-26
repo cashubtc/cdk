@@ -21,6 +21,7 @@ use cdk::federation::{
     MemberConfigPublic, MemberId, FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
 };
 use cdk::nuts::SecretKey;
+use cdk_common::database::mint::FederationIndexRange;
 use cdk_common::database::DynMintDatabase;
 use futures::future::BoxFuture;
 use futures::io::{AsyncRead, AsyncWrite};
@@ -1130,7 +1131,10 @@ async fn load_bounded_aleph_bft_backup_chunks(
             ))
         })?;
         let page = db
-            .get_federation_aleph_bft_backup_chunks_from(session_id, from_chunk, limit)
+            .get_federation_aleph_bft_backup_chunks(
+                session_id,
+                FederationIndexRange::limited(from_chunk, limit),
+            )
             .await
             .map_err(cdk::Error::Database)?;
         if page.len() > remaining_chunks {
@@ -2405,10 +2409,11 @@ mod tests {
 
         assert_eq!(loaded, b"persisted".to_vec());
         assert_eq!(
-            db.get_federation_aleph_bft_backup_bytes(103)
+            db.get_federation_aleph_bft_backup_chunks(103, FederationIndexRange::ALL)
                 .await
-                .expect("read appended backup"),
-            Some(b"persisted-next".to_vec())
+                .expect("read appended backup")
+                .concat(),
+            b"persisted-next".to_vec()
         );
         activity_hint.mark_network_activity([[8u8; 32]]);
         assert!(data_provider.get_data().await.is_none());
@@ -2476,10 +2481,11 @@ mod tests {
             .expect("flush second replayed backup part");
 
         assert_eq!(
-            db.get_federation_aleph_bft_backup_bytes(104)
+            db.get_federation_aleph_bft_backup_chunks(104, FederationIndexRange::ALL)
                 .await
-                .expect("read backup after replay"),
-            Some(b"persisted-unit".to_vec()),
+                .expect("read backup after replay")
+                .concat(),
+            b"persisted-unit".to_vec(),
             "restarting a session must not append its recovered backup again"
         );
     }
@@ -2593,18 +2599,20 @@ mod tests {
 
         writer.write_all(b"first").await.expect("write first bytes");
         assert_eq!(
-            db.get_federation_aleph_bft_backup_bytes(101)
+            db.get_federation_aleph_bft_backup_chunks(101, FederationIndexRange::ALL)
                 .await
-                .expect("read before flush"),
-            None
+                .expect("read before flush")
+                .concat(),
+            Vec::<u8>::new()
         );
 
         writer.flush().await.expect("flush first bytes");
         assert_eq!(
-            db.get_federation_aleph_bft_backup_bytes(101)
+            db.get_federation_aleph_bft_backup_chunks(101, FederationIndexRange::ALL)
                 .await
-                .expect("read after flush"),
-            Some(b"first".to_vec())
+                .expect("read after flush")
+                .concat(),
+            b"first".to_vec()
         );
 
         writer
@@ -2614,10 +2622,11 @@ mod tests {
         writer.close().await.expect("close writer");
 
         assert_eq!(
-            db.get_federation_aleph_bft_backup_bytes(101)
+            db.get_federation_aleph_bft_backup_chunks(101, FederationIndexRange::ALL)
                 .await
-                .expect("read after close"),
-            Some(b"first-second".to_vec())
+                .expect("read after close")
+                .concat(),
+            b"first-second".to_vec()
         );
     }
 

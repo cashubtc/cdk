@@ -11,6 +11,7 @@ use cdk::federation::{
     FederationPeerStatus, FederationPeerStatusRequest, FederationRestMessageKind,
     FederationSignedRequest, FEDERATION_REST_API_VERSION,
 };
+use cdk_common::database::mint::FederationCheckpointSelector;
 use tracing::instrument;
 
 use crate::MintState;
@@ -198,25 +199,31 @@ async fn federation_checkpoint_status(
     let db = state.mint.localstore();
     let frontier = db.get_federation_checkpoint_frontier().await?;
     let latest_scheduled_checkpoint = db
-        .get_latest_federation_checkpoint(FederationCheckpointKind::Scheduled)
+        .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            FederationCheckpointKind::Scheduled,
+        ))
         .await?
         .as_ref()
         .map(FederationCheckpointSummary::from_checkpoint)
         .transpose()?;
     let latest_scheduled_quorum = db
-        .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Scheduled)
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Latest(
+            FederationCheckpointKind::Scheduled,
+        ))
         .await?
         .as_ref()
         .map(FederationCheckpointQuorumSummary::from_stored_quorum)
         .transpose()?;
     let latest_recovery_quorum = db
-        .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Recovery)
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Latest(
+            FederationCheckpointKind::Recovery,
+        ))
         .await?
         .as_ref()
         .map(FederationCheckpointQuorumSummary::from_stored_quorum)
         .transpose()?;
     let trusted_checkpoint = db
-        .get_trusted_federation_checkpoint_quorum()
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
         .await?
         .as_ref()
         .map(FederationCheckpointQuorumSummary::from_stored_quorum)

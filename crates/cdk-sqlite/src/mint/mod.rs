@@ -22,6 +22,8 @@ mod test {
     use std::sync::Arc;
     use std::time::Duration;
 
+    #[cfg(feature = "federation")]
+    use cdk_common::database::mint::{FederationDkgRecord, FederationIndexRange};
     use cdk_common::database::{self, MintAuthDatabase};
     use cdk_common::secret::Secret;
     use cdk_common::{mint_db_test, AuthProof, Id, SecretKey, State};
@@ -569,15 +571,6 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
-    async fn federation_mint_quote_state_projection() {
-        cdk_common::database::mint::test::federation_mint_quote_state_projection(
-            provide_db("federation_mint_quote_state_projection".to_string()).await,
-        )
-        .await;
-    }
-
-    #[cfg(feature = "federation")]
-    #[tokio::test]
     async fn federation_materialized_projection_keyed_reads() {
         cdk_common::database::mint::test::federation_materialized_projection_keyed_reads(
             provide_db("federation_materialized_projection_keyed_reads".to_string()).await,
@@ -765,7 +758,7 @@ mod test {
         let mut tx = Database::begin_transaction(&db)
             .await
             .expect("begin failing DKG transaction");
-        tx.add_federation_dkg_commitment(&commitment)
+        tx.add_federation_dkg_record(FederationDkgRecord::Commitment(&commitment))
             .await
             .expect("first DKG write succeeds before injected failure");
         assert!(tx
@@ -794,7 +787,7 @@ mod test {
         let mut tx = Database::begin_transaction(&db)
             .await
             .expect("begin recovered DKG transaction");
-        tx.add_federation_dkg_commitment(&commitment)
+        tx.add_federation_dkg_record(FederationDkgRecord::Commitment(&commitment))
             .await
             .expect("retry DKG commitment");
         tx.set_federation_dkg_member_sequence(commitment.member_id, 1)
@@ -890,10 +883,11 @@ mod test {
             tx.commit().await.expect("commit backup chunk");
         }
         assert_eq!(
-            db.get_federation_aleph_bft_backup_bytes(7)
+            db.get_federation_aleph_bft_backup_chunks(7, FederationIndexRange::ALL)
                 .await
-                .expect("backup bytes"),
-            Some(b"first-second-third".to_vec())
+                .expect("backup bytes")
+                .concat(),
+            b"first-second-third".to_vec()
         );
         drop(db);
 

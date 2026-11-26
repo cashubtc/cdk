@@ -15,6 +15,7 @@ use cdk::federation::{
     FederationFrostDkgRound1Request, FederationFrostDkgRound2Record, FederationFrostRootRecord,
     FederationRestMessageKind, MemberId,
 };
+use cdk_common::database::mint::{FederationDkgRecord, FederationFrostDkgRecord};
 
 use super::node_runtime::{runtime_unavailable, FederationNodeRuntime};
 
@@ -56,7 +57,8 @@ impl FederationNodeRuntime {
         setup_state.insert_commitment(&public_config, *commitment)?;
 
         let mut tx = db.begin_transaction().await?;
-        tx.add_federation_dkg_commitment(commitment).await?;
+        tx.add_federation_dkg_record(FederationDkgRecord::Commitment(commitment))
+            .await?;
         tx.set_federation_dkg_member_sequence(sender, sequence)
             .await?;
         tx.commit().await?;
@@ -97,7 +99,8 @@ impl FederationNodeRuntime {
         setup_state.insert_reveal(&public_config, reveal.clone())?;
 
         let mut tx = db.begin_transaction().await?;
-        tx.add_federation_dkg_reveal(reveal).await?;
+        tx.add_federation_dkg_record(FederationDkgRecord::Reveal(reveal))
+            .await?;
         tx.set_federation_dkg_member_sequence(sender, sequence)
             .await?;
         tx.commit().await?;
@@ -114,7 +117,10 @@ impl FederationNodeRuntime {
     ) -> Result<(), cdk::Error> {
         let db = self.active_mint()?.localstore();
         let mut tx = db.begin_transaction().await?;
-        tx.add_federation_frost_dkg_round1(request).await?;
+        tx.add_federation_dkg_record(FederationDkgRecord::Frost(
+            FederationFrostDkgRecord::Round1(request),
+        ))
+        .await?;
         tx.set_federation_dkg_member_sequence(sender, sequence)
             .await?;
         tx.commit().await?;
@@ -131,7 +137,10 @@ impl FederationNodeRuntime {
     ) -> Result<(), cdk::Error> {
         let db = self.active_mint()?.localstore();
         let mut tx = db.begin_transaction().await?;
-        tx.add_federation_frost_dkg_round2(record).await?;
+        tx.add_federation_dkg_record(FederationDkgRecord::Frost(
+            FederationFrostDkgRecord::Round2(record),
+        ))
+        .await?;
         tx.set_federation_dkg_member_sequence(sender, sequence)
             .await?;
         tx.commit().await?;
@@ -146,7 +155,10 @@ impl FederationNodeRuntime {
     ) -> Result<(), cdk::Error> {
         let db = self.active_mint()?.localstore();
         let mut tx = db.begin_transaction().await?;
-        tx.set_federation_frost_dkg_local_state(state).await?;
+        tx.add_federation_dkg_record(FederationDkgRecord::Frost(
+            FederationFrostDkgRecord::LocalState(state),
+        ))
+        .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -157,7 +169,10 @@ impl FederationNodeRuntime {
     ) -> Result<(), cdk::Error> {
         let db = self.active_mint()?.localstore();
         let mut tx = db.begin_transaction().await?;
-        tx.add_federation_frost_root_record(record).await?;
+        tx.add_federation_dkg_record(FederationDkgRecord::Frost(FederationFrostDkgRecord::Root(
+            record,
+        )))
+        .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -170,7 +185,10 @@ impl FederationNodeRuntime {
     ) -> Result<(), cdk::Error> {
         let db = self.active_mint()?.localstore();
         let mut tx = db.begin_transaction().await?;
-        tx.add_federation_frost_dkg_confirmation(request).await?;
+        tx.add_federation_dkg_record(FederationDkgRecord::Frost(
+            FederationFrostDkgRecord::Confirmation(request),
+        ))
+        .await?;
         tx.set_federation_dkg_member_sequence(sender, sequence)
             .await?;
         tx.commit().await?;
@@ -262,7 +280,7 @@ impl FederationNodeRuntime {
 
         // Final keyset derivation belongs to the restartable driver after this durable write.
         let mut tx = db.begin_transaction().await?;
-        tx.add_federation_dkg_secret_share_contribution(contribution)
+        tx.add_federation_dkg_record(FederationDkgRecord::SecretShareContribution(contribution))
             .await?;
         tx.set_federation_dkg_member_sequence(sender, sequence)
             .await?;
@@ -311,7 +329,7 @@ impl FederationNodeRuntime {
         }
 
         let mut tx = db.begin_transaction().await?;
-        tx.add_federation_dkg_transcript_signature(signature)
+        tx.add_federation_dkg_record(FederationDkgRecord::TranscriptSignature(signature))
             .await?;
         tx.set_federation_dkg_member_sequence(sender, sequence)
             .await?;
@@ -355,7 +373,8 @@ impl FederationNodeRuntime {
         }
 
         let mut tx = db.begin_transaction().await?;
-        tx.add_federation_dkg_activation(activation).await?;
+        tx.add_federation_dkg_record(FederationDkgRecord::Activation(activation))
+            .await?;
         tx.set_federation_dkg_member_sequence(sender, sequence)
             .await?;
         tx.commit().await?;

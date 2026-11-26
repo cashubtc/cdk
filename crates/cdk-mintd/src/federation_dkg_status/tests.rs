@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
+use cdk_common::database::mint::FederationDkgRecord;
 use cdk_common::federation::{
     generate_trusted_dealer_configs, FederationDkgCeremonyId, FederationDkgCommitmentRound,
     FederationDkgKeysetSpec, FederationDkgTranscript, FederationDkgTranscriptSignature, MemberId,
@@ -1131,28 +1132,32 @@ async fn read_database_records_loads_persisted_dkg_completion_records() {
     tx.add_federation_dkg_ceremony(&ceremony)
         .await
         .expect("persist ceremony lifecycle");
-    tx.add_federation_dkg_participant_state(&participant_state)
+    tx.add_federation_dkg_record(FederationDkgRecord::ParticipantState(&participant_state))
         .await
         .expect("persist local participant state");
-    tx.add_federation_dkg_commitment(&commitment)
+    tx.add_federation_dkg_record(FederationDkgRecord::Commitment(&commitment))
         .await
         .expect("persist setup commitment");
-    tx.add_federation_dkg_reveal(&reveal)
+    tx.add_federation_dkg_record(FederationDkgRecord::Reveal(&reveal))
         .await
         .expect("persist setup reveal");
-    tx.add_federation_dkg_secret_share_contribution(&secret_share_contribution)
-        .await
-        .expect("persist setup secret-share contribution");
-    tx.add_federation_dkg_member_keyset_share(&fixture.keyset_share)
-        .await
-        .expect("persist keyset share");
+    tx.add_federation_dkg_record(FederationDkgRecord::SecretShareContribution(
+        &secret_share_contribution,
+    ))
+    .await
+    .expect("persist setup secret-share contribution");
+    tx.add_federation_dkg_record(FederationDkgRecord::MemberKeysetShare(
+        &fixture.keyset_share,
+    ))
+    .await
+    .expect("persist keyset share");
     for signature in &fixture.transcript_signatures {
-        tx.add_federation_dkg_transcript_signature(signature)
+        tx.add_federation_dkg_record(FederationDkgRecord::TranscriptSignature(signature))
             .await
             .expect("persist transcript signature");
     }
     for activation in &fixture.activations {
-        tx.add_federation_dkg_activation(activation)
+        tx.add_federation_dkg_record(FederationDkgRecord::Activation(activation))
             .await
             .expect("persist activation");
     }

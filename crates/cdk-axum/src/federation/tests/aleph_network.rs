@@ -1,3 +1,7 @@
+use cdk_common::database::mint::{
+    FederationIndexRange, FederationJournalEntryKey, FederationSignatureShareKey,
+};
+
 use super::*;
 
 #[tokio::test]
@@ -104,7 +108,7 @@ async fn aleph_bft_live_sessions_finalize_with_duplicate_and_delayed_private_res
             state
                 .mint
                 .localstore()
-                .get_federation_journal_entries()
+                .get_federation_journal_entries(FederationIndexRange::ALL)
                 .await
                 .expect("journal entries")
                 .len(),
@@ -254,7 +258,7 @@ async fn aleph_bft_live_session_rejects_malformed_signed_network_message_without
             state
                 .mint
                 .localstore()
-                .get_federation_journal_entries()
+                .get_federation_journal_entries(FederationIndexRange::ALL)
                 .await
                 .expect("journal entries")
                 .len(),
@@ -426,7 +430,7 @@ async fn aleph_bft_live_session_rejects_same_sequence_equivocated_network_messag
             state
                 .mint
                 .localstore()
-                .get_federation_journal_entries()
+                .get_federation_journal_entries(FederationIndexRange::ALL)
                 .await
                 .expect("journal entries after equivocated network message")
                 .len(),
@@ -540,7 +544,7 @@ async fn aleph_bft_live_sessions_finalize_with_reordered_private_rest_messages()
             state
                 .mint
                 .localstore()
-                .get_federation_journal_entries()
+                .get_federation_journal_entries(FederationIndexRange::ALL)
                 .await
                 .expect("journal entries")
                 .len(),
@@ -657,7 +661,7 @@ async fn aleph_bft_live_five_member_sessions_finalize_with_reorder_duplicate_and
             state
                 .mint
                 .localstore()
-                .get_federation_journal_entries()
+                .get_federation_journal_entries(FederationIndexRange::ALL)
                 .await
                 .expect("journal entries")
                 .len(),
@@ -826,7 +830,7 @@ async fn aleph_bft_live_five_member_sessions_reject_same_sequence_equivocation_a
             state
                 .mint
                 .localstore()
-                .get_federation_journal_entries()
+                .get_federation_journal_entries(FederationIndexRange::ALL)
                 .await
                 .expect("journal entries after equivocated network message")
                 .len(),
@@ -860,7 +864,7 @@ async fn aleph_bft_live_five_member_sessions_reject_same_sequence_equivocation_a
         let entries = state
             .mint
             .localstore()
-            .get_federation_journal_entries()
+            .get_federation_journal_entries(FederationIndexRange::ALL)
             .await
             .expect("journal entries after second operation");
         assert_eq!(
@@ -909,10 +913,10 @@ async fn aleph_bft_live_five_member_sessions_converge_after_valid_increasing_seq
     let duplicated_member_backup = session.states[0]
         .mint
         .localstore()
-        .get_federation_aleph_bft_backup_bytes(0)
+        .get_federation_aleph_bft_backup_chunks(0, FederationIndexRange::ALL)
         .await
         .expect("settled duplicated member backup lookup")
-        .expect("settled duplicated member backup");
+        .concat();
 
     *session.states[0]
         .federation
@@ -1139,7 +1143,7 @@ async fn aleph_bft_live_five_member_sessions_converge_after_valid_increasing_seq
                 let journal_operation_ids = state
                     .mint
                     .localstore()
-                    .get_federation_journal_entries()
+                    .get_federation_journal_entries(FederationIndexRange::ALL)
                     .await
                     .expect("journal diagnostics")
                     .into_iter()
@@ -1168,7 +1172,7 @@ async fn aleph_bft_live_five_member_sessions_converge_after_valid_increasing_seq
     let expected_entries = session.states[0]
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("expected post-fork journal");
     let expected_operation_ids = expected_entries
@@ -1191,7 +1195,7 @@ async fn aleph_bft_live_five_member_sessions_converge_after_valid_increasing_seq
         let entries = state
             .mint
             .localstore()
-            .get_federation_journal_entries()
+            .get_federation_journal_entries(FederationIndexRange::ALL)
             .await
             .expect("post-fork journal");
         assert_eq!(
@@ -1313,7 +1317,7 @@ async fn aleph_bft_live_sessions_with_unavailable_member_stall_safely_without_du
         assert!(state
             .mint
             .localstore()
-            .get_federation_journal_entries()
+            .get_federation_journal_entries(FederationIndexRange::ALL)
             .await
             .expect("journal lookup")
             .is_empty());
@@ -1738,7 +1742,10 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
             assert!(state
                 .mint
                 .localstore()
-                .get_federation_journal_entry_by_operation_id(operation_id)
+                .get_federation_journal_entry(
+                    FederationJournalEntryKey::Operation(operation_id),
+                    None
+                )
                 .await
                 .expect("below-finality journal lookup")
                 .is_none());
@@ -1752,7 +1759,10 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
             assert!(state
                 .mint
                 .localstore()
-                .get_federation_signature_shares_for_output(operation_id, 0)
+                .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                    operation_id,
+                    output_index: 0
+                })
                 .await
                 .expect("below-finality signature share lookup")
                 .is_empty());
@@ -1887,7 +1897,10 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
             state
                 .mint
                 .localstore()
-                .get_federation_signature_shares_for_output(winning_swap_operation_id, 0)
+                .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                    operation_id: winning_swap_operation_id,
+                    output_index: 0
+                })
                 .await
                 .expect("winning swap signature share lookup")
                 .len(),
@@ -1896,7 +1909,10 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
         assert!(state
             .mint
             .localstore()
-            .get_federation_signature_shares_for_output(losing_swap_operation_id, 0)
+            .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                operation_id: losing_swap_operation_id,
+                output_index: 0
+            })
             .await
             .expect("losing swap signature share lookup")
             .is_empty());
@@ -1973,7 +1989,7 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
     let expected_entries = session.states[0]
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("below-finality expected journal");
     let expected_operation_ids = expected_entries
@@ -1997,7 +2013,7 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
         let entries = state
             .mint
             .localstore()
-            .get_federation_journal_entries()
+            .get_federation_journal_entries(FederationIndexRange::ALL)
             .await
             .expect("below-finality converged journal");
         assert_eq!(
@@ -2067,7 +2083,10 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
             state
                 .mint
                 .localstore()
-                .get_federation_signature_shares_for_output(winning_swap_operation_id, 0)
+                .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                    operation_id: winning_swap_operation_id,
+                    output_index: 0
+                })
                 .await
                 .expect("below-finality final winning share")
                 .len(),
@@ -2076,7 +2095,10 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
         assert!(state
             .mint
             .localstore()
-            .get_federation_signature_shares_for_output(losing_swap_operation_id, 0)
+            .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                operation_id: losing_swap_operation_id,
+                output_index: 0
+            })
             .await
             .expect("below-finality final losing share")
             .is_empty());
@@ -2084,7 +2106,10 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
             state
                 .mint
                 .localstore()
-                .get_federation_signature_shares_for_output(melt_operation_id, 0)
+                .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                    operation_id: melt_operation_id,
+                    output_index: 0
+                })
                 .await
                 .expect("below-finality final melt share")
                 .len(),

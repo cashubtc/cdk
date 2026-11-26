@@ -1,3 +1,7 @@
+use cdk_common::database::mint::{
+    FederationIndexRange, FederationPaymentObservationSelection, FederationSignatureShareKey,
+};
+
 use super::*;
 
 #[tokio::test]
@@ -26,7 +30,7 @@ async fn submit_mint_quote_operation_applies_quote_to_local_store() {
     let persisted = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     assert_eq!(persisted[0].status(), FederationOperationStatus::Applied);
@@ -70,7 +74,7 @@ async fn submit_mint_quote_rejects_invalid_admission_before_journal_append() {
     let entries = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     assert!(entries.is_empty());
@@ -93,7 +97,7 @@ async fn submit_mint_operation_rejects_invalid_admission_before_journal_append()
     let entries = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     assert!(entries.is_empty());
@@ -126,7 +130,7 @@ async fn submit_payment_observation_rejects_invalid_admission_without_dkg_sequen
     let entries = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     assert!(entries.is_empty());
@@ -171,7 +175,7 @@ async fn materialized_state_digest_excludes_rejection_metadata() {
     let mut spent_entry = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup")
         .into_iter()
@@ -231,7 +235,7 @@ async fn materialized_state_digest_tracks_keyset_rotation_rows() {
     let persisted = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     assert_eq!(
@@ -359,12 +363,15 @@ async fn materialized_state_digest_tracks_unfinalized_payment_observation_rows()
     let observations = state
         .mint
         .localstore()
-        .get_federation_payment_observations(
-            cdk::federation::FederationPaymentObservationContext::MintQuote,
-            &quote_id.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+            context: cdk::federation::FederationPaymentObservationContext::MintQuote,
+            quote: &quote_id.to_string(),
+        })
         .await
-        .expect("payment observations");
+        .expect("payment observations")
+        .into_iter()
+        .map(|observation| observation.record)
+        .collect::<Vec<_>>();
     assert_eq!(observations.len(), 1);
 }
 
@@ -458,7 +465,7 @@ async fn failed_mint_apply_preserves_materialized_digest_and_replays_on_restart(
     add_blinded_message_conflict(&state, Some(&quote_id), &output).await;
     persist_test_journal_entry(&state, &mint_entry).await;
     let before_entries = db
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal before failed mint apply");
     let before_digest = materialized_state_digest(&state, &before_entries)
@@ -476,7 +483,7 @@ async fn failed_mint_apply_preserves_materialized_digest_and_replays_on_restart(
     ));
 
     let after_entries = db
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal after failed mint apply");
     let after_digest = materialized_state_digest(&state, &after_entries)
@@ -500,7 +507,10 @@ async fn failed_mint_apply_preserves_materialized_digest_and_replays_on_restart(
         Amount::ZERO.with_unit(CurrencyUnit::Sat)
     );
     assert!(db
-        .get_federation_signature_shares_for_output(mint_entry.operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id: mint_entry.operation_id,
+            output_index: 0
+        })
         .await
         .expect("mint shares after failed apply")
         .is_empty());
@@ -537,7 +547,7 @@ async fn failed_mint_apply_preserves_materialized_digest_and_replays_on_restart(
         replayed_sequences.expect("configured member handle");
 
     let replayed_entries = db
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal after mint restart replay");
     assert_eq!(
@@ -594,7 +604,7 @@ async fn failed_swap_apply_preserves_materialized_digest_and_replays_on_restart(
     add_blinded_message_conflict(&state, None, &output).await;
     persist_test_journal_entry(&state, &swap_entry).await;
     let before_entries = db
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal before failed swap apply");
     let before_digest = materialized_state_digest(&state, &before_entries)
@@ -612,7 +622,7 @@ async fn failed_swap_apply_preserves_materialized_digest_and_replays_on_restart(
     ));
 
     let after_entries = db
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal after failed swap apply");
     let after_digest = materialized_state_digest(&state, &after_entries)
@@ -635,7 +645,10 @@ async fn failed_swap_apply_preserves_materialized_digest_and_replays_on_restart(
         vec![None]
     );
     assert!(db
-        .get_federation_signature_shares_for_output(swap_entry.operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id: swap_entry.operation_id,
+            output_index: 0
+        })
         .await
         .expect("swap shares after failed apply")
         .is_empty());
@@ -672,7 +685,7 @@ async fn failed_swap_apply_preserves_materialized_digest_and_replays_on_restart(
         replayed_sequences.expect("configured member handle");
 
     let replayed_entries = db
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal after swap restart replay");
     assert_eq!(
@@ -883,7 +896,7 @@ async fn submit_federation_envelope_returns_duplicate_when_acceptance_races_subm
     let entries = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal entries");
     assert_eq!(entries.len(), 1);
@@ -1059,12 +1072,15 @@ async fn catch_up_replay_materializes_unresolved_payment_observation_rows() {
     let observations = state
         .mint
         .localstore()
-        .get_federation_payment_observations(
-            cdk::federation::FederationPaymentObservationContext::MintQuote,
-            &quote_id.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+            context: cdk::federation::FederationPaymentObservationContext::MintQuote,
+            quote: &quote_id.to_string(),
+        })
         .await
-        .expect("payment observations");
+        .expect("payment observations")
+        .into_iter()
+        .map(|observation| observation.record)
+        .collect::<Vec<_>>();
     assert_eq!(observations.len(), 1);
 
     let status_request = signed_status_request(&public_config, &peer_private, local_member, 1);
@@ -1202,7 +1218,7 @@ async fn submit_mint_operation_applies_issuance_and_persists_share() {
     let persisted = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     let mint_entry = persisted
@@ -1832,7 +1848,7 @@ async fn benchmark_checkpoint_startup_is_history_length_independent() {
         let base_entry = backup_state
             .mint
             .localstore()
-            .get_federation_journal_entries_range(0, 1, 1)
+            .get_federation_journal_entries(FederationIndexRange::page(0, 1, 1))
             .await
             .expect("load synthetic suffix conflict anchor")
             .pop()

@@ -1,3 +1,5 @@
+use cdk_common::database::mint::{FederationIndexRange, FederationSignatureShareKey};
+
 use super::*;
 
 #[tokio::test]
@@ -55,7 +57,10 @@ async fn apply_federation_swap_spends_old_proofs_and_signs_rotated_outputs() {
     assert_eq!(signature.keyset_id, next_keyset.id);
 
     let share_records = localstore
-        .get_federation_signature_shares_for_output(swap_entry.operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id: swap_entry.operation_id,
+            output_index: 0,
+        })
         .await
         .expect("stored federation swap signature shares");
     assert_eq!(share_records.len(), 1);
@@ -359,7 +364,10 @@ async fn apply_federation_swap_persists_accepted_materialization_rows() {
     assert_eq!(signature.keyset_id, output.keyset_id);
 
     let share_records = localstore
-        .get_federation_signature_shares_for_output(swap_entry.operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id: swap_entry.operation_id,
+            output_index: 0,
+        })
         .await
         .expect("stored federation swap signature share");
     assert_eq!(share_records.len(), 1);
@@ -379,7 +387,7 @@ async fn apply_federation_swap_persists_accepted_materialization_rows() {
     );
 
     let stored_entries = localstore
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     let stored_swap_entry = stored_entries
@@ -430,7 +438,10 @@ async fn apply_federation_swap_rolls_back_late_failure_and_replays() {
         vec![None]
     );
     assert!(localstore
-        .get_federation_signature_shares_for_output(swap_entry.operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id: swap_entry.operation_id,
+            output_index: 0
+        })
         .await
         .expect("share lookup after rollback")
         .is_empty());
@@ -451,7 +462,7 @@ async fn apply_federation_swap_rolls_back_late_failure_and_replays() {
         .expect("blinded-message lookup after rollback")
         .is_empty());
     let stored_entries = localstore
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup after rollback");
     assert_eq!(
@@ -483,7 +494,10 @@ async fn apply_federation_swap_rolls_back_late_failure_and_replays() {
         .is_some());
     assert_eq!(
         localstore
-            .get_federation_signature_shares_for_output(swap_entry.operation_id, 0)
+            .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                operation_id: swap_entry.operation_id,
+                output_index: 0
+            })
             .await
             .expect("share lookup after replay")
             .len(),
@@ -666,13 +680,19 @@ async fn apply_federation_swap_rejects_signed_output_reuse_before_spending_fresh
         vec![None]
     );
     assert!(localstore
-        .get_federation_signature_shares_for_output(second_entry.operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id: second_entry.operation_id,
+            output_index: 0
+        })
         .await
         .expect("second operation share lookup")
         .is_empty());
     assert_eq!(
         localstore
-            .get_federation_signature_shares_for_output(first_entry.operation_id, 0)
+            .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                operation_id: first_entry.operation_id,
+                output_index: 0
+            })
             .await
             .expect("first operation share lookup")
             .len(),

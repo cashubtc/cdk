@@ -11,9 +11,9 @@ use std::collections::{BTreeSet, HashMap};
 
 use bitcoin::hashes::{sha256, Hash};
 use cdk_common::database::mint::{
-    DynMintDatabase, DynMintTransaction, FederationMaterializedStateSource,
-    FederationMintQuoteState, FederationStoredBlindSignature, FederationStoredPaymentObservation,
-    FederationStoredProof,
+    DynMintDatabase, DynMintTransaction, FederationCheckpointSelector,
+    FederationMaterializedStateSource, FederationMintQuoteState, FederationStoredBlindSignature,
+    FederationStoredPaymentObservation, FederationStoredProof,
 };
 use cdk_common::error::Error;
 use cdk_common::federation::{
@@ -93,9 +93,9 @@ impl Mint {
     pub async fn federation_current_materialized_state_floor(&self) -> Result<u64, Error> {
         let db = self.localstore();
         match db
-            .get_latest_federation_checkpoint(
+            .get_federation_checkpoint(FederationCheckpointSelector::Latest(
                 cdk_common::federation::FederationCheckpointKind::Scheduled,
-            )
+            ))
             .await?
         {
             Some(checkpoint) => Ok(db

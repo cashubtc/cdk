@@ -16,6 +16,7 @@ use cdk::federation::{
     FederationCheckpointSummaryResponse, FederationError, FederationMaterializedStateDigest,
     FederationRecoveryBarrier, FEDERATION_REST_API_VERSION,
 };
+use cdk_common::database::mint::{FederationCheckpointSelector, FederationIndexRange};
 
 use super::node_runtime::{
     checkpoint_matches_boundary, checkpoint_summary, materialized_state_digest_with_metrics,
@@ -120,7 +121,9 @@ impl FederationNodeRuntime {
         // peer signatures. Waiting for a quorum here makes members choose
         // different next boundaries when that quorum arrives at different times.
         let latest_scheduled = db
-            .get_latest_federation_checkpoint(FederationCheckpointKind::Scheduled)
+            .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+                FederationCheckpointKind::Scheduled,
+            ))
             .await?;
         if let Some(checkpoint) = &latest_scheduled {
             checkpoint.validate_against_validated_config(public_config)?;
@@ -198,11 +201,7 @@ impl FederationNodeRuntime {
                         #[cfg(feature = "prometheus")]
                         let suffix_load_started_at = std::time::Instant::now();
                         let base_finalized_items = db
-                            .get_federation_aleph_bft_finalized_items_range(
-                                batch_base_finalized_index,
-                                retained_from_finalized_index,
-                                base_item_limit,
-                            )
+                            .get_federation_aleph_bft_finalized_items(FederationIndexRange::page(batch_base_finalized_index, retained_from_finalized_index, base_item_limit))
                             .await;
                         #[cfg(feature = "prometheus")]
                         cdk_prometheus::METRICS.record_federation_performance_operation(
@@ -468,11 +467,12 @@ impl FederationNodeRuntime {
             }
             .into());
         }
-        let quorum = db.get_trusted_federation_checkpoint_quorum().await?.ok_or(
-            FederationCheckpointError::Invalid {
+        let quorum = db
+            .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
+            .await?
+            .ok_or(FederationCheckpointError::Invalid {
                 reason: "operator audit requires a trusted checkpoint",
-            },
-        )?;
+            })?;
         super::verify_checkpoint_quorum_with_metrics(
             &quorum,
             runtime_config.public_config(),
@@ -563,28 +563,38 @@ impl FederationNodeRuntime {
         let db = mint.localstore();
 
         let latest_scheduled_candidate = db
-            .get_latest_federation_checkpoint(FederationCheckpointKind::Scheduled)
+            .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+                FederationCheckpointKind::Scheduled,
+            ))
             .await?
             .map(|checkpoint| checkpoint_summary(&checkpoint, runtime_config))
             .transpose()?;
         let latest_recovery_candidate = db
-            .get_latest_federation_checkpoint(FederationCheckpointKind::Recovery)
+            .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+                FederationCheckpointKind::Recovery,
+            ))
             .await?
             .map(|checkpoint| checkpoint_summary(&checkpoint, runtime_config))
             .transpose()?;
         let latest_scheduled_quorum = db
-            .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Scheduled)
+            .get_federation_checkpoint_quorum(FederationCheckpointSelector::Latest(
+                FederationCheckpointKind::Scheduled,
+            ))
             .await?
             .map(|quorum| stored_checkpoint_quorum_summary(&quorum, runtime_config))
             .transpose()?;
         let latest_recovery_quorum = db
-            .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Recovery)
+            .get_federation_checkpoint_quorum(FederationCheckpointSelector::Latest(
+                FederationCheckpointKind::Recovery,
+            ))
             .await?
             .map(|quorum| stored_checkpoint_quorum_summary(&quorum, runtime_config))
             .transpose()?;
         let next_scheduled_quorum = match next_scheduled_quorum_after {
             Some(sequence) => db
-                .get_next_federation_scheduled_checkpoint_quorum(sequence)
+                .get_federation_checkpoint_quorum(FederationCheckpointSelector::NextScheduled(
+                    sequence,
+                ))
                 .await?
                 .map(|quorum| stored_checkpoint_quorum_summary(&quorum, runtime_config))
                 .transpose()?,
@@ -645,7 +655,9 @@ impl FederationNodeRuntime {
         let public_config = runtime_config.public_config();
         let db = mint.localstore();
         let latest_scheduled_quorum = db
-            .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Scheduled)
+            .get_federation_checkpoint_quorum(FederationCheckpointSelector::Latest(
+                FederationCheckpointKind::Scheduled,
+            ))
             .await?;
         let latest_scheduled = match latest_scheduled_quorum.as_ref() {
             Some(quorum) => Some(
@@ -730,7 +742,10 @@ impl FederationNodeRuntime {
             FederationCheckpointKind::Scheduled,
             FederationCheckpointKind::Recovery,
         ] {
-            if let Some(checkpoint) = db.get_latest_federation_checkpoint(kind).await? {
+            if let Some(checkpoint) = db
+                .get_federation_checkpoint(FederationCheckpointSelector::Latest(kind))
+                .await?
+            {
                 checkpoint.validate_against_validated_config(public_config)?;
                 if checkpoint_covers_current_recovery_need(
                     &checkpoint,
@@ -742,7 +757,10 @@ impl FederationNodeRuntime {
                     return Ok(true);
                 }
             }
-            if let Some(quorum) = db.get_latest_federation_checkpoint_quorum(kind).await? {
+            if let Some(quorum) = db
+                .get_federation_checkpoint_quorum(FederationCheckpointSelector::Latest(kind))
+                .await?
+            {
                 let verified = quorum.verify_against_validated_config(public_config)?;
                 if checkpoint_covers_current_recovery_need(
                     verified.checkpoint(),
@@ -808,7 +826,9 @@ impl FederationNodeRuntime {
         boundary.validate_against_validated_config(public_config)?;
         let db = mint.localstore();
         let latest_scheduled_quorum = db
-            .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Scheduled)
+            .get_federation_checkpoint_quorum(FederationCheckpointSelector::Latest(
+                FederationCheckpointKind::Scheduled,
+            ))
             .await?;
         let latest_scheduled = match latest_scheduled_quorum.as_ref() {
             Some(quorum) => {
@@ -873,7 +893,9 @@ impl FederationNodeRuntime {
             }
         }
         if let Some(quorum) = db
-            .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Recovery)
+            .get_federation_checkpoint_quorum(FederationCheckpointSelector::Latest(
+                FederationCheckpointKind::Recovery,
+            ))
             .await?
         {
             super::verify_checkpoint_quorum_with_metrics(
@@ -897,7 +919,9 @@ impl FederationNodeRuntime {
             }
         }
         if let Some(candidate) = db
-            .get_latest_federation_checkpoint(FederationCheckpointKind::Recovery)
+            .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+                FederationCheckpointKind::Recovery,
+            ))
             .await?
         {
             candidate.validate_against_validated_config(public_config)?;
@@ -927,11 +951,11 @@ impl FederationNodeRuntime {
         let batch_item_limit = usize::try_from(expected_batch_items)
             .expect("bounded checkpoint finalized-item count fits in usize");
         let batch_finalized_items = db
-            .get_federation_aleph_bft_finalized_items_range(
+            .get_federation_aleph_bft_finalized_items(FederationIndexRange::page(
                 batch_base_finalized_index,
                 boundary.finalized_next_item_index,
                 batch_item_limit,
-            )
+            ))
             .await?;
         if batch_finalized_items.len() != batch_item_limit {
             return Err(FederationCheckpointError::Invalid {
@@ -1014,7 +1038,9 @@ impl FederationNodeRuntime {
             .ok_or_else(|| runtime_unavailable("mint configuration"))?;
         let public_config = runtime_config.public_config();
         let db = mint.localstore();
-        let checkpoint = db.get_federation_checkpoint(checkpoint_id).await?;
+        let checkpoint = db
+            .get_federation_checkpoint(FederationCheckpointSelector::Id(checkpoint_id))
+            .await?;
         if let Some(checkpoint) = checkpoint.as_ref() {
             checkpoint.validate_against_validated_config(public_config)?;
             if checkpoint.id()? != checkpoint_id {
@@ -1026,7 +1052,9 @@ impl FederationNodeRuntime {
         }
         // Serving a stored proof is not a trust transition. The fetching peer verifies the full
         // quorum before persistence, catch-up, or promotion.
-        let quorum = db.get_federation_checkpoint_quorum(checkpoint_id).await?;
+        let quorum = db
+            .get_federation_checkpoint_quorum(FederationCheckpointSelector::Id(checkpoint_id))
+            .await?;
         Ok(FederationCheckpointFetchResponse {
             version: FEDERATION_REST_API_VERSION,
             federation_id: runtime_config.federation_id(),
@@ -1062,7 +1090,9 @@ impl FederationNodeRuntime {
             .ok_or_else(|| runtime_unavailable("mint configuration"))?;
         let public_config = runtime_config.public_config();
         let db = mint.localstore();
-        let checkpoint = db.get_federation_checkpoint(checkpoint_id).await?;
+        let checkpoint = db
+            .get_federation_checkpoint(FederationCheckpointSelector::Id(checkpoint_id))
+            .await?;
         let signature = match checkpoint.as_ref() {
             Some(checkpoint) => {
                 checkpoint.validate_against_validated_config(public_config)?;
@@ -1120,7 +1150,10 @@ impl FederationNodeRuntime {
         let locally_reached = !frontier.materialized_state_audit_mismatch
             && frontier.ensure_covers_checkpoint(checkpoint).is_ok();
         let should_promote = if locally_reached {
-            match db.get_trusted_federation_checkpoint_quorum().await? {
+            match db
+                .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
+                .await?
+            {
                 Some(current) => {
                     let verified_current = super::verify_checkpoint_quorum_with_metrics(
                         &current,
@@ -1188,11 +1221,12 @@ impl FederationNodeRuntime {
             .ok_or_else(|| runtime_unavailable("mint configuration"))?;
         let public_config = runtime_config.public_config();
         let db = mint.localstore();
-        let checkpoint = db.get_federation_checkpoint(checkpoint_id).await?.ok_or(
-            FederationCheckpointError::Invalid {
+        let checkpoint = db
+            .get_federation_checkpoint(FederationCheckpointSelector::Id(checkpoint_id))
+            .await?
+            .ok_or(FederationCheckpointError::Invalid {
                 reason: "cannot store a signature for an unknown checkpoint",
-            },
-        )?;
+            })?;
         checkpoint.validate_against_validated_config(public_config)?;
         if checkpoint.id()? != checkpoint_id || signature.checkpoint_id != checkpoint_id {
             return Err(FederationCheckpointError::Invalid {

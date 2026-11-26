@@ -24,6 +24,7 @@ use crate::nuts::nut01::{PublicKey, SecretKey};
 mod http;
 mod persistence;
 mod review;
+mod step;
 
 pub use self::http::{
     FederationSetupCorrelationNonce, FederationSetupEnrollmentAcknowledgement,
@@ -36,6 +37,9 @@ pub use self::persistence::{
     FederationSetupSession,
 };
 pub use self::review::{FederationSetupMemberReview, FederationSetupProposalReview};
+pub use self::step::{
+    validate_federation_setup_invitation_consumption, FederationSetupRecord, FederationSetupStep,
+};
 
 /// Multi-operator setup protocol version implemented by this build.
 pub const FEDERATION_SETUP_PROTOCOL_VERSION: u16 = 1;

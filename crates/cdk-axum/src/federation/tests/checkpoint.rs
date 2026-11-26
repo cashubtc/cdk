@@ -1,3 +1,5 @@
+use cdk_common::database::mint::FederationCheckpointSelector;
+
 use super::*;
 
 #[test]
@@ -356,7 +358,7 @@ async fn rest_peer_client_pages_catch_up_across_default_limit_boundary() {
         let trusted = state
             .mint
             .localstore()
-            .get_trusted_federation_checkpoint_quorum()
+            .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
             .await
             .expect("trusted genesis catch-up checkpoint")
             .expect("promoted genesis catch-up checkpoint");
@@ -440,7 +442,7 @@ async fn checkpoint_catch_up_resumes_after_each_durable_page_restart() {
         assert!(state
             .mint
             .localstore()
-            .get_trusted_federation_checkpoint_quorum()
+            .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
             .await
             .expect("trusted checkpoint before restart")
             .is_none());
@@ -486,7 +488,7 @@ async fn checkpoint_catch_up_resumes_after_each_durable_page_restart() {
         let trusted = state
             .mint
             .localstore()
-            .get_trusted_federation_checkpoint_quorum()
+            .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
             .await
             .expect("trusted resumed checkpoint")
             .expect("promoted resumed checkpoint");
@@ -723,7 +725,7 @@ async fn checkpoint_catch_up_rejects_bad_source_then_uses_second_source() {
     assert!(state
         .mint
         .localstore()
-        .get_trusted_federation_checkpoint_quorum()
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
         .await
         .expect("trusted checkpoint after invalid source")
         .is_none());
@@ -745,7 +747,7 @@ async fn checkpoint_catch_up_rejects_bad_source_then_uses_second_source() {
     let trusted = state
         .mint
         .localstore()
-        .get_trusted_federation_checkpoint_quorum()
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
         .await
         .expect("trusted checkpoint after source failover")
         .expect("checkpoint promoted after source failover");

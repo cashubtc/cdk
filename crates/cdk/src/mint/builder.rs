@@ -1095,6 +1095,8 @@ mod tests {
     use async_trait::async_trait;
     use bip39::Mnemonic;
     #[cfg(feature = "federation")]
+    use cdk_common::database::mint::FederationDkgRecord;
+    #[cfg(feature = "federation")]
     use cdk_common::database::MintDatabase;
     #[cfg(feature = "federation")]
     use cdk_common::federation::{
@@ -1498,16 +1500,16 @@ mod tests {
         let mut tx = MintDatabase::begin_transaction(localstore.as_ref())
             .await
             .expect("begin dkg records");
-        tx.add_federation_dkg_member_keyset_share(keyset_share)
+        tx.add_federation_dkg_record(FederationDkgRecord::MemberKeysetShare(keyset_share))
             .await
             .expect("persist dkg keyset share");
         for signature in transcript_signatures {
-            tx.add_federation_dkg_transcript_signature(signature)
+            tx.add_federation_dkg_record(FederationDkgRecord::TranscriptSignature(signature))
                 .await
                 .expect("persist dkg transcript signature");
         }
         for activation in activations {
-            tx.add_federation_dkg_activation(activation)
+            tx.add_federation_dkg_record(FederationDkgRecord::Activation(activation))
                 .await
                 .expect("persist DKG activation");
         }

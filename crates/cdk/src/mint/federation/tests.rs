@@ -7,7 +7,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cdk_common::common::FeeReserve;
 use cdk_common::database::mint::{
-    CompletedOperationsDatabase, FederationApplicationDatabase, SagaDatabase,
+    CompletedOperationsDatabase, FederationApplicationDatabase, FederationSignatureShareKey,
+    SagaDatabase,
 };
 use cdk_common::database::{
     MintDatabase, MintFederationJournalDatabase, MintProofsDatabase, MintQuotesDatabase,
@@ -1219,7 +1220,10 @@ async fn assert_rejected_swap_left_no_materialization(
     for output_index in 0..outputs.len() {
         assert!(
             localstore
-                .get_federation_signature_shares_for_output(operation_id, output_index as u32)
+                .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                    operation_id,
+                    output_index: output_index as u32
+                })
                 .await
                 .expect("rejected swap output share lookup")
                 .is_empty(),
@@ -1230,7 +1234,9 @@ async fn assert_rejected_swap_left_no_materialization(
     for blinded_secret in blinded_secrets {
         assert!(
             localstore
-                .get_federation_signature_shares_for_blinded_message(blinded_secret)
+                .get_federation_signature_shares(FederationSignatureShareKey::BlindedMessage(
+                    blinded_secret
+                ))
                 .await
                 .expect("rejected swap blinded-message share lookup")
                 .is_empty(),
@@ -1305,7 +1311,10 @@ async fn assert_rejected_melt_left_no_materialization(
     for output_index in 0..change_outputs.len() {
         assert!(
             localstore
-                .get_federation_signature_shares_for_output(operation_id, output_index as u32)
+                .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                    operation_id,
+                    output_index: output_index as u32
+                })
                 .await
                 .expect("rejected melt output share lookup")
                 .is_empty(),
@@ -1316,7 +1325,9 @@ async fn assert_rejected_melt_left_no_materialization(
     for blinded_secret in blinded_secrets {
         assert!(
             localstore
-                .get_federation_signature_shares_for_blinded_message(blinded_secret)
+                .get_federation_signature_shares(FederationSignatureShareKey::BlindedMessage(
+                    blinded_secret
+                ))
                 .await
                 .expect("rejected melt blinded-message share lookup")
                 .is_empty(),

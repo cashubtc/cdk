@@ -1,3 +1,8 @@
+use cdk_common::database::mint::{
+    FederationIndexRange, FederationJournalEntryKey, FederationPaymentObservationSelection,
+    FederationSignatureShareKey,
+};
+
 use super::*;
 
 #[tokio::test]
@@ -641,10 +646,10 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
         let history = state
             .mint
             .localstore()
-            .get_federation_payment_observation_history(
-                cdk::federation::FederationPaymentObservationContext::MeltQuote,
-                &melt_quote_id.to_string(),
-            )
+            .get_federation_payment_observations(FederationPaymentObservationSelection::History {
+                context: cdk::federation::FederationPaymentObservationContext::MeltQuote,
+                quote: &melt_quote_id.to_string(),
+            })
             .await
             .expect("connected melt payment observations");
         assert!(!history.is_empty() && history.len() <= connected_member_count);
@@ -660,7 +665,10 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
     assert!(session.states[offline_index]
         .mint
         .localstore()
-        .get_federation_journal_entry_by_operation_id(swap_operation_id)
+        .get_federation_journal_entry(
+            FederationJournalEntryKey::Operation(swap_operation_id),
+            None
+        )
         .await
         .expect("offline swap journal lookup")
         .is_none());
@@ -753,10 +761,10 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
         caught_up
             .mint
             .localstore()
-            .get_federation_payment_observation_history(
-                cdk::federation::FederationPaymentObservationContext::MintQuote,
-                &mint_quote_id.to_string(),
-            )
+            .get_federation_payment_observations(FederationPaymentObservationSelection::History {
+                context: cdk::federation::FederationPaymentObservationContext::MintQuote,
+                quote: &mint_quote_id.to_string()
+            })
             .await
             .expect("caught-up mint payment observations")
             .len(),
@@ -767,9 +775,11 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
             caught_up
                 .mint
                 .localstore()
-                .get_federation_payment_observation_history(
-                    cdk::federation::FederationPaymentObservationContext::MeltQuote,
-                    &melt_quote_id.to_string(),
+                .get_federation_payment_observations(
+                    FederationPaymentObservationSelection::History {
+                        context: cdk::federation::FederationPaymentObservationContext::MeltQuote,
+                        quote: &melt_quote_id.to_string()
+                    }
                 )
                 .await
                 .expect("caught-up melt payment observations")
@@ -781,7 +791,10 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
         caught_up
             .mint
             .localstore()
-            .get_federation_signature_shares_for_output(swap_operation_id, 0)
+            .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                operation_id: swap_operation_id,
+                output_index: 0
+            })
             .await
             .expect("caught-up swap share provenance")
             .len(),
@@ -791,7 +804,10 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
         caught_up
             .mint
             .localstore()
-            .get_federation_signature_shares_for_output(melt_operation_id, 0)
+            .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                operation_id: melt_operation_id,
+                output_index: 0
+            })
             .await
             .expect("caught-up melt change share provenance")
             .first()
@@ -811,7 +827,7 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
     let expected_entries = session.states[0]
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("expected value-operation journal");
     assert_eq!(
@@ -833,7 +849,7 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
         let entries = state
             .mint
             .localstore()
-            .get_federation_journal_entries()
+            .get_federation_journal_entries(FederationIndexRange::ALL)
             .await
             .expect("converged value-operation journal");
         assert_eq!(
@@ -861,7 +877,10 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
             state
                 .mint
                 .localstore()
-                .get_federation_signature_shares_for_output(swap_operation_id, 0)
+                .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                    operation_id: swap_operation_id,
+                    output_index: 0
+                })
                 .await
                 .expect("converged swap share provenance")
                 .len(),
@@ -872,7 +891,10 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
             state
                 .mint
                 .localstore()
-                .get_federation_signature_shares_for_output(melt_operation_id, 0)
+                .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                    operation_id: melt_operation_id,
+                    output_index: 0
+                })
                 .await
                 .expect("converged melt share provenance")
                 .len(),
@@ -884,7 +906,10 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
                 state
                     .mint
                     .localstore()
-                    .get_federation_signature_shares_for_output(mint_operation_id, output_index,)
+                    .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                        operation_id: mint_operation_id,
+                        output_index
+                    })
                     .await
                     .expect("converged mint share provenance")
                     .len(),
@@ -1058,7 +1083,7 @@ async fn aleph_bft_live_sessions_finalize_keyset_rotation_with_one_unavailable_m
                 let entries = states[index]
                     .mint
                     .localstore()
-                    .get_federation_journal_entries()
+                    .get_federation_journal_entries(FederationIndexRange::ALL)
                     .await
                     .expect("journal lookup");
                 let pending = states[index]
@@ -1238,7 +1263,7 @@ async fn aleph_bft_live_sessions_finalize_multiple_pending_operations_after_long
         assert!(state
             .mint
             .localstore()
-            .get_federation_journal_entries()
+            .get_federation_journal_entries(FederationIndexRange::ALL)
             .await
             .expect("journal lookup before returned member")
             .is_empty());
@@ -1285,7 +1310,7 @@ async fn aleph_bft_live_sessions_finalize_multiple_pending_operations_after_long
         let entries = state
             .mint
             .localstore()
-            .get_federation_journal_entries()
+            .get_federation_journal_entries(FederationIndexRange::ALL)
             .await
             .expect("journal lookup after returned member");
         assert_eq!(
@@ -1419,10 +1444,10 @@ async fn aleph_bft_live_session_replays_pending_operation_when_restart_precedes_
     let backup_bytes = states[0]
         .mint
         .localstore()
-        .get_federation_aleph_bft_backup_bytes(0)
+        .get_federation_aleph_bft_backup_chunks(0, FederationIndexRange::ALL)
         .await
         .expect("AlephBFT backup lookup before restart")
-        .unwrap_or_default();
+        .concat();
     assert!(
         backup_bytes.is_empty(),
         "this regression covers the restart window before upstream AlephBFT backup bytes exist"
@@ -1508,7 +1533,7 @@ async fn aleph_bft_live_session_replays_pending_operation_when_restart_precedes_
             let entries = state
                 .mint
                 .localstore()
-                .get_federation_journal_entries()
+                .get_federation_journal_entries(FederationIndexRange::ALL)
                 .await
                 .expect("journal lookup");
             let pending = state
@@ -1550,7 +1575,7 @@ async fn aleph_bft_live_session_replays_pending_operation_when_restart_precedes_
     let expected_entries = states[0]
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("unit-creation crash-window journal");
     assert_eq!(expected_entries.len(), 1);
@@ -1562,7 +1587,7 @@ async fn aleph_bft_live_session_replays_pending_operation_when_restart_precedes_
         let entries = state
             .mint
             .localstore()
-            .get_federation_journal_entries()
+            .get_federation_journal_entries(FederationIndexRange::ALL)
             .await
             .expect("converged unit-creation crash-window journal");
         assert_eq!(
@@ -1736,7 +1761,7 @@ async fn aleph_bft_live_session_restarts_from_persisted_backup_and_continues_fin
         let entries = state
             .mint
             .localstore()
-            .get_federation_journal_entries()
+            .get_federation_journal_entries(FederationIndexRange::ALL)
             .await
             .expect("journal lookup after post-backup restart");
         assert_eq!(entries.len(), 2);
@@ -1899,14 +1924,14 @@ async fn aleph_bft_live_session_replays_finalized_operation_from_backup_without_
     assert!(recovered_first_state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal before backup-only recovery")
         .is_empty());
     assert!(recovered_first_state
         .mint
         .localstore()
-        .get_federation_aleph_bft_finalized_items()
+        .get_federation_aleph_bft_finalized_items(FederationIndexRange::ALL)
         .await
         .expect("finalized items before backup-only recovery")
         .is_empty());
@@ -1964,7 +1989,7 @@ async fn aleph_bft_live_session_replays_finalized_operation_from_backup_without_
     let recovered_entries = recovered_first_state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal after backup-only recovery");
     assert_eq!(recovered_entries.len(), 1);
@@ -1972,7 +1997,7 @@ async fn aleph_bft_live_session_replays_finalized_operation_from_backup_without_
     let peer_entries = second_state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("peer journal after backup-only recovery");
     assert_eq!(
@@ -2006,7 +2031,7 @@ async fn aleph_bft_live_session_replays_finalized_operation_from_backup_without_
         let entries = state
             .mint
             .localstore()
-            .get_federation_journal_entries()
+            .get_federation_journal_entries(FederationIndexRange::ALL)
             .await
             .expect("journal after backup-only continuation");
         assert_eq!(
@@ -2028,7 +2053,7 @@ async fn aleph_bft_live_session_replays_finalized_operation_from_backup_without_
     let expected_entries = second_state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("peer journal after backup-only continuation");
     let expected_digest = materialized_state_digest(&second_state, &expected_entries)
@@ -2037,7 +2062,7 @@ async fn aleph_bft_live_session_replays_finalized_operation_from_backup_without_
     let recovered_entries = recovered_first_state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("recovered journal after backup-only continuation");
     assert_eq!(
@@ -2229,7 +2254,7 @@ async fn aleph_bft_live_five_member_sessions_continue_after_post_backup_restart_
         let entries = state
             .mint
             .localstore()
-            .get_federation_journal_entries()
+            .get_federation_journal_entries(FederationIndexRange::ALL)
             .await
             .expect("journal lookup after five-member post-backup restart");
         assert_eq!(

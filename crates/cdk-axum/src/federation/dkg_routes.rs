@@ -309,9 +309,10 @@ pub(super) async fn post_frost_dkg_round2(
     let records = state
         .mint
         .localstore()
-        .get_federation_frost_dkg_round2()
+        .get_federation_frost_dkg_records()
         .await
-        .map_err(|error| dkg_error_response(error.into()))?;
+        .map_err(|error| dkg_error_response(error.into()))?
+        .round2;
     let existing = records.into_iter().find(|record| {
         record.context == payload.payload.context
             && record.sender == verified.sender
@@ -384,9 +385,10 @@ pub(super) async fn post_frost_dkg_confirmation(
     let local_roots = state
         .mint
         .localstore()
-        .get_federation_frost_root_records()
+        .get_federation_frost_dkg_records()
         .await
-        .map_err(|error| dkg_error_response(error.into()))?;
+        .map_err(|error| dkg_error_response(error.into()))?
+        .roots;
     if let Some(local_root) = local_roots.iter().find(|root| {
         root.context == payload.payload.context && root.member_id == runtime_config.member_id()
     }) {

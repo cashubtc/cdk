@@ -1,3 +1,5 @@
+use cdk_common::database::mint::FederationIndexRange;
+
 use super::*;
 
 #[tokio::test]
@@ -80,7 +82,7 @@ async fn unusable_stored_aleph_bft_backup_does_not_pin_startup_with_valid_peer()
         FederationOperationStatus::Applied
     );
     let first_backup = first_db
-        .get_federation_aleph_bft_backup_chunks(0)
+        .get_federation_aleph_bft_backup_chunks(0, FederationIndexRange::ALL)
         .await
         .expect("first backup lookup");
     assert!(
@@ -113,7 +115,7 @@ async fn unusable_stored_aleph_bft_backup_does_not_pin_startup_with_valid_peer()
     time::timeout(Duration::from_secs(10), async {
         loop {
             let backup_chunks = first_db
-                .get_federation_aleph_bft_backup_chunks(0)
+                .get_federation_aleph_bft_backup_chunks(0, FederationIndexRange::ALL)
                 .await
                 .map(|chunks| chunks.len())
                 .unwrap_or(0);
@@ -146,7 +148,7 @@ async fn unusable_stored_aleph_bft_backup_does_not_pin_startup_with_valid_peer()
             )
             .await;
             let backup_chunks = first_db
-                .get_federation_aleph_bft_backup_chunks(0)
+                .get_federation_aleph_bft_backup_chunks(0, FederationIndexRange::ALL)
                 .await
                 .map(|chunks| chunks.len())
                 .unwrap_or(0);

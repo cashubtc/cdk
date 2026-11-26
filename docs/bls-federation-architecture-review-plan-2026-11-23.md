@@ -968,3 +968,35 @@ Verification: `cargo fmt`; clippy with `-D warnings` on `cdk-common`, `cdk`, `cd
 - **Reset.** New subcommand `cdk-mintd federation reset-member --confirm-wipe`, run while the daemon is stopped. It refuses without the flag. In one transaction (`FederationJournalTransaction::reset_federation_member_state`) it deletes the federation consensus and application state and the mint business rows, and keeps the federation config, DKG and setup records, FROST key material, keysets and mint configuration; the FROST nonce redb file is outside the database and untouched. The next start is the existing empty-member path: install a peer's checkpoint state, then catch up.
 - **Tests.** `cdk-axum` `member_holding_state_below_every_peer_floor_halts_then_rejoins_after_reset` (halts, stays halted, reset keeps key material, restart over the same database installs and catches up to the peers' digests). `cdk-mintd` `reset_member_refuses_without_confirmation` and `reset_keeps_key_material_and_leaves_an_empty_genesis_member`.
 - **Not done.** The command cannot detect a running daemon; operator documentation and the command's help say to stop it first. The halt is not persisted: a restarted member without a reset halts again at its first sync round.
+
+### 2026-11-26: package 6, storage trait surface
+
+The ten federation database traits (`crates/cdk-common/src/database/mint/federation.rs`) go from 141 methods (131 without a default body) to 91 (89). Each family of getters that differed only by filter, key or range is now one keyed or ranged operation; methods that only tests called are gone; write families of immutable records take one record enum. The SQL creation migrations are unchanged and behaviour is the same.
+
+| Trait | Before | After |
+|---|---|---|
+| `FederationJournalTransaction` | 25 | 23 |
+| `FederationApplicationTransaction` | 11 | 9 |
+| `FederationDkgTransaction` | 14 | 3 |
+| `FederationFrostWalletTransaction` | 3 | 3 |
+| `FederationSetupTransaction` | 18 | 8 |
+| `FederationJournalDatabase` | 35 | 19 |
+| `FederationApplicationDatabase` | 10 | 5 |
+| `FederationDkgDatabase` | 13 | 9 |
+| `FederationFrostWalletDatabase` | 3 | 3 |
+| `FederationSetupDatabase` | 9 | 9 |
+| Total | 141 | 91 |
+
+- **Ranged reads.** `get_federation_journal_entries(FederationIndexRange)` replaces the whole-journal, `_from` and `_range` reads; `get_federation_aleph_bft_finalized_items(range)` likewise; `get_federation_aleph_bft_backup_chunks(session, range)` replaces the chunk, chunk-page and whole-session byte reads (the byte read was used only by tests, which now join the chunks). `FederationIndexRange` has `ALL`, `starting_at`, `page` and `limited`; the SQL backends bind one statement with saturated bounds.
+- **Keyed reads.**
+  - `get_federation_journal_entry(FederationJournalEntryKey, before)` replaces the four lookups by operation id or conflict key, with and without an upper bound, on the connection; the transaction read takes the same key.
+  - `get_federation_checkpoint(FederationCheckpointSelector)` and `get_federation_checkpoint_quorum(selector)` replace the lookups by id, latest of a kind, next scheduled after a sequence, trusted, and state-transfer base (eight methods). `Trusted` for a checkpoint and `StateTransferBase` for a quorum are new combinations of the same queries.
+  - `get_federation_signature_shares(FederationSignatureShareKey)` replaces the reads by output and by blinded message.
+  - `get_federation_payment_observations(FederationPaymentObservationSelection)` replaces the live read per quote, the audit history read and the whole-table live read, on the connection and in the transaction; every selection returns stored observations with their retirement index. Callers that need records map them.
+- **One write per record family.** `add_federation_payment_observation(record, terminal_operation_index)` also installs a transferred observation (the separate install method is gone). `add_federation_signature_shares` and `add_federation_aleph_bft_finalized_items` are the only share and item writes. `add_federation_dkg_record(FederationDkgRecord)` replaces the seven BLS and five FROST DKG record writes; `get_federation_frost_dkg_records()` reads the one FROST record table once and returns it by kind (`FederationFrostDkgRecords`), replacing five reads that each filtered it. `add_federation_setup_record(FederationSetupRecord)` replaces six immutable setup record writes.
+- **Setup rules out of the storage trait.** The six default methods that stored a setup record and advanced the local session (enroll, publish, review, fence, certify, activate) are one default method, `advance_federation_setup_session(expected, updated, FederationSetupStep)`. Which record may accompany which transition is decided by `FederationSetupStep::validate_transition` in `cdk-common`'s setup module, with the same checks and error reasons; invitation consumption validates through `validate_federation_setup_invitation_consumption`.
+- **Private in the SQL crate.** `prune_federation_checkpoints` had only callers inside the SQL crate's own promotion and capture paths; it is the private `prune_federation_checkpoint_retention`.
+- **Deleted, test-only callers.** `get_federation_checkpoints_after`, `get_federation_mint_quote_states` and `get_federation_completed_operations`. Their conformance tests are removed or now assert the trusted and latest checkpoint selectors instead; the SQL quote and completed-operation helpers stay, used by the materialized-state source.
+- **Kept apart on purpose.** The BLS DKG reads stay one per table (each caller reads one table, and a combined read would query seven); connection and transaction twins of the payment-observation, journal-entry and materialized-state-source reads stay because both callers exist, and now share one SQL helper each.
+
+Verification: `cargo fmt`; clippy with `-D warnings` in the eleven configurations of the verification script (`cdk-common`, `cdk`, `cdk-federation`, `cdk-axum` in three feature sets, `cdk-cli` and `cdk-ffi` with and without federation, `cdk-fed-tui`); the 15 production builds; `cdk-common` with `federation,test` (497, plus 23 in its integration targets), `cdk-federation-bark` (40), `cdk-bark` (36), `cdk-sqlite` with `federation-bark` (195), `cdk` with federation and Bark (1,085), `cdk` wallet Iroh (2), `cdk-federation` (115), `cdk-axum` with `federation-bdk,federation-bark,iroh` (481), `cdk-mintd` with `federation-test-utils,federation-bark` (300), `cdk-cli` (24 and 40), `cdk-ffi` (110 and 111), `cdk-fed-tui` (24). The Postgres conformance tests compile but were not run (no server).

@@ -1,3 +1,5 @@
+use cdk_common::database::mint::FederationJournalEntryKey;
+
 use super::super::FederationMode;
 use super::*;
 
@@ -265,7 +267,10 @@ async fn apply_accepted_federation_operation_retries_matching_failed_local_statu
         .expect("quote lookup")
         .is_some());
     let persisted = localstore
-        .get_federation_journal_entry_by_operation_id(entry.operation_id)
+        .get_federation_journal_entry(
+            FederationJournalEntryKey::Operation(entry.operation_id),
+            None,
+        )
         .await
         .expect("journal lookup")
         .expect("journal entry");

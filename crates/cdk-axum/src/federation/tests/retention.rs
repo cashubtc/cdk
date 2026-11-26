@@ -8,6 +8,10 @@ use cdk::federation::{
     FederationCheckpointFrontier, FederationCheckpointId, FederationOperationId,
     FederationRetentionFloor, FEDERATION_OPERATION_VALIDITY_SESSIONS,
 };
+use cdk_common::database::mint::{
+    FederationCheckpointSelector, FederationIndexRange, FederationJournalEntryKey,
+    FederationPaymentObservationSelection,
+};
 use cdk_common::mint::{MeltSagaState, Saga};
 use cdk_federation::retention::is_peer_history_pruned;
 use cdk_federation::sync_loop::run_federation_peer_sync_round;
@@ -56,7 +60,9 @@ async fn latest_scheduled(state: &MintState) -> Option<FederationCheckpoint> {
     state
         .mint
         .localstore()
-        .get_latest_federation_checkpoint(FederationCheckpointKind::Scheduled)
+        .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            FederationCheckpointKind::Scheduled,
+        ))
         .await
         .expect("scheduled checkpoint lookup")
 }
@@ -83,7 +89,7 @@ async fn journal_indexes(state: &MintState) -> Vec<u64> {
     state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal entries")
         .iter()
@@ -95,7 +101,7 @@ async fn item_indexes(state: &MintState) -> Vec<u64> {
     state
         .mint
         .localstore()
-        .get_federation_aleph_bft_finalized_items()
+        .get_federation_aleph_bft_finalized_items(FederationIndexRange::ALL)
         .await
         .expect("finalized items")
         .iter()
@@ -107,7 +113,7 @@ async fn trusted_checkpoint_id(state: &MintState) -> Option<FederationCheckpoint
     state
         .mint
         .localstore()
-        .get_trusted_federation_checkpoint_quorum()
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
         .await
         .expect("trusted checkpoint lookup")
         .map(|quorum| quorum.checkpoint.id().expect("trusted checkpoint id"))
@@ -226,7 +232,7 @@ async fn promote_latest_scheduled(members: &[&MintState]) -> FederationCheckpoin
     members[0]
         .mint
         .localstore()
-        .get_federation_checkpoint_quorum(checkpoint_id)
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Id(checkpoint_id))
         .await
         .expect("checkpoint quorum lookup")
         .expect("checkpoint quorum formed")
@@ -307,7 +313,7 @@ async fn pruning_keeps_the_floor_checkpoint_and_the_validity_window() {
             (floor.item_start..latest.finalized_next_item_index).collect::<Vec<_>>()
         );
         let entries = db
-            .get_federation_journal_entries()
+            .get_federation_journal_entries(FederationIndexRange::ALL)
             .await
             .expect("retained journal");
         assert_eq!(
@@ -320,12 +326,12 @@ async fn pruning_keeps_the_floor_checkpoint_and_the_validity_window() {
         for quorum in &quorums[..2] {
             let checkpoint_id = quorum.checkpoint.id().expect("pruned checkpoint id");
             assert!(db
-                .get_federation_checkpoint(checkpoint_id)
+                .get_federation_checkpoint(FederationCheckpointSelector::Id(checkpoint_id))
                 .await
                 .expect("pruned checkpoint lookup")
                 .is_none());
             assert!(db
-                .get_federation_checkpoint_quorum(checkpoint_id)
+                .get_federation_checkpoint_quorum(FederationCheckpointSelector::Id(checkpoint_id))
                 .await
                 .expect("pruned quorum lookup")
                 .is_none());
@@ -333,15 +339,17 @@ async fn pruning_keeps_the_floor_checkpoint_and_the_validity_window() {
         for quorum in &quorums[2..] {
             let checkpoint_id = quorum.checkpoint.id().expect("kept checkpoint id");
             assert!(db
-                .get_federation_checkpoint(checkpoint_id)
+                .get_federation_checkpoint(FederationCheckpointSelector::Id(checkpoint_id))
                 .await
                 .expect("kept checkpoint lookup")
                 .is_some());
             assert_eq!(
-                db.get_federation_checkpoint_quorum(checkpoint_id)
-                    .await
-                    .expect("kept quorum lookup")
-                    .as_ref(),
+                db.get_federation_checkpoint_quorum(FederationCheckpointSelector::Id(
+                    checkpoint_id
+                ))
+                .await
+                .expect("kept quorum lookup")
+                .as_ref(),
                 Some(quorum)
             );
         }
@@ -696,10 +704,10 @@ async fn mint_payment_history(
     state
         .mint
         .localstore()
-        .get_federation_payment_observation_history(
-            FederationPaymentObservationContext::MintQuote,
-            &quote.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::History {
+            context: FederationPaymentObservationContext::MintQuote,
+            quote: &quote.to_string(),
+        })
         .await
         .expect("payment observation history")
 }
@@ -765,12 +773,15 @@ async fn retired_payment_observations_digest_alike_whether_or_not_deleted() {
         assert!(state
             .mint
             .localstore()
-            .get_federation_payment_observations(
-                FederationPaymentObservationContext::MintQuote,
-                &quote.to_string(),
-            )
+            .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+                context: FederationPaymentObservationContext::MintQuote,
+                quote: &quote.to_string()
+            })
             .await
             .expect("live observations")
+            .into_iter()
+            .map(|observation| observation.record)
+            .collect::<Vec<_>>()
             .is_empty());
     }
 
@@ -810,7 +821,7 @@ async fn retired_payment_observations_digest_alike_whether_or_not_deleted() {
         let entry = state
             .mint
             .localstore()
-            .get_federation_journal_entry_by_operation_id(paid_id)
+            .get_federation_journal_entry(FederationJournalEntryKey::Operation(paid_id), None)
             .await
             .expect("replay lookup")
             .expect("replay entry");
@@ -1021,7 +1032,7 @@ async fn member_holding_state_below_every_peer_floor_halts_then_rejoins_after_re
         FederationCheckpointFrontier::genesis()
     );
     assert!(db
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("reset journal")
         .is_empty());

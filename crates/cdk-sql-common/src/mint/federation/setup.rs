@@ -373,10 +373,38 @@ where
         self.add_federation_setup_invitation(replacement).await
     }
 
-    async fn add_federation_setup_enrollment(
+    async fn add_federation_setup_record(
+        &mut self,
+        record: FederationSetupRecord<'_>,
+    ) -> Result<(), Self::Err> {
+        match record {
+            FederationSetupRecord::Enrollment(enrollment) => {
+                self.insert_setup_enrollment(enrollment).await
+            }
+            FederationSetupRecord::Proposal(proposal) => self.insert_setup_proposal(proposal).await,
+            FederationSetupRecord::ApprovalFence(approval) => {
+                insert_approval(&self.inner, "federation_setup_approval_fences", approval).await
+            }
+            FederationSetupRecord::Approval(approval) => {
+                insert_approval(&self.inner, "federation_setup_approvals", approval).await
+            }
+            FederationSetupRecord::Manifest(manifest) => self.insert_setup_manifest(manifest).await,
+            FederationSetupRecord::Activation(activation) => {
+                self.insert_setup_activation(activation).await
+            }
+        }
+    }
+}
+
+/// Immutable setup records, stored through [`FederationSetupTransaction::add_federation_setup_record`].
+impl<RM> SQLTransaction<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    async fn insert_setup_enrollment(
         &mut self,
         enrollment: &FederationSetupEnrollment,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), Error> {
         enrollment
             .validate(cdk_common::federation::FederationSetupUrlPolicy::AllowInsecureLocalhost)?;
         let payload_json = setup_json(enrollment)?;
@@ -419,10 +447,10 @@ where
         Ok(())
     }
 
-    async fn add_federation_setup_proposal(
+    async fn insert_setup_proposal(
         &mut self,
         proposal: &FederationSetupProposal,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), Error> {
         proposal
             .validate(cdk_common::federation::FederationSetupUrlPolicy::AllowInsecureLocalhost)?;
         let rows_affected = query(
@@ -450,24 +478,10 @@ where
         Ok(())
     }
 
-    async fn add_federation_setup_approval_fence(
-        &mut self,
-        approval: &FederationSetupApproval,
-    ) -> Result<(), Self::Err> {
-        insert_approval(&self.inner, "federation_setup_approval_fences", approval).await
-    }
-
-    async fn add_federation_setup_approval(
-        &mut self,
-        approval: &FederationSetupApproval,
-    ) -> Result<(), Self::Err> {
-        insert_approval(&self.inner, "federation_setup_approvals", approval).await
-    }
-
-    async fn add_federation_setup_manifest(
+    async fn insert_setup_manifest(
         &mut self,
         manifest: &FederationSetupManifest,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), Error> {
         manifest
             .validate(cdk_common::federation::FederationSetupUrlPolicy::AllowInsecureLocalhost)?;
         let setup_id = manifest.proposal.body.setup_id;
@@ -497,10 +511,10 @@ where
         Ok(())
     }
 
-    async fn add_federation_setup_activation(
+    async fn insert_setup_activation(
         &mut self,
         activation: &FederationSetupActivation,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), Error> {
         activation.validate()?;
         let rows_affected = query(
             r#"

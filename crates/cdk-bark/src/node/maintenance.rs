@@ -15,6 +15,7 @@ use cdk::federation::{
 };
 use cdk::mint::QuoteId;
 use cdk::nuts::MeltQuoteState;
+use cdk_common::database::mint::{FederationIndexRange, FederationJournalEntryKey};
 
 use super::FederatedBarkNode;
 use crate::{FederatedBarkRecoveryDriver, FederatedBarkRecoveryDriverError, FederatedBarkRuntime};
@@ -102,7 +103,7 @@ where
         self.node
             .mint()
             .localstore()
-            .get_federation_journal_entry_by_operation_id(operation_id)
+            .get_federation_journal_entry(FederationJournalEntryKey::Operation(operation_id), None)
             .await
             .map_err(Into::into)
     }
@@ -118,7 +119,7 @@ where
         let operation_id = envelope.operation_id()?;
         Ok(mint
             .localstore()
-            .get_federation_journal_entry_by_operation_id(operation_id)
+            .get_federation_journal_entry(FederationJournalEntryKey::Operation(operation_id), None)
             .await?
             .map(|entry| entry.status()))
     }
@@ -246,11 +247,11 @@ async fn recent_bolt11_melt_blocks_routine_maintenance(
     };
     let next_index = recent_payment_journal_floor(tip.index);
     let entries = store
-        .get_federation_journal_entries_range(
+        .get_federation_journal_entries(FederationIndexRange::page(
             next_index,
             tip.index.saturating_add(1),
             BARK_RECENT_PAYMENT_JOURNAL_LIMIT,
-        )
+        ))
         .await?;
     let recent_quotes = entries
         .iter()

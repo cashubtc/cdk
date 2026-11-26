@@ -8,6 +8,7 @@ use cdk::federation::{
     MemberConfigPublic, MemberId, FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES,
     FEDERATION_MAX_CHECKPOINT_CATCH_UP_TRANSFER_BYTES,
 };
+use cdk_common::database::mint::{FederationCheckpointSelector, FederationIndexRange};
 use cdk_http_client::Transport;
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::time::{self, Instant};
@@ -355,7 +356,9 @@ async fn promote_locally_reached_checkpoint_target(
         return Ok(false);
     }
     state.federation.persist_checkpoint_quorum(target).await?;
-    let trusted = db.get_trusted_federation_checkpoint_quorum().await?;
+    let trusted = db
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
+        .await?;
     let target_id = target.checkpoint.id()?;
     match trusted {
         Some(trusted) => Ok(trusted.checkpoint.id()? == target_id),
@@ -395,7 +398,7 @@ where
     let trusted_scheduled_sequence = match state
         .mint
         .localstore()
-        .get_trusted_federation_checkpoint_quorum()
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
         .await
     {
         Ok(Some(quorum)) => {
@@ -664,7 +667,7 @@ async fn local_checkpoint_quorum_is_stored(
     match state
         .mint
         .localstore()
-        .get_federation_checkpoint_quorum(checkpoint_id)
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Id(checkpoint_id))
         .await
     {
         Ok(Some(_)) => true,
@@ -693,14 +696,18 @@ pub async fn next_local_checkpoint_catch_up_target(
     let public_config = runtime_config.public_config();
     let local_member = runtime_config.member_id();
     let db = state.mint.localstore();
-    let current = db.get_trusted_federation_checkpoint_quorum().await?;
+    let current = db
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
+        .await?;
     // Trusted quorums were verified before promotion. Use their checkpoint metadata to decide
     // whether there is any catch-up work before doing expensive signature verification.
     let current_checkpoint = current.as_ref().map(|quorum| &quorum.checkpoint);
     let scheduled_sequence =
         current_checkpoint.map_or(0, |checkpoint| checkpoint.scheduled_checkpoint_sequence);
     if let Some(next) = db
-        .get_next_federation_scheduled_checkpoint_quorum(scheduled_sequence)
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::NextScheduled(
+            scheduled_sequence,
+        ))
         .await?
     {
         let verified_next = super::verify_checkpoint_quorum_with_metrics(
@@ -715,7 +722,9 @@ pub async fn next_local_checkpoint_catch_up_target(
         return Ok(Some(next));
     }
     let Some(recovery) = db
-        .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Recovery)
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Latest(
+            FederationCheckpointKind::Recovery,
+        ))
         .await?
     else {
         return Ok(None);
@@ -836,7 +845,7 @@ async fn local_checkpoint_quorum_is_current(
 ) -> bool {
     let db = state.mint.localstore();
     let same_kind = match db
-        .get_latest_federation_checkpoint_quorum(peer_quorum.kind)
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Latest(peer_quorum.kind))
         .await
     {
         Ok(Some(local_quorum)) => {
@@ -857,7 +866,9 @@ async fn local_checkpoint_quorum_is_current(
         return same_kind;
     }
     match db
-        .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Scheduled)
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Latest(
+            FederationCheckpointKind::Scheduled,
+        ))
         .await
     {
         Ok(Some(local_quorum)) => {
@@ -881,12 +892,16 @@ async fn local_pending_checkpoint(
         match kind {
             FederationCheckpointKind::Scheduled => {
                 let sequence = db
-                    .get_latest_federation_checkpoint_quorum(kind)
+                    .get_federation_checkpoint_quorum(FederationCheckpointSelector::Latest(kind))
                     .await?
                     .map_or(0, |quorum| quorum.checkpoint.scheduled_checkpoint_sequence);
-                db.get_next_federation_scheduled_checkpoint(sequence).await
+                db.get_federation_checkpoint(FederationCheckpointSelector::NextScheduled(sequence))
+                    .await
             }
-            FederationCheckpointKind::Recovery => db.get_latest_federation_checkpoint(kind).await,
+            FederationCheckpointKind::Recovery => {
+                db.get_federation_checkpoint(FederationCheckpointSelector::Latest(kind))
+                    .await
+            }
         }
     }
     .await
@@ -904,7 +919,10 @@ async fn local_pending_checkpoint(
             return None;
         }
     };
-    match db.get_federation_checkpoint_quorum(checkpoint_id).await {
+    match db
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Id(checkpoint_id))
+        .await
+    {
         Ok(Some(_)) => None,
         Ok(None) => Some(candidate),
         Err(err) => {
@@ -929,7 +947,7 @@ async fn disseminate_latest_checkpoint_quorums<T>(
         let quorum = match state
             .mint
             .localstore()
-            .get_latest_federation_checkpoint_quorum(kind)
+            .get_federation_checkpoint_quorum(FederationCheckpointSelector::Latest(kind))
             .await
         {
             Ok(Some(quorum)) => quorum,
@@ -1311,7 +1329,7 @@ where
         let current_checkpoint = state
             .mint
             .localstore()
-            .get_trusted_federation_checkpoint_quorum()
+            .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
             .await?;
         checkpoint.validate_catch_up_batch_from(
             current_checkpoint.as_ref().map(|quorum| &quorum.checkpoint),
@@ -1697,7 +1715,7 @@ where
         let db = state.mint.localstore();
         if !replace_existing
             && !db
-                .get_federation_aleph_bft_backup_chunks(session)
+                .get_federation_aleph_bft_backup_chunks(session, FederationIndexRange::ALL)
                 .await?
                 .is_empty()
         {

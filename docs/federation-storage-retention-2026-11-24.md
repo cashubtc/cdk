@@ -717,8 +717,9 @@ not the bare outpoint.
 - A CDK on-chain lineage's inputs stay reserved after confirmation until every
   quote it pays is paid; then they are spent.
 - Observations of a final quote are not recorded (before, late observations
-  were stored for audit). `get_federation_payment_observation_history` returns
-  every stored observation, retired ones included.
+  were stored for audit). `get_federation_payment_observations` with
+  `FederationPaymentObservationSelection::History` returns every stored
+  observation of a quote, retired ones included.
 - Operations naming a retired Bark action are no-ops, so late observations of
   it are ignored.
 - A paid melt quote whose saga is still finalizing after a crash completes from

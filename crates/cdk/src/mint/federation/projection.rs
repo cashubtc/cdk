@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::str::FromStr;
 
+use cdk_common::database::mint::FederationJournalEntryKey;
 use cdk_common::error::Error;
 use cdk_common::federation::FederationOperationId;
 #[cfg(feature = "federation-bark")]
@@ -102,7 +103,7 @@ impl Mint {
     ) -> Result<Option<FederationBarkReceiveIntent>, Error> {
         let Some(entry) = self
             .localstore()
-            .get_federation_journal_entry_by_operation_id(operation_id)
+            .get_federation_journal_entry(FederationJournalEntryKey::Operation(operation_id), None)
             .await?
         else {
             return Ok(None);
@@ -169,7 +170,10 @@ impl Mint {
                     .ok_or_else(|| bark_state_error("signing retry has no accepted plan"))?;
                 let plan_entry = self
                     .localstore()
-                    .get_federation_journal_entry_by_operation_id(plan_operation_id)
+                    .get_federation_journal_entry(
+                        FederationJournalEntryKey::Operation(plan_operation_id),
+                        None,
+                    )
                     .await?
                     .ok_or_else(|| bark_state_error("signing retry plan is missing"))?;
                 let FederationBarkOperation::ActionPlan(plan) =
@@ -253,8 +257,11 @@ impl Mint {
                         FederationBarkSemanticPhase::PaymentSucceeded => {
                             let plan_entry = self
                                 .localstore()
-                                .get_federation_journal_entry_by_operation_id(
-                                    transition.plan_operation_id,
+                                .get_federation_journal_entry(
+                                    FederationJournalEntryKey::Operation(
+                                        transition.plan_operation_id,
+                                    ),
+                                    None,
                                 )
                                 .await?
                                 .ok_or_else(|| bark_state_error("send plan is missing"))?;
@@ -279,8 +286,11 @@ impl Mint {
                         FederationBarkSemanticPhase::ExitPublished => {
                             let plan_entry = self
                                 .localstore()
-                                .get_federation_journal_entry_by_operation_id(
-                                    transition.plan_operation_id,
+                                .get_federation_journal_entry(
+                                    FederationJournalEntryKey::Operation(
+                                        transition.plan_operation_id,
+                                    ),
+                                    None,
                                 )
                                 .await?
                                 .ok_or_else(|| bark_state_error("exit plan is missing"))?;
@@ -317,8 +327,11 @@ impl Mint {
                         FederationBarkSemanticPhase::SendHtlcsCosigned => {
                             let plan_entry = self
                                 .localstore()
-                                .get_federation_journal_entry_by_operation_id(
-                                    transition.plan_operation_id,
+                                .get_federation_journal_entry(
+                                    FederationJournalEntryKey::Operation(
+                                        transition.plan_operation_id,
+                                    ),
+                                    None,
                                 )
                                 .await?
                                 .ok_or_else(|| bark_state_error("send plan is missing"))?;
@@ -344,8 +357,11 @@ impl Mint {
                         FederationBarkSemanticPhase::RevocationCompleted => {
                             let revocation_entry = self
                                 .localstore()
-                                .get_federation_journal_entry_by_operation_id(
-                                    transition.plan_operation_id,
+                                .get_federation_journal_entry(
+                                    FederationJournalEntryKey::Operation(
+                                        transition.plan_operation_id,
+                                    ),
+                                    None,
                                 )
                                 .await?
                                 .ok_or_else(|| bark_state_error("revocation plan is missing"))?;
@@ -358,8 +374,11 @@ impl Mint {
                             };
                             let failed_entry = self
                                 .localstore()
-                                .get_federation_journal_entry_by_operation_id(
-                                    revocation.predecessor_operation_id,
+                                .get_federation_journal_entry(
+                                    FederationJournalEntryKey::Operation(
+                                        revocation.predecessor_operation_id,
+                                    ),
+                                    None,
                                 )
                                 .await?
                                 .ok_or_else(|| bark_state_error("payment failure is missing"))?;
@@ -372,8 +391,9 @@ impl Mint {
                             };
                             let send_entry = self
                                 .localstore()
-                                .get_federation_journal_entry_by_operation_id(
-                                    failed.plan_operation_id,
+                                .get_federation_journal_entry(
+                                    FederationJournalEntryKey::Operation(failed.plan_operation_id),
+                                    None,
                                 )
                                 .await?
                                 .ok_or_else(|| bark_state_error("send plan is missing"))?;
@@ -609,7 +629,10 @@ impl Mint {
                 }
                 let predecessor = self
                     .localstore()
-                    .get_federation_journal_entry_by_operation_id(plan.predecessor_operation_id)
+                    .get_federation_journal_entry(
+                        FederationJournalEntryKey::Operation(plan.predecessor_operation_id),
+                        None,
+                    )
                     .await?
                     .ok_or_else(|| bark_state_error("Lightning send predecessor is missing"))?;
                 let FederationOperation::Melt(melt) = &predecessor.envelope.operation else {
@@ -786,7 +809,10 @@ impl Mint {
                 };
                 let send_entry = self
                     .localstore()
-                    .get_federation_journal_entry_by_operation_id(failed.plan_operation_id)
+                    .get_federation_journal_entry(
+                        FederationJournalEntryKey::Operation(failed.plan_operation_id),
+                        None,
+                    )
                     .await?
                     .ok_or_else(|| bark_state_error("accepted send plan is missing"))?;
                 let FederationBarkOperation::ActionPlan(send) =
@@ -877,7 +903,10 @@ impl Mint {
                     action.ok_or_else(|| bark_state_error("outgoing HTLC result has no action"))?;
                 let plan_entry = self
                     .localstore()
-                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .get_federation_journal_entry(
+                        FederationJournalEntryKey::Operation(transition.plan_operation_id),
+                        None,
+                    )
                     .await?
                     .ok_or_else(|| bark_state_error("accepted send plan is missing"))?;
                 let FederationBarkOperation::ActionPlan(plan) =
@@ -1006,7 +1035,10 @@ impl Mint {
                     action.ok_or_else(|| bark_state_error("payment success has no action"))?;
                 let plan_entry = self
                     .localstore()
-                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .get_federation_journal_entry(
+                        FederationJournalEntryKey::Operation(transition.plan_operation_id),
+                        None,
+                    )
                     .await?
                     .ok_or_else(|| bark_state_error("accepted send plan is missing"))?;
                 let FederationBarkOperation::ActionPlan(plan) =
@@ -1123,7 +1155,10 @@ impl Mint {
                     action.ok_or_else(|| bark_state_error("payment failure has no action"))?;
                 let plan_entry = self
                     .localstore()
-                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .get_federation_journal_entry(
+                        FederationJournalEntryKey::Operation(transition.plan_operation_id),
+                        None,
+                    )
                     .await?
                     .ok_or_else(|| bark_state_error("accepted send plan is missing"))?;
                 let FederationBarkOperation::ActionPlan(plan) =
@@ -1185,7 +1220,10 @@ impl Mint {
                     action.ok_or_else(|| bark_state_error("revocation result has no action"))?;
                 let plan_entry = self
                     .localstore()
-                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .get_federation_journal_entry(
+                        FederationJournalEntryKey::Operation(transition.plan_operation_id),
+                        None,
+                    )
                     .await?
                     .ok_or_else(|| bark_state_error("accepted revocation plan is missing"))?;
                 let FederationBarkOperation::ActionPlan(plan) =
@@ -1225,7 +1263,10 @@ impl Mint {
                     action.ok_or_else(|| bark_state_error("refresh result has no action"))?;
                 let plan_entry = self
                     .localstore()
-                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .get_federation_journal_entry(
+                        FederationJournalEntryKey::Operation(transition.plan_operation_id),
+                        None,
+                    )
                     .await?
                     .ok_or_else(|| bark_state_error("accepted refresh plan is missing"))?;
                 let FederationBarkOperation::ActionPlan(plan) =
@@ -1265,7 +1306,10 @@ impl Mint {
                     action.ok_or_else(|| bark_state_error("exit registration has no action"))?;
                 let plan_entry = self
                     .localstore()
-                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .get_federation_journal_entry(
+                        FederationJournalEntryKey::Operation(transition.plan_operation_id),
+                        None,
+                    )
                     .await?
                     .ok_or_else(|| bark_state_error("accepted exit plan is missing"))?;
                 let FederationBarkOperation::ActionPlan(plan) =
@@ -1313,7 +1357,10 @@ impl Mint {
                     action.ok_or_else(|| bark_state_error("exit publication has no action"))?;
                 let plan_entry = self
                     .localstore()
-                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .get_federation_journal_entry(
+                        FederationJournalEntryKey::Operation(transition.plan_operation_id),
+                        None,
+                    )
                     .await?
                     .ok_or_else(|| bark_state_error("accepted exit plan is missing"))?;
                 let FederationBarkOperation::ActionPlan(plan) =
@@ -1350,7 +1397,10 @@ impl Mint {
                     action.ok_or_else(|| bark_state_error("exit confirmation has no action"))?;
                 let plan_entry = self
                     .localstore()
-                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .get_federation_journal_entry(
+                        FederationJournalEntryKey::Operation(transition.plan_operation_id),
+                        None,
+                    )
                     .await?
                     .ok_or_else(|| bark_state_error("accepted exit plan is missing"))?;
                 let FederationBarkOperation::ActionPlan(plan) =
@@ -1428,7 +1478,10 @@ impl Mint {
                     action.ok_or_else(|| bark_state_error("preimage disclosure has no action"))?;
                 let plan_entry = self
                     .localstore()
-                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .get_federation_journal_entry(
+                        FederationJournalEntryKey::Operation(transition.plan_operation_id),
+                        None,
+                    )
                     .await?
                     .ok_or_else(|| bark_state_error("accepted claim plan is missing"))?;
                 let FederationBarkOperation::ActionPlan(plan) =
@@ -1487,7 +1540,10 @@ impl Mint {
                     action.ok_or_else(|| bark_state_error("claimed receive has no action"))?;
                 let plan_entry = self
                     .localstore()
-                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .get_federation_journal_entry(
+                        FederationJournalEntryKey::Operation(transition.plan_operation_id),
+                        None,
+                    )
                     .await?
                     .ok_or_else(|| bark_state_error("accepted claim plan is missing"))?;
                 let FederationBarkOperation::ActionPlan(plan) =
@@ -1689,7 +1745,10 @@ impl Mint {
                     })?;
                     let refresh_entry = self
                         .localstore()
-                        .get_federation_journal_entry_by_operation_id(plan_operation_id)
+                        .get_federation_journal_entry(
+                            FederationJournalEntryKey::Operation(plan_operation_id),
+                            None,
+                        )
                         .await?
                         .ok_or_else(|| {
                             bark_state_error("exit escalation refresh plan is missing")
@@ -2012,7 +2071,10 @@ async fn validate_bark_recovery_publication(
         .ok_or_else(|| bark_state_error("exit publication has no accepted registration"))?;
     let registered_entry = mint
         .localstore()
-        .get_federation_journal_entry_by_operation_id(registered_operation_id)
+        .get_federation_journal_entry(
+            FederationJournalEntryKey::Operation(registered_operation_id),
+            None,
+        )
         .await?
         .ok_or(Error::Internal)?;
     let FederationBarkOperation::ActionTransition(registered) =

@@ -1,5 +1,7 @@
 //! Signed peer requests, catch-up responses and DKG fixtures.
 
+use cdk_common::database::mint::FederationDkgRecord;
+
 use super::*;
 
 pub(super) fn signed_operation_request(
@@ -462,7 +464,7 @@ pub(super) async fn derive_and_persist_dkg_member_keyset_share(
         .derive_member_keyset_share(public_config, &reveals, local_member, &contributions)
         .expect("driver-derived member keyset share");
     let mut tx = db.begin_transaction().await.expect("begin keyset share");
-    tx.add_federation_dkg_member_keyset_share(&keyset_share)
+    tx.add_federation_dkg_record(FederationDkgRecord::MemberKeysetShare(&keyset_share))
         .await
         .expect("persist driver-derived keyset share");
     tx.commit()

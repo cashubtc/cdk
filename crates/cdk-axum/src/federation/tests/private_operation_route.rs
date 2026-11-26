@@ -1,3 +1,5 @@
+use cdk_common::database::mint::FederationIndexRange;
+
 use super::*;
 
 #[tokio::test]
@@ -24,7 +26,7 @@ async fn private_operation_route_accepts_signed_peer_request() {
     let persisted = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("persisted journal");
     let sequences = state

@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use cdk_common::database::mint::FederationCheckpointSelector;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::federation::{
     FederationConfig, FederationDatabaseBackupManifest, MemberConfigPrivate,
@@ -104,7 +105,7 @@ async fn build_manifest(
 
     let frontier = db.get_federation_checkpoint_frontier().await?;
     let quorum = db
-        .get_trusted_federation_checkpoint_quorum()
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
         .await?
         .ok_or_else(|| anyhow::anyhow!("restored database has no trusted federation checkpoint"))?;
     let verified = quorum

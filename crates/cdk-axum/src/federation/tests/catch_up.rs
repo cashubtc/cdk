@@ -1,3 +1,5 @@
+use cdk_common::database::mint::{FederationCheckpointSelector, FederationIndexRange};
+
 use super::*;
 
 #[tokio::test]
@@ -300,7 +302,7 @@ async fn peer_sync_round_catches_up_from_configured_peer() {
         state
             .mint
             .localstore()
-            .get_trusted_federation_checkpoint_quorum()
+            .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
             .await
             .expect("local trusted checkpoint")
             .expect("promoted peer checkpoint")
@@ -720,11 +722,11 @@ async fn rest_peer_client_recovers_complete_aleph_bft_backup_pages_atomically() 
         .await
         .expect("checkpoint frontier before backup");
     let journal_before = db
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal before backup");
     let trusted_before = db
-        .get_trusted_federation_checkpoint_quorum()
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
         .await
         .expect("trusted checkpoint before backup");
     let materialized_before = state
@@ -753,7 +755,7 @@ async fn rest_peer_client_recovers_complete_aleph_bft_backup_pages_atomically() 
         state
             .mint
             .localstore()
-            .get_federation_aleph_bft_backup_chunks(0)
+            .get_federation_aleph_bft_backup_chunks(0, FederationIndexRange::ALL)
             .await
             .expect("recovered backup chunks"),
         vec![vec![1, 2, 3], vec![4, 5]]
@@ -766,7 +768,7 @@ async fn rest_peer_client_recovers_complete_aleph_bft_backup_pages_atomically() 
     );
     assert_eq!(
         serde_json::to_value(
-            db.get_federation_journal_entries()
+            db.get_federation_journal_entries(FederationIndexRange::ALL)
                 .await
                 .expect("journal after backup")
         )
@@ -774,7 +776,7 @@ async fn rest_peer_client_recovers_complete_aleph_bft_backup_pages_atomically() 
         serde_json::to_value(journal_before).expect("journal JSON before backup")
     );
     assert_eq!(
-        db.get_trusted_federation_checkpoint_quorum()
+        db.get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
             .await
             .expect("trusted checkpoint after backup"),
         trusted_before
@@ -848,7 +850,7 @@ async fn rest_peer_client_rejects_malformed_backup_page_without_partial_persiste
     assert!(state
         .mint
         .localstore()
-        .get_federation_aleph_bft_backup_chunks(0)
+        .get_federation_aleph_bft_backup_chunks(0, FederationIndexRange::ALL)
         .await
         .expect("backup chunks after malformed page")
         .is_empty());
@@ -916,7 +918,7 @@ async fn catch_up_applies_mint_quote_operation_to_local_store() {
     let persisted = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     assert_eq!(persisted.len(), 1);
@@ -977,7 +979,7 @@ async fn catch_up_reports_conflicting_payment_observations() {
     let persisted = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     assert_eq!(persisted.len(), 3);
@@ -1066,7 +1068,7 @@ async fn catch_up_applies_melt_quote_operation_to_local_store() {
     let persisted = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     assert_eq!(persisted.len(), 1);
@@ -1132,7 +1134,7 @@ async fn catch_up_applies_swap_operation_to_local_store() {
     let persisted = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     let expected_response = config
@@ -1228,7 +1230,7 @@ async fn catch_up_marks_conflicting_swap_rejected_and_continues_replay() {
     let persisted = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     let first_entry = persisted
@@ -1266,7 +1268,7 @@ async fn catch_up_marks_conflicting_swap_rejected_and_continues_replay() {
     let persisted = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     assert_eq!(persisted.len(), 3);
@@ -1389,7 +1391,7 @@ async fn catch_up_applies_melt_operation_to_local_store() {
     let persisted = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     assert_eq!(persisted.len(), 3);
@@ -1510,7 +1512,7 @@ async fn catch_up_applies_paid_melt_payment_observation_to_pending_melt() {
     let persisted = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     assert_eq!(persisted.len(), 3);
@@ -2620,7 +2622,7 @@ async fn catch_up_applies_unpaid_melt_payment_observation_to_pending_melt() {
     let persisted = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     assert_eq!(persisted.len(), 3);
@@ -2770,7 +2772,7 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
     let persisted = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     assert_eq!(persisted.len(), 6);
@@ -2955,13 +2957,13 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
     let local_entries = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("local journal lookup after delayed catch-up");
     let peer_entries = peer_state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("peer journal lookup after delayed catch-up");
     assert_eq!(local_entries.len(), 7);
@@ -2991,7 +2993,7 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
     let entries = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal after conflicting mint");
     assert_eq!(entries.len(), 8);

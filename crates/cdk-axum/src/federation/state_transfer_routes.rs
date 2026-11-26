@@ -14,6 +14,7 @@ use cdk::federation::{
     FederationStateTransferRequest, FederationStateTransferResponse,
     FederationStateTransferWindowRequest, FederationStateTransferWindowResponse,
 };
+use cdk_common::database::mint::{FederationCheckpointSelector, FederationIndexRange};
 use tracing::instrument;
 
 use super::{
@@ -135,7 +136,7 @@ pub(super) async fn state_transfer_window_page(
     let runtime_config = federation_runtime_config(state)?;
     let db = state.mint.localstore();
     let checkpoint = db
-        .get_federation_checkpoint(request.checkpoint_id)
+        .get_federation_checkpoint(FederationCheckpointSelector::Id(request.checkpoint_id))
         .await
         .map_err(|err| anyhow_response(err.into()))?
         .ok_or_else(|| window_invalid("the requested checkpoint is not stored"))?;
@@ -172,19 +173,19 @@ pub(super) async fn state_transfer_window_page(
     }
     let limit = request.effective_limit();
     let mut items = db
-        .get_federation_aleph_bft_finalized_items_range(
+        .get_federation_aleph_bft_finalized_items(FederationIndexRange::page(
             from_item_index,
             checkpoint.finalized_next_item_index,
             limit,
-        )
+        ))
         .await
         .map_err(|err| anyhow_response(err.into()))?;
     let mut entries = db
-        .get_federation_journal_entries_range(
+        .get_federation_journal_entries(FederationIndexRange::page(
             from_journal_index,
             checkpoint.journal_next_index,
             limit,
-        )
+        ))
         .await
         .map_err(|err| anyhow_response(err.into()))?;
     loop {

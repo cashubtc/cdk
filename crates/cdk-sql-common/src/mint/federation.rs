@@ -57,10 +57,12 @@ mod state_transfer;
 use async_trait::async_trait;
 use cdk_common::database::mint::{
     FederationAlephBftBackupMetadata, FederationApplicationDatabase,
-    FederationApplicationTransaction, FederationDkgDatabase, FederationDkgTransaction,
-    FederationFrostWalletDatabase, FederationFrostWalletTransaction, FederationJournalDatabase,
-    FederationJournalTransaction, FederationMintQuoteState, FederationSetupDatabase,
-    FederationSetupTransaction, FederationStoredPaymentObservation,
+    FederationApplicationTransaction, FederationCheckpointSelector, FederationDkgDatabase,
+    FederationDkgRecord, FederationDkgTransaction, FederationFrostDkgRecord,
+    FederationFrostDkgRecords, FederationFrostWalletDatabase, FederationFrostWalletTransaction,
+    FederationIndexRange, FederationJournalDatabase, FederationJournalEntryKey,
+    FederationJournalTransaction, FederationPaymentObservationSelection, FederationSetupDatabase,
+    FederationSetupTransaction, FederationSignatureShareKey, FederationStoredPaymentObservation,
 };
 use cdk_common::database::Error;
 #[cfg(feature = "federation-bark")]
@@ -82,17 +84,17 @@ use cdk_common::federation::{
     FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
     FederationId, FederationJournalConsensusEvidence, FederationJournalDigest,
     FederationJournalEntry, FederationJournalTip, FederationMaterializedStateDigest,
-    FederationMaterializedStateKeyRecord, FederationOperationConflictKey,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationMaterializedStateKeyRecord, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationRecord, FederationRetentionFloor, FederationSetupActivation,
     FederationSetupApproval, FederationSetupCoordinatorPhase, FederationSetupEnrollment,
     FederationSetupId, FederationSetupInvitationId, FederationSetupInvitationRecord,
     FederationSetupInvitationState, FederationSetupLocalRole, FederationSetupManifest,
-    FederationSetupParticipantPhase, FederationSetupProposal, FederationSetupSession,
-    FederationSignatureShareRecord, FederationStateSnapshotInfo, FederationStateSnapshotRow,
-    FederationStateTransferWindowBounds, MemberId, VerifiedFederationCheckpointQuorum,
-    VerifiedFederationStateTransferWindow, FEDERATION_OPERATION_VALIDITY_SESSIONS,
+    FederationSetupParticipantPhase, FederationSetupProposal, FederationSetupRecord,
+    FederationSetupSession, FederationSignatureShareRecord, FederationStateSnapshotInfo,
+    FederationStateSnapshotRow, FederationStateTransferWindowBounds, MemberId,
+    VerifiedFederationCheckpointQuorum, VerifiedFederationStateTransferWindow,
+    FEDERATION_OPERATION_VALIDITY_SESSIONS,
 };
 use cdk_common::quote_id::QuoteId;
 use cdk_common::PublicKey;

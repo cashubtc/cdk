@@ -5,7 +5,9 @@ use cdk::federation::{
     FederationDkgDriverPhase, FederationDkgFinalizedMemberConfig, FederationDkgKeysetSpec,
     ValidatedFederationDkgParticipantState,
 };
-use cdk_common::database::mint::{FederationDkgDatabase, FederationFrostWalletDatabase};
+use cdk_common::database::mint::{
+    FederationDkgDatabase, FederationDkgRecord, FederationFrostWalletDatabase,
+};
 
 use super::*;
 
@@ -265,16 +267,18 @@ impl DkgDriverTestFederation {
                 .expect("DKG activations");
             assert_eq!(activations.len(), 3);
             assert_eq!(
-                db.get_federation_frost_dkg_round1()
+                db.get_federation_frost_dkg_records()
                     .await
                     .expect("FROST round-one records")
+                    .round1
                     .len(),
                 3
             );
             let round2 = db
-                .get_federation_frost_dkg_round2()
+                .get_federation_frost_dkg_records()
                 .await
-                .expect("sealed FROST round-two records");
+                .expect("sealed FROST round-two records")
+                .round2;
             assert_eq!(round2.len(), 4);
             for record in round2 {
                 record
@@ -283,16 +287,18 @@ impl DkgDriverTestFederation {
                 assert!(format!("{record:?}").contains("<redacted>"));
             }
             assert_eq!(
-                db.get_federation_frost_dkg_local_states()
+                db.get_federation_frost_dkg_records()
                     .await
                     .expect("sealed FROST phase states")
+                    .local_states
                     .len(),
                 2
             );
             let roots = db
-                .get_federation_frost_root_records()
+                .get_federation_frost_dkg_records()
                 .await
-                .expect("sealed FROST roots");
+                .expect("sealed FROST roots")
+                .roots;
             assert_eq!(roots.len(), 1);
             roots[0]
                 .validate(&self.public_config)
@@ -303,9 +309,10 @@ impl DkgDriverTestFederation {
                 None => frost_public_package = Some(roots[0].public_package.clone()),
             }
             assert_eq!(
-                db.get_federation_frost_dkg_confirmations()
+                db.get_federation_frost_dkg_records()
                     .await
                     .expect("FROST root confirmations")
+                    .confirmations
                     .len(),
                 3
             );
@@ -522,13 +529,13 @@ async fn dkg_driver_ignores_durable_artifacts_from_prior_ceremony() {
             .begin_transaction()
             .await
             .expect("begin prior DKG");
-        tx.add_federation_dkg_commitment(&commitment)
+        tx.add_federation_dkg_record(FederationDkgRecord::Commitment(&commitment))
             .await
             .expect("persist prior commitment");
-        tx.add_federation_dkg_reveal(&reveal)
+        tx.add_federation_dkg_record(FederationDkgRecord::Reveal(&reveal))
             .await
             .expect("persist prior reveal");
-        tx.add_federation_dkg_secret_share_contribution(&contribution)
+        tx.add_federation_dkg_record(FederationDkgRecord::SecretShareContribution(&contribution))
             .await
             .expect("persist prior contribution");
         tx.commit().await.expect("commit prior DKG artifacts");
@@ -626,9 +633,10 @@ async fn dkg_driver_restarts_safely_at_every_durable_phase() {
                 }
                 let frost_states = federation.members[0]
                     .db
-                    .get_federation_frost_dkg_local_states()
+                    .get_federation_frost_dkg_records()
                     .await
-                    .expect("restartable FROST states");
+                    .expect("restartable FROST states")
+                    .local_states;
                 let restart_frost = if !frost_round1_restarted
                     && frost_states.iter().any(|state| {
                         state.phase == cdk::federation::FederationFrostDkgLocalPhase::Round1
@@ -645,9 +653,10 @@ async fn dkg_driver_restarts_safely_at_every_durable_phase() {
                 } else if !frost_root_restarted
                     && !federation.members[0]
                         .db
-                        .get_federation_frost_root_records()
+                        .get_federation_frost_dkg_records()
                         .await
                         .expect("restartable FROST root")
+                        .roots
                         .is_empty()
                 {
                     frost_root_restarted = true;
@@ -824,9 +833,10 @@ async fn frost_confirmation_mismatch_fails_before_sequence_or_record_mutation() 
     let sender = &federation.members[1];
     let before_confirmations = receiver
         .db
-        .get_federation_frost_dkg_confirmations()
+        .get_federation_frost_dkg_records()
         .await
-        .expect("confirmations before mismatch");
+        .expect("confirmations before mismatch")
+        .confirmations;
     let before_sequences = receiver
         .db
         .get_federation_dkg_member_sequences()
@@ -863,9 +873,10 @@ async fn frost_confirmation_mismatch_fails_before_sequence_or_record_mutation() 
     assert_eq!(
         receiver
             .db
-            .get_federation_frost_dkg_confirmations()
+            .get_federation_frost_dkg_records()
             .await
-            .expect("confirmations after mismatch"),
+            .expect("confirmations after mismatch")
+            .confirmations,
         before_confirmations
     );
     assert_eq!(

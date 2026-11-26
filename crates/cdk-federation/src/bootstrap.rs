@@ -19,6 +19,9 @@ use cdk::mint::Mint;
 use cdk_bdk::{
     FederatedBdkLocalConfig, FederatedBdkWallet, FederatedWalletConfig, FederatedWalletScope,
 };
+use cdk_common::database::mint::{
+    FederationCheckpointSelector, FederationIndexRange, FederationJournalEntryKey,
+};
 
 use super::mint_state::*;
 #[cfg(any(test, feature = "test-utils"))]
@@ -58,9 +61,9 @@ pub async fn historical_entries_referenced_by_finalized_items(
         // Only entries inside the item's validity window can guard it.
         let operation_id = envelope.operation_id()?;
         if let Some(entry) = db
-            .get_federation_journal_entry_by_operation_id_before(
-                operation_id,
-                checkpoint_journal_next_index,
+            .get_federation_journal_entry(
+                FederationJournalEntryKey::Operation(operation_id),
+                Some(checkpoint_journal_next_index),
             )
             .await?
             .filter(|entry| entry.guards_session(finalized_item.session))
@@ -69,9 +72,9 @@ pub async fn historical_entries_referenced_by_finalized_items(
         }
         for conflict_key in envelope.operation.conflict_keys() {
             if let Some(entry) = db
-                .get_federation_journal_entry_by_conflict_key_before(
-                    &conflict_key,
-                    checkpoint_journal_next_index,
+                .get_federation_journal_entry(
+                    FederationJournalEntryKey::ConflictKey(&conflict_key),
+                    Some(checkpoint_journal_next_index),
                 )
                 .await?
                 .filter(|entry| entry.guards_session(finalized_item.session))
@@ -152,7 +155,9 @@ impl FederationCheckpointStartupVerifier<'_> {
             .into());
         }
         let repaired_journal_entries = db
-            .get_federation_journal_entries_from(checkpoint_payload.journal_next_index)
+            .get_federation_journal_entries(FederationIndexRange::starting_at(
+                checkpoint_payload.journal_next_index,
+            ))
             .await?;
         let repaired_suffix = self
             .verify(
@@ -321,7 +326,9 @@ pub async fn create_federation_runtime_state_with_wallet(
         .await?
         .unwrap_or(0);
     let frontier = db.get_federation_checkpoint_frontier().await?;
-    let trusted_quorum = db.get_trusted_federation_checkpoint_quorum().await?;
+    let trusted_quorum = db
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
+        .await?;
     let checkpoint_consensus = match (frontier.trusted_checkpoint_id, trusted_quorum) {
         (None, None) => None,
         (Some(_), None) => {
@@ -371,12 +378,14 @@ pub async fn create_federation_runtime_state_with_wallet(
                 (Vec::new(), Vec::new())
             } else {
                 let journal_entries = db
-                    .get_federation_journal_entries_from(checkpoint.journal_next_index)
+                    .get_federation_journal_entries(FederationIndexRange::starting_at(
+                        checkpoint.journal_next_index,
+                    ))
                     .await?;
                 let finalized_items = db
-                    .get_federation_aleph_bft_finalized_items_from(
+                    .get_federation_aleph_bft_finalized_items(FederationIndexRange::starting_at(
                         checkpoint.finalized_next_item_index,
-                    )
+                    ))
                     .await?;
                 #[cfg(feature = "prometheus")]
                 {
@@ -456,8 +465,12 @@ pub async fn create_federation_runtime_state_with_wallet(
     let mut consensus = match checkpoint_consensus {
         Some(consensus) => consensus,
         None => {
-            let persisted_entries = db.get_federation_journal_entries().await?;
-            let finalized_items = db.get_federation_aleph_bft_finalized_items().await?;
+            let persisted_entries = db
+                .get_federation_journal_entries(FederationIndexRange::ALL)
+                .await?;
+            let finalized_items = db
+                .get_federation_aleph_bft_finalized_items(FederationIndexRange::ALL)
+                .await?;
             #[cfg(feature = "prometheus")]
             {
                 let member = config.member_id().to_string();
@@ -525,7 +538,10 @@ pub async fn create_federation_runtime_state_with_wallet(
                 .entry_by_operation_id(pending.operation_id)
                 .is_some()
                 || db
-                    .get_federation_journal_entry_by_operation_id(pending.operation_id)
+                    .get_federation_journal_entry(
+                        FederationJournalEntryKey::Operation(pending.operation_id),
+                        None,
+                    )
                     .await?
                     .is_some()
             {
@@ -585,7 +601,10 @@ pub async fn create_federation_runtime_state_with_wallet(
                     .entry_by_operation_id(*group_operation_id)
                     .is_some()
                     || db
-                        .get_federation_journal_entry_by_operation_id(*group_operation_id)
+                        .get_federation_journal_entry(
+                            FederationJournalEntryKey::Operation(*group_operation_id),
+                            None,
+                        )
                         .await?
                         .is_some(),
             );

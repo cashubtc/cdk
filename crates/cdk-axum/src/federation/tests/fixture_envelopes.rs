@@ -1,5 +1,9 @@
 //! Operation envelopes, proofs and journal fixtures.
 
+use cdk_common::database::mint::{
+    FederationIndexRange, FederationPaymentObservationSelection, FederationSignatureShareKey,
+};
+
 use super::*;
 
 pub(super) async fn catch_up_response_with_materialized_digest(
@@ -96,7 +100,7 @@ pub(super) async fn persist_test_journal_entry(state: &MintState, entry: &Federa
     let runtime_config = state.mint.federation_config().expect("federation config");
     let db = state.mint.localstore();
     let retained_items = db
-        .get_federation_aleph_bft_finalized_items()
+        .get_federation_aleph_bft_finalized_items(FederationIndexRange::ALL)
         .await
         .expect("load test AlephBFT finalized items");
     let mut adapter = FederationConsensusRuntime::recover_finalized_items_for_test(
@@ -435,7 +439,10 @@ pub(super) async fn proof_from_accepted_output(
         let records = state
             .mint
             .localstore()
-            .get_federation_signature_shares_for_output(operation_id, output_index)
+            .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                operation_id,
+                output_index,
+            })
             .await
             .expect("accepted output signature share lookup");
         assert_eq!(records.len(), 1);
@@ -585,9 +592,11 @@ pub(super) async fn submit_melt_payment_observation_from_backend(
                 return state
                     .mint
                     .localstore()
-                    .get_federation_payment_observation_history(
-                        FederationPaymentObservationContext::MeltQuote,
-                        &quote_id.to_string(),
+                    .get_federation_payment_observations(
+                        FederationPaymentObservationSelection::History {
+                            context: FederationPaymentObservationContext::MeltQuote,
+                            quote: &quote_id.to_string(),
+                        },
                     )
                     .await
                     .expect("melt payment observation lookup")

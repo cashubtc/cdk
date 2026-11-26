@@ -1,3 +1,5 @@
+use cdk_common::database::mint::{FederationIndexRange, FederationJournalEntryKey};
+
 use super::*;
 
 #[tokio::test]
@@ -120,7 +122,7 @@ async fn federation_aleph_bft_finalized_unit_persists_applies_and_notifies() {
     let stored_finalized_items = state
         .mint
         .localstore()
-        .get_federation_aleph_bft_finalized_items()
+        .get_federation_aleph_bft_finalized_items(FederationIndexRange::ALL)
         .await
         .expect("stored finalized items");
     assert_eq!(stored_finalized_items.len(), 1);
@@ -128,7 +130,7 @@ async fn federation_aleph_bft_finalized_unit_persists_applies_and_notifies() {
     let stored_entries = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("stored journal entries");
     assert_eq!(stored_entries.len(), 1);
@@ -244,7 +246,7 @@ async fn federation_aleph_bft_duplicate_finalized_unit_applies_unmaterialized_en
     let entries = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal entries after duplicate replay");
     assert_eq!(entries.len(), 1);
@@ -435,7 +437,10 @@ async fn duplicate_finalized_unit_recovers_lost_rejected_response_publication() 
     let persisted = state
         .mint
         .localstore()
-        .get_federation_journal_entry_by_operation_id(rejected_operation_id)
+        .get_federation_journal_entry(
+            FederationJournalEntryKey::Operation(rejected_operation_id),
+            None,
+        )
         .await
         .expect("rejected journal lookup")
         .expect("persisted rejected journal entry");
@@ -597,7 +602,7 @@ async fn federation_aleph_bft_finalized_unit_reports_state_rejected_swap() {
     let persisted = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     assert_eq!(persisted.len(), 3);
@@ -671,7 +676,7 @@ async fn federation_aleph_bft_finalized_unit_applies_rejected_trailing_entry() {
     let persisted = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     assert_eq!(persisted.len(), 2);
@@ -1005,7 +1010,7 @@ async fn federation_aleph_bft_finalized_units_serialize_cross_member_value_confl
         let persisted = state
             .mint
             .localstore()
-            .get_federation_journal_entries()
+            .get_federation_journal_entries(FederationIndexRange::ALL)
             .await
             .expect("journal lookup");
         assert_eq!(persisted.len(), 10);
@@ -1142,7 +1147,7 @@ async fn federation_aleph_bft_finalized_unit_conflict_does_not_mutate_runtime() 
     assert!(state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal entries after rejected finalization")
         .is_empty());

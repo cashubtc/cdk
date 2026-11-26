@@ -10,8 +10,9 @@ where
     async fn add_federation_payment_observation(
         &mut self,
         observation: &FederationPaymentObservationRecord,
+        terminal_operation_index: Option<u64>,
     ) -> Result<(), Self::Err> {
-        insert_payment_observation(&self.inner, observation, None).await
+        insert_payment_observation(&self.inner, observation, terminal_operation_index).await
     }
 
     async fn retire_federation_payment_observations(
@@ -53,79 +54,21 @@ where
         }
     }
 
-    async fn install_federation_payment_observation(
+    async fn add_federation_signature_shares(
         &mut self,
-        observation: &FederationStoredPaymentObservation,
+        shares: &[FederationSignatureShareRecord],
     ) -> Result<(), Self::Err> {
-        insert_payment_observation(
-            &self.inner,
-            &observation.record,
-            observation.terminal_operation_index,
-        )
-        .await
-    }
-
-    async fn add_federation_signature_share(
-        &mut self,
-        share: &FederationSignatureShareRecord,
-    ) -> Result<(), Self::Err> {
-        let rows_affected = query(
-            r#"
-            INSERT INTO federation_signature_shares
-            (operation_id, output_index, member_id, blinded_message, amount, keyset_id, signature_share, share_json)
-            VALUES
-            (:operation_id, :output_index, :member_id, :blinded_message, :amount, :keyset_id, :signature_share, :share_json)
-            ON CONFLICT (operation_id, output_index, member_id)
-            DO UPDATE SET
-                blinded_message = EXCLUDED.blinded_message,
-                amount = EXCLUDED.amount,
-                keyset_id = EXCLUDED.keyset_id,
-                signature_share = EXCLUDED.signature_share
-            WHERE federation_signature_shares.blinded_message = EXCLUDED.blinded_message
-              AND federation_signature_shares.amount = EXCLUDED.amount
-              AND federation_signature_shares.keyset_id = EXCLUDED.keyset_id
-              AND federation_signature_shares.signature_share = EXCLUDED.signature_share
-            "#,
-        )?
-        .bind("operation_id", share.operation_id.to_string())
-        .bind("output_index", i64::from(share.output_index))
-        .bind("member_id", i64::from(share.member_id.get()))
-        .bind("blinded_message", share.blinded_secret.to_bytes())
-        .bind("amount", u64::from(share.amount) as i64)
-        .bind("keyset_id", share.keyset_id.to_string())
-        .bind("signature_share", share.share.to_bytes().to_vec())
-        .bind("share_json", serde_json::to_string(share)?)
-        .execute(&self.inner)
-        .await?;
-        if rows_affected == 0 {
-            return Err(federation_signature_share_conflict_error(share));
+        for share in shares {
+            insert_signature_share(&self.inner, share).await?;
         }
-
         Ok(())
     }
 
     async fn get_federation_payment_observations(
         &mut self,
-        context: FederationPaymentObservationContext,
-        quote: &str,
-    ) -> Result<Vec<FederationPaymentObservationRecord>, Self::Err> {
-        query(
-            r#"
-            SELECT operation_id, operation_index, observation_json
-            FROM federation_payment_observations
-            WHERE context = :context
-              AND quote = :quote
-              AND terminal_operation_index IS NULL
-            ORDER BY operation_index ASC, observer_member_id ASC
-            "#,
-        )?
-        .bind("context", payment_observation_context_to_str(context))
-        .bind("quote", quote)
-        .fetch_all(&self.inner)
-        .await?
-        .into_iter()
-        .map(sql_row_to_federation_payment_observation_record)
-        .collect()
+        selection: FederationPaymentObservationSelection<'_>,
+    ) -> Result<Vec<FederationStoredPaymentObservation>, Self::Err> {
+        payment_observations(&self.inner, selection).await
     }
 
     async fn get_federation_materialized_state_source(
@@ -181,82 +124,14 @@ where
 
     async fn get_federation_payment_observations(
         &self,
-        context: FederationPaymentObservationContext,
-        quote: &str,
-    ) -> Result<Vec<FederationPaymentObservationRecord>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        query(
-            r#"
-            SELECT operation_id, operation_index, observation_json
-            FROM federation_payment_observations
-            WHERE context = :context
-              AND quote = :quote
-              AND terminal_operation_index IS NULL
-            ORDER BY operation_index ASC, observer_member_id ASC
-            "#,
-        )?
-        .bind("context", payment_observation_context_to_str(context))
-        .bind("quote", quote)
-        .fetch_all(&*conn)
-        .await?
-        .into_iter()
-        .map(sql_row_to_federation_payment_observation_record)
-        .collect()
-    }
-
-    async fn get_federation_payment_observation_history(
-        &self,
-        context: FederationPaymentObservationContext,
-        quote: &str,
+        selection: FederationPaymentObservationSelection<'_>,
     ) -> Result<Vec<FederationStoredPaymentObservation>, Self::Err> {
         let conn = self
             .pool
             .get()
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
-        query(
-            r#"
-            SELECT operation_id, operation_index, observation_json, terminal_operation_index
-            FROM federation_payment_observations
-            WHERE context = :context
-              AND quote = :quote
-            ORDER BY operation_index ASC, observer_member_id ASC
-            "#,
-        )?
-        .bind("context", payment_observation_context_to_str(context))
-        .bind("quote", quote)
-        .fetch_all(&*conn)
-        .await?
-        .into_iter()
-        .map(sql_row_to_stored_payment_observation)
-        .collect()
-    }
-
-    async fn get_all_federation_payment_observations(
-        &self,
-    ) -> Result<Vec<FederationPaymentObservationRecord>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        query(
-            r#"
-            SELECT operation_id, operation_index, observation_json
-            FROM federation_payment_observations
-            WHERE terminal_operation_index IS NULL
-            ORDER BY operation_index ASC, observer_member_id ASC
-            "#,
-        )?
-        .fetch_all(&*conn)
-        .await?
-        .into_iter()
-        .map(sql_row_to_federation_payment_observation_record)
-        .collect()
+        payment_observations(&*conn, selection).await
     }
 
     async fn get_federation_materialized_state_keys(
@@ -281,18 +156,6 @@ where
         .collect()
     }
 
-    async fn get_federation_mint_quote_states(
-        &self,
-        quote_ids: &[QuoteId],
-    ) -> Result<Vec<Option<FederationMintQuoteState>>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        get_federation_mint_quote_states_inner(&*conn, quote_ids).await
-    }
-
     async fn get_federation_melt_quotes(
         &self,
         quote_ids: &[QuoteId],
@@ -303,18 +166,6 @@ where
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
         get_federation_melt_quotes_inner(&*conn, quote_ids).await
-    }
-
-    async fn get_federation_completed_operations(
-        &self,
-        operation_ids: &[uuid::Uuid],
-    ) -> Result<Vec<cdk_common::mint::Operation>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        get_completed_operations_by_ids_inner(&*conn, operation_ids).await
     }
 
     async fn get_federation_materialized_state_source(
@@ -328,57 +179,51 @@ where
         super::state_transfer::get_materialized_state_source(&*conn).await
     }
 
-    async fn get_federation_signature_shares_for_output(
+    async fn get_federation_signature_shares(
         &self,
-        operation_id: FederationOperationId,
-        output_index: u32,
+        key: FederationSignatureShareKey,
     ) -> Result<Vec<FederationSignatureShareRecord>, Self::Err> {
         let conn = self
             .pool
             .get()
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
-        query(
-            r#"
-            SELECT share_json
-            FROM federation_signature_shares
-            WHERE operation_id = :operation_id
-              AND output_index = :output_index
-            ORDER BY member_id ASC
-            "#,
-        )?
-        .bind("operation_id", operation_id.to_string())
-        .bind("output_index", i64::from(output_index))
-        .fetch_all(&*conn)
-        .await?
-        .into_iter()
-        .map(sql_row_to_federation_signature_share_record)
-        .collect()
-    }
-
-    async fn get_federation_signature_shares_for_blinded_message(
-        &self,
-        blinded_message: PublicKey,
-    ) -> Result<Vec<FederationSignatureShareRecord>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        query(
-            r#"
-            SELECT share_json
-            FROM federation_signature_shares
-            WHERE blinded_message = :blinded_message
-            ORDER BY operation_id ASC, output_index ASC, member_id ASC
-            "#,
-        )?
-        .bind("blinded_message", blinded_message.to_bytes())
-        .fetch_all(&*conn)
-        .await?
-        .into_iter()
-        .map(sql_row_to_federation_signature_share_record)
-        .collect()
+        let rows = match key {
+            FederationSignatureShareKey::Output {
+                operation_id,
+                output_index,
+            } => {
+                query(
+                    r#"
+                    SELECT share_json
+                    FROM federation_signature_shares
+                    WHERE operation_id = :operation_id
+                      AND output_index = :output_index
+                    ORDER BY member_id ASC
+                    "#,
+                )?
+                .bind("operation_id", operation_id.to_string())
+                .bind("output_index", i64::from(output_index))
+                .fetch_all(&*conn)
+                .await?
+            }
+            FederationSignatureShareKey::BlindedMessage(blinded_message) => {
+                query(
+                    r#"
+                    SELECT share_json
+                    FROM federation_signature_shares
+                    WHERE blinded_message = :blinded_message
+                    ORDER BY operation_id ASC, output_index ASC, member_id ASC
+                    "#,
+                )?
+                .bind("blinded_message", blinded_message.to_bytes())
+                .fetch_all(&*conn)
+                .await?
+            }
+        };
+        rows.into_iter()
+            .map(sql_row_to_federation_signature_share_record)
+            .collect()
     }
 }
 
@@ -423,5 +268,106 @@ where
     )
     .execute(connection)
     .await?;
+    Ok(())
+}
+
+/// The payment observations `selection` names, in consensus order.
+async fn payment_observations<C>(
+    connection: &C,
+    selection: FederationPaymentObservationSelection<'_>,
+) -> Result<Vec<FederationStoredPaymentObservation>, Error>
+where
+    C: DatabaseExecutor,
+{
+    let rows = match selection {
+        FederationPaymentObservationSelection::Live { context, quote } => {
+            query(
+                r#"
+                SELECT operation_id, operation_index, observation_json, terminal_operation_index
+                FROM federation_payment_observations
+                WHERE context = :context
+                  AND quote = :quote
+                  AND terminal_operation_index IS NULL
+                ORDER BY operation_index ASC, observer_member_id ASC
+                "#,
+            )?
+            .bind("context", payment_observation_context_to_str(context))
+            .bind("quote", quote)
+            .fetch_all(connection)
+            .await?
+        }
+        FederationPaymentObservationSelection::History { context, quote } => {
+            query(
+                r#"
+                SELECT operation_id, operation_index, observation_json, terminal_operation_index
+                FROM federation_payment_observations
+                WHERE context = :context
+                  AND quote = :quote
+                ORDER BY operation_index ASC, observer_member_id ASC
+                "#,
+            )?
+            .bind("context", payment_observation_context_to_str(context))
+            .bind("quote", quote)
+            .fetch_all(connection)
+            .await?
+        }
+        FederationPaymentObservationSelection::AllLive => {
+            query(
+                r#"
+                SELECT operation_id, operation_index, observation_json, terminal_operation_index
+                FROM federation_payment_observations
+                WHERE terminal_operation_index IS NULL
+                ORDER BY operation_index ASC, observer_member_id ASC
+                "#,
+            )?
+            .fetch_all(connection)
+            .await?
+        }
+    };
+    rows.into_iter()
+        .map(sql_row_to_stored_payment_observation)
+        .collect()
+}
+
+/// Store one signature share; an identical share keeps its first position.
+async fn insert_signature_share<C>(
+    connection: &C,
+    share: &FederationSignatureShareRecord,
+) -> Result<(), Error>
+where
+    C: DatabaseExecutor,
+{
+    let rows_affected = query(
+        r#"
+        INSERT INTO federation_signature_shares
+        (operation_id, output_index, member_id, blinded_message, amount, keyset_id, signature_share, share_json)
+        VALUES
+        (:operation_id, :output_index, :member_id, :blinded_message, :amount, :keyset_id, :signature_share, :share_json)
+        ON CONFLICT (operation_id, output_index, member_id)
+        DO UPDATE SET
+            blinded_message = EXCLUDED.blinded_message,
+            amount = EXCLUDED.amount,
+            keyset_id = EXCLUDED.keyset_id,
+            signature_share = EXCLUDED.signature_share
+        WHERE federation_signature_shares.blinded_message = EXCLUDED.blinded_message
+          AND federation_signature_shares.amount = EXCLUDED.amount
+          AND federation_signature_shares.keyset_id = EXCLUDED.keyset_id
+          AND federation_signature_shares.signature_share = EXCLUDED.signature_share
+        "#,
+    )?
+    .bind("operation_id", share.operation_id.to_string())
+    .bind("output_index", i64::from(share.output_index))
+    .bind("member_id", i64::from(share.member_id.get()))
+    .bind("blinded_message", share.blinded_secret.to_bytes())
+    .bind("amount", u64::from(share.amount) as i64)
+    .bind("keyset_id", share.keyset_id.to_string())
+    .bind("signature_share", share.share.to_bytes().to_vec())
+    .bind("share_json", serde_json::to_string(share)?)
+    .execute(connection)
+    .await?;
+    if rows_affected == 0 {
+        return Err(federation_signature_share_conflict_error(share));
+    }
+
     Ok(())
 }

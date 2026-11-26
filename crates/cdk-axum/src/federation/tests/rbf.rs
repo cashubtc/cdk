@@ -26,6 +26,7 @@ use cdk_common::bitcoin::{
     FeeRate, Network as BitcoinNetwork, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut,
     Txid, Witness,
 };
+use cdk_common::database::mint::FederationIndexRange;
 use cdk_frost::{MemoryNonceStore, ParticipantKeyManager, SecretEncryptionKey};
 
 use super::super::frost_signing::{
@@ -487,7 +488,7 @@ impl RbfFederation {
         let entries = self.states[source]
             .mint
             .localstore()
-            .get_federation_journal_entries()
+            .get_federation_journal_entries(FederationIndexRange::ALL)
             .await
             .expect("journal");
         for (index, state) in self.states.iter().enumerate() {
@@ -497,7 +498,7 @@ impl RbfFederation {
             let retained = state
                 .mint
                 .localstore()
-                .get_federation_journal_entries()
+                .get_federation_journal_entries(FederationIndexRange::ALL)
                 .await
                 .expect("replica journal");
             assert!(retained.len() <= entries.len());

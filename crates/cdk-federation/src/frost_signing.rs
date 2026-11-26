@@ -8,6 +8,9 @@ use std::sync::Arc;
 #[cfg(feature = "federation-bdk")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(feature = "federation-bark")]
+use cdk_common::database::mint::FederationJournalEntryKey;
+
 #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 use super::signer_fan_out::{
     concurrency_limit, fan_out, known_signer_members, signer_members, LocalFrostSigner,
@@ -1300,7 +1303,10 @@ impl FederationFrostSigningRuntime {
         let typed = FederationBarkRecoveryFrostAuthorization::from_bytes(authorization.payload())?;
         let entry = mint
             .localstore()
-            .get_federation_journal_entry_by_operation_id(typed.registered_operation_id)
+            .get_federation_journal_entry(
+                FederationJournalEntryKey::Operation(typed.registered_operation_id),
+                None,
+            )
             .await?
             .ok_or_else(|| frost_invalid("accepted Bark recovery registration is unavailable"))?;
         let projection = mint.federation_bark_projection_snapshot().await?;
@@ -1406,7 +1412,10 @@ async fn validate_bark_authorization(
     let typed = FederationBarkFrostAuthorization::from_bytes(authorization.payload())?;
     let entry = mint
         .localstore()
-        .get_federation_journal_entry_by_operation_id(typed.reference.accepted_operation_id)
+        .get_federation_journal_entry(
+            FederationJournalEntryKey::Operation(typed.reference.accepted_operation_id),
+            None,
+        )
         .await?
         .ok_or_else(|| frost_invalid("accepted Bark operation is unavailable"))?;
     let runtime = mint
@@ -1424,7 +1433,10 @@ async fn validate_bark_authorization(
         {
             (
                 mint.localstore()
-                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .get_federation_journal_entry(
+                        FederationJournalEntryKey::Operation(transition.plan_operation_id),
+                        None,
+                    )
                     .await?
                     .ok_or_else(|| frost_invalid("accepted Bark action plan is unavailable"))?,
                 transition.attempt,

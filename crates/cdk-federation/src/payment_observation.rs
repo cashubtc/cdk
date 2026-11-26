@@ -18,6 +18,7 @@ use cdk::federation::{
 };
 use cdk::mint::QuoteId;
 use cdk::nuts::{MeltQuoteState, MintQuoteState};
+use cdk_common::database::mint::FederationPaymentObservationSelection;
 use futures::FutureExt as _;
 
 use super::payment_schedule::{
@@ -1343,8 +1344,14 @@ async fn submit_observation(
     let records = state
         .mint
         .localstore()
-        .get_federation_payment_observations(candidate.context(), candidate.quote())
-        .await?;
+        .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+            context: candidate.context(),
+            quote: candidate.quote(),
+        })
+        .await?
+        .into_iter()
+        .map(|observation| observation.record)
+        .collect::<Vec<_>>();
     if records.iter().any(|record| {
         record.observation.observer() == candidate.observer()
             && candidate.matches_payment_evidence(&record.observation)
@@ -1396,7 +1403,13 @@ pub async fn payment_observation_report_summaries(
     };
     let db = state.mint.localstore();
     let mut report_keys = BTreeSet::new();
-    for record in db.get_all_federation_payment_observations().await? {
+    for record in db
+        .get_federation_payment_observations(FederationPaymentObservationSelection::AllLive)
+        .await?
+        .into_iter()
+        .map(|observation| observation.record)
+        .collect::<Vec<_>>()
+    {
         report_keys.insert((
             record.observation.context(),
             record.observation.quote().to_string(),
@@ -1411,8 +1424,14 @@ pub async fn payment_observation_report_summaries(
             .payment_verification_policy(context)
             .required_matching_observations();
         let observations = db
-            .get_federation_payment_observations(context, &quote)
-            .await?;
+            .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+                context,
+                quote: &quote,
+            })
+            .await?
+            .into_iter()
+            .map(|observation| observation.record)
+            .collect::<Vec<_>>();
         let report = FederationPaymentObservationReport::from_records(
             context,
             &quote,
