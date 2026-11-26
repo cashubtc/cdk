@@ -1155,14 +1155,26 @@ impl FederationPaymentObserver {
                         FEDERATION_PAYMENT_REPAIR_INTERVAL
                     }
                 };
+                // A due quote that cannot get a task permit stays due, so a
+                // scheduled round started while every permit is held would
+                // find it due again immediately and spin. Wait for a running
+                // quote task to finish instead.
+                let scheduled_round_ready =
+                    scheduled_round_can_dispatch(self.quote_tasks.available_permits());
                 // One panicking round, event, or backend future must not kill
                 // the only observation worker; it is logged and the loop
                 // continues so remaining quotes keep being repaired.
                 let (result, closed) = match std::panic::AssertUnwindSafe(async {
                     tokio::select! {
                         _ = stop.cancelled() => (Ok(0), true),
-                        _ = tokio::time::sleep(schedule_delay) => {
+                        _ = tokio::time::sleep(schedule_delay), if scheduled_round_ready => {
                             (self.scheduled_quotes(&state).await, false)
+                        }
+                        permit = self.quote_tasks.clone().acquire_owned(), if !scheduled_round_ready => {
+                            // Release it at once: the next round dispatches
+                            // through `dispatch_quotes`, which takes its own.
+                            drop(permit);
+                            (Ok(0), false)
                         }
                         _ = repair_interval.tick() => (self.run_round(&state).await, false),
                         _ = onchain_interval.tick() => {
@@ -1246,6 +1258,14 @@ impl FederationPaymentObserver {
             }
         });
     }
+}
+
+/// Whether the worker may start a scheduled round now.
+///
+/// With no free quote-task permit, every due Bark quote is left due without
+/// being driven, so the round would be repeated without delay.
+fn scheduled_round_can_dispatch(available_quote_permits: usize) -> bool {
+    available_quote_permits > 0
 }
 
 fn continue_payment_pump(
@@ -1532,6 +1552,52 @@ mod tests {
         assert!(!reorg_disconnection_is_proven(
             true,
             cdk_bitcoin_wallet::FederatedBlockMembership::Disconnected
+        ));
+    }
+
+    #[test]
+    fn scheduled_round_waits_while_every_quote_task_permit_is_held() {
+        assert!(!scheduled_round_can_dispatch(0));
+        assert!(scheduled_round_can_dispatch(1));
+        assert!(scheduled_round_can_dispatch(
+            FEDERATION_PAYMENT_CONCURRENT_QUOTE_TASKS
+        ));
+    }
+
+    #[tokio::test]
+    async fn worker_wakes_when_a_quote_task_permit_is_released() {
+        let observer = FederationPaymentObserver::default();
+        let held = observer
+            .quote_tasks
+            .clone()
+            .acquire_many_owned(
+                u32::try_from(FEDERATION_PAYMENT_CONCURRENT_QUOTE_TASKS)
+                    .expect("permit count fits in u32"),
+            )
+            .await
+            .expect("semaphore is open");
+        assert!(!scheduled_round_can_dispatch(
+            observer.quote_tasks.available_permits()
+        ));
+
+        let waiter = tokio::spawn({
+            let quote_tasks = observer.quote_tasks.clone();
+            async move { quote_tasks.acquire_owned().await.map(drop) }
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !waiter.is_finished(),
+            "the worker must block, not spin, while every permit is held"
+        );
+
+        drop(held);
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+            .await
+            .expect("released permit wakes the worker")
+            .expect("waiter task completes")
+            .expect("semaphore is open");
+        assert!(scheduled_round_can_dispatch(
+            observer.quote_tasks.available_permits()
         ));
     }
 
