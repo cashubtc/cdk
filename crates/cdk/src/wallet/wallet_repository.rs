@@ -2,7 +2,7 @@
 //!
 //! Simple container that manages [`Wallet`] instances by mint URL.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 #[cfg(feature = "npubcash")]
 use std::str::FromStr;
@@ -64,6 +64,12 @@ pub struct WalletConfig {
     ///
     /// The default value is 1 hour (3600 seconds).
     pub metadata_cache_ttl: Option<std::time::Duration>,
+    /// Other mint URLs that name this wallet's mint, such as the public mint
+    /// URLs of a federation's other members.
+    ///
+    /// See [`WalletBuilder::with_mint_url_aliases`]. The repository resolves
+    /// an alias to the wallet that owns it on lookup.
+    pub mint_url_aliases: BTreeSet<MintUrl>,
 }
 
 impl fmt::Debug for WalletConfig {
@@ -79,6 +85,7 @@ impl fmt::Debug for WalletConfig {
             )
             .field("target_proof_count", &self.target_proof_count)
             .field("metadata_cache_ttl", &self.metadata_cache_ttl)
+            .field("mint_url_aliases", &self.mint_url_aliases)
             .finish()
     }
 }
@@ -123,6 +130,17 @@ impl WalletConfig {
     /// The default value is 1 hour (3600 seconds).
     pub fn with_metadata_cache_ttl(mut self, ttl: Option<std::time::Duration>) -> Self {
         self.metadata_cache_ttl = ttl;
+        self
+    }
+
+    /// Set other mint URLs that name the same mint, replacing any set before.
+    ///
+    /// See [`WalletBuilder::with_mint_url_aliases`].
+    pub fn with_mint_url_aliases<I>(mut self, aliases: I) -> Self
+    where
+        I: IntoIterator<Item = MintUrl>,
+    {
+        self.mint_url_aliases = aliases.into_iter().collect();
         self
     }
 }
@@ -372,7 +390,25 @@ impl WalletRepository {
         &self.seed
     }
 
+    /// The mint URL that keys the wallets `mint_url` names.
+    ///
+    /// A wallet keyed by `mint_url` wins. Otherwise the wallet that lists
+    /// `mint_url` among its [aliases](Wallet::mint_url_aliases) owns it, as a
+    /// federation wallet owns its members' public mint URLs. A URL that no
+    /// wallet knows resolves to itself.
+    ///
+    /// Every lookup by mint URL in this repository resolves through here;
+    /// [`Self::create_wallet`] and [`Self::set_mint_config`] do not, since they
+    /// name the exact key to write.
+    #[instrument(skip(self))]
+    pub async fn resolve_mint_url(&self, mint_url: &MintUrl) -> MintUrl {
+        resolve_mint_url(&*self.wallets.read().await, mint_url)
+    }
+
     /// Get wallet for a mint URL and currency unit
+    ///
+    /// `mint_url` may be an alias of the wallet's mint URL, see
+    /// [`Self::resolve_mint_url`].
     ///
     /// Returns an error if no wallet exists for the given mint URL and unit combination.
     #[instrument(skip(self))]
@@ -381,23 +417,24 @@ impl WalletRepository {
         mint_url: &MintUrl,
         unit: &CurrencyUnit,
     ) -> Result<Wallet, Error> {
-        let key = WalletKey::new(mint_url.clone(), unit.clone());
-        self.wallets
-            .read()
-            .await
+        let wallets = self.wallets.read().await;
+        let key = WalletKey::new(resolve_mint_url(&wallets, mint_url), unit.clone());
+        wallets
             .get(&key)
             .cloned()
-            .ok_or_else(|| Error::UnknownWallet(key))
+            .ok_or_else(|| Error::UnknownWallet(WalletKey::new(mint_url.clone(), unit.clone())))
     }
 
     /// Get all wallets for a specific mint URL (any currency unit)
+    ///
+    /// `mint_url` may be an alias, see [`Self::resolve_mint_url`].
     #[instrument(skip(self))]
     pub async fn get_wallets_for_mint(&self, mint_url: &MintUrl) -> Vec<Wallet> {
-        self.wallets
-            .read()
-            .await
+        let wallets = self.wallets.read().await;
+        let mint_url = resolve_mint_url(&wallets, mint_url);
+        wallets
             .iter()
-            .filter(|(key, _)| &key.mint_url == mint_url)
+            .filter(|(key, _)| key.mint_url == mint_url)
             .map(|(_, wallet)| wallet.clone())
             .collect()
     }
@@ -417,10 +454,13 @@ impl WalletRepository {
     }
 
     /// Check if a specific wallet exists (mint URL + unit combination)
+    ///
+    /// `mint_url` may be an alias, see [`Self::resolve_mint_url`].
     #[instrument(skip(self))]
     pub async fn has_wallet(&self, mint_url: &MintUrl, unit: &CurrencyUnit) -> bool {
-        let key = WalletKey::new(mint_url.clone(), unit.clone());
-        self.wallets.read().await.contains_key(&key)
+        let wallets = self.wallets.read().await;
+        let key = WalletKey::new(resolve_mint_url(&wallets, mint_url), unit.clone());
+        wallets.contains_key(&key)
     }
 
     /// Add wallets for a mint to the repository
@@ -466,7 +506,9 @@ impl WalletRepository {
     /// Return the wallet for a mint and unit, creating it if it does not exist yet.
     ///
     /// An existing wallet is returned untouched. Use [`Self::create_wallet`] to
-    /// replace it with a new configuration.
+    /// replace it with a new configuration. `mint_url` may be an alias, see
+    /// [`Self::resolve_mint_url`]; a missing wallet is created under the
+    /// resolved mint URL.
     ///
     /// The write lock is held across the lookup and the insert so that concurrent
     /// callers for the same mint and unit all observe the same wallet instead of
@@ -478,8 +520,9 @@ impl WalletRepository {
         unit: CurrencyUnit,
         config: Option<WalletConfig>,
     ) -> Result<Wallet, Error> {
-        let key = WalletKey::new(mint_url.clone(), unit.clone());
         let mut wallets = self.wallets.write().await;
+        let mint_url = resolve_mint_url(&wallets, &mint_url);
+        let key = WalletKey::new(mint_url.clone(), unit.clone());
 
         if let Some(existing) = wallets.get(&key) {
             return Ok(existing.clone());
@@ -495,7 +538,8 @@ impl WalletRepository {
 
     /// Update configuration for an existing mint and unit
     ///
-    /// This re-creates the wallet with the new configuration.
+    /// This re-creates the wallet with the new configuration under exactly
+    /// `mint_url`; an alias is not resolved.
     #[instrument(skip(self, config))]
     pub async fn set_mint_config(
         &self,
@@ -508,7 +552,9 @@ impl WalletRepository {
     }
 
     /// Create and add a new wallet for a mint URL and currency unit
-    /// Returns the created wallet
+    ///
+    /// The wallet is keyed by exactly `mint_url` and replaces any wallet under
+    /// that key; an alias is not resolved. Returns the created wallet
     #[instrument(skip(self, config))]
     pub async fn create_wallet(
         &self,
@@ -575,21 +621,45 @@ impl WalletRepository {
     /// live budget rather than starting full and bursting again. Once no wallet
     /// holds it and its budget has fully recovered, a later wallet creation
     /// evicts it; the persisted budget still survives a re-add.
+    ///
+    /// `mint_url` may be an alias, see [`Self::resolve_mint_url`].
     #[instrument(skip(self))]
     pub async fn remove_wallet(
         &self,
         mint_url: MintUrl,
         currency_unit: CurrencyUnit,
     ) -> Result<(), Error> {
-        let key = WalletKey::new(mint_url, currency_unit);
         let mut wallets = self.wallets.write().await;
+        let key = WalletKey::new(resolve_mint_url(&wallets, &mint_url), currency_unit);
 
-        if !wallets.contains_key(&key) {
-            return Err(Error::UnknownWallet(key));
+        match wallets.remove(&key) {
+            Some(_) => Ok(()),
+            None => Err(Error::UnknownWallet(WalletKey::new(mint_url, key.unit))),
         }
+    }
 
-        wallets.remove(&key);
-        Ok(())
+    /// Remove every wallet for a mint (any currency unit) from the in-memory
+    /// repository and return the keys removed.
+    ///
+    /// `mint_url` may be an alias, see [`Self::resolve_mint_url`]. Like
+    /// [`Self::remove_wallet`], this leaves the database untouched: proofs,
+    /// quotes, transactions and the mint record stay, so the wallets come
+    /// back with their balance when the mint is added again, and
+    /// [`WalletRepositoryBuilder::build`] loads a persisted mint record again
+    /// as an ordinary wallet.
+    #[instrument(skip(self))]
+    pub async fn remove_wallets_for_mint(&self, mint_url: &MintUrl) -> Vec<WalletKey> {
+        let mut wallets = self.wallets.write().await;
+        let mint_url = resolve_mint_url(&wallets, mint_url);
+        let keys: Vec<WalletKey> = wallets
+            .keys()
+            .filter(|key| key.mint_url == mint_url)
+            .cloned()
+            .collect();
+        for key in &keys {
+            wallets.remove(key);
+        }
+        keys
     }
 
     /// Get all wallets
@@ -599,13 +669,15 @@ impl WalletRepository {
     }
 
     /// Check if any wallet exists for a mint (regardless of currency unit)
+    ///
+    /// `mint_url` may be an alias, see [`Self::resolve_mint_url`].
     #[instrument(skip(self))]
     pub async fn has_mint(&self, mint_url: &MintUrl) -> bool {
         self.wallets
             .read()
             .await
-            .keys()
-            .any(|key| &key.mint_url == mint_url)
+            .values()
+            .any(|wallet| wallet.accepts_mint_url(mint_url))
     }
     /// Get balances for all wallets
     ///
@@ -705,6 +777,9 @@ impl WalletRepository {
         let target_proof_count = config.and_then(|c| c.target_proof_count).unwrap_or(3);
         let metadata_cache_ttl = config.and_then(|c| c.metadata_cache_ttl);
         let configured_auth_connector = config.and_then(|c| c.auth_connector.clone());
+        let mint_url_aliases = config
+            .map(|c| c.mint_url_aliases.clone())
+            .unwrap_or_default();
 
         // Check if custom connector is provided in config
         if let Some(cfg) = config {
@@ -717,6 +792,7 @@ impl WalletRepository {
                     .seed(self.seed)
                     .target_proof_count(target_proof_count)
                     .with_rate_limiter(self.rate_limiter.clone())
+                    .with_mint_url_aliases(mint_url_aliases)
                     .shared_client(custom_connector.clone());
 
                 if let Some(auth_connector) = configured_auth_connector.clone() {
@@ -754,6 +830,7 @@ impl WalletRepository {
                 .seed(self.seed)
                 .target_proof_count(target_proof_count)
                 .with_rate_limiter(self.rate_limiter.clone())
+                .with_mint_url_aliases(mint_url_aliases)
                 .client(client)
                 .auth_connector(auth_connector);
 
@@ -786,6 +863,7 @@ impl WalletRepository {
                     .seed(self.seed)
                     .target_proof_count(target_proof_count)
                     .with_rate_limiter(self.rate_limiter.clone())
+                    .with_mint_url_aliases(mint_url_aliases)
                     .client(client)
                     .auth_connector(auth_connector);
 
@@ -802,7 +880,8 @@ impl WalletRepository {
                     .localstore(self.localstore.clone())
                     .seed(self.seed)
                     .target_proof_count(target_proof_count)
-                    .with_rate_limiter(self.rate_limiter.clone());
+                    .with_rate_limiter(self.rate_limiter.clone())
+                    .with_mint_url_aliases(mint_url_aliases);
 
                 if let Some(auth_connector) = configured_auth_connector.clone() {
                     builder = builder.auth_connector(auth_connector);
@@ -824,7 +903,8 @@ impl WalletRepository {
                     .localstore(self.localstore.clone())
                     .seed(self.seed)
                     .target_proof_count(target_proof_count)
-                    .with_rate_limiter(self.rate_limiter.clone());
+                    .with_rate_limiter(self.rate_limiter.clone())
+                    .with_mint_url_aliases(mint_url_aliases);
 
                 if let Some(auth_connector) = configured_auth_connector.clone() {
                     builder = builder.auth_connector(auth_connector);
@@ -940,7 +1020,10 @@ impl WalletRepository {
     /// fetch the keysets from the mint if needed to properly decode the proofs.
     ///
     /// The mint must already be added to the wallet. If the mint is not in the wallet,
-    /// use `add_mint` first or set `allow_untrusted` in receive options.
+    /// use `add_mint` first or set `allow_untrusted` in receive options. A token
+    /// whose mint URL is an alias of a wallet's mint, such as a federation
+    /// member's public mint URL, is decoded by that wallet; the returned
+    /// `mint_url` is still the token's own.
     ///
     /// # Arguments
     ///
@@ -1036,9 +1119,10 @@ impl WalletRepository {
         let wallets_to_check: Vec<_> = match &mint_url {
             Some(url) => {
                 // Get all wallets for this mint (any currency unit)
+                let resolved = resolve_mint_url(&wallets, url);
                 let filtered: Vec<_> = wallets
                     .iter()
-                    .filter(|(key, _)| &key.mint_url == url)
+                    .filter(|(key, _)| key.mint_url == resolved)
                     .map(|(_, wallet)| wallet.clone())
                     .collect();
 
@@ -1060,6 +1144,19 @@ impl WalletRepository {
 
         Ok(total_minted)
     }
+}
+
+/// See [`WalletRepository::resolve_mint_url`].
+fn resolve_mint_url(wallets: &BTreeMap<WalletKey, Wallet>, mint_url: &MintUrl) -> MintUrl {
+    if wallets.keys().any(|key| &key.mint_url == mint_url) {
+        return mint_url.clone();
+    }
+
+    wallets
+        .values()
+        .find(|wallet| wallet.mint_url_aliases().contains(mint_url))
+        .map(|wallet| wallet.mint_url.clone())
+        .unwrap_or_else(|| mint_url.clone())
 }
 
 impl Drop for WalletRepository {
@@ -1740,5 +1837,134 @@ mod tests {
             !usd_bucket.try_acquire().await,
             "shared budget already spent"
         );
+    }
+
+    fn alias_test_urls() -> (MintUrl, MintUrl, MintUrl) {
+        (
+            "https://member1.example.com"
+                .parse()
+                .expect("local mint url"),
+            "https://member2.example.com"
+                .parse()
+                .expect("member mint url"),
+            "https://unrelated.example.com"
+                .parse()
+                .expect("unrelated mint url"),
+        )
+    }
+
+    fn alias_wallet_config(alias: &MintUrl) -> WalletConfig {
+        WalletConfig::new()
+            .with_mint_connector(Arc::new(crate::wallet::test_utils::MockMintConnector::new()))
+            .with_mint_url_aliases([alias.clone()])
+    }
+
+    #[tokio::test]
+    async fn lookups_resolve_a_mint_url_alias_to_the_owning_wallet() {
+        let repo = create_test_repository().await;
+        let (local, alias, unrelated) = alias_test_urls();
+        for unit in [CurrencyUnit::Sat, CurrencyUnit::Usd] {
+            repo.create_wallet(local.clone(), unit, Some(alias_wallet_config(&alias)))
+                .await
+                .expect("create alias wallet");
+        }
+
+        assert_eq!(repo.resolve_mint_url(&alias).await, local);
+        assert_eq!(repo.resolve_mint_url(&unrelated).await, unrelated);
+
+        let wallet = repo
+            .get_wallet(&alias, &CurrencyUnit::Sat)
+            .await
+            .expect("alias resolves to the local wallet");
+        assert_eq!(wallet.mint_url, local);
+        assert!(wallet.accepts_mint_url(&alias));
+        assert!(repo.has_mint(&alias).await);
+        assert!(repo.has_wallet(&alias, &CurrencyUnit::Usd).await);
+        assert_eq!(repo.get_wallets_for_mint(&alias).await.len(), 2);
+        assert!(!repo.has_mint(&unrelated).await);
+        assert!(matches!(
+            repo.get_wallet(&unrelated, &CurrencyUnit::Sat).await,
+            Err(Error::UnknownWallet(_))
+        ));
+
+        let existing = repo
+            .get_or_create_wallet(alias.clone(), CurrencyUnit::Sat, None)
+            .await
+            .expect("get or create through alias");
+        assert_eq!(existing.mint_url, local);
+        assert_eq!(repo.get_wallets().await.len(), 2, "no wallet created");
+
+        let removed = repo.remove_wallets_for_mint(&alias).await;
+        assert_eq!(removed.len(), 2);
+        assert!(removed.iter().all(|key| key.mint_url == local));
+        assert!(repo.get_wallets().await.is_empty());
+        assert!(!repo.has_mint(&alias).await);
+    }
+
+    #[tokio::test]
+    async fn a_wallet_keyed_by_the_url_wins_over_an_alias() {
+        let repo = create_test_repository().await;
+        let (local, alias, _) = alias_test_urls();
+        repo.create_wallet(
+            local.clone(),
+            CurrencyUnit::Sat,
+            Some(alias_wallet_config(&alias)),
+        )
+        .await
+        .expect("create alias wallet");
+        repo.create_wallet(alias.clone(), CurrencyUnit::Sat, None)
+            .await
+            .expect("create wallet keyed by the alias");
+
+        let wallet = repo
+            .get_wallet(&alias, &CurrencyUnit::Sat)
+            .await
+            .expect("exact wallet");
+        assert_eq!(wallet.mint_url, alias);
+
+        repo.remove_wallet(alias.clone(), CurrencyUnit::Sat)
+            .await
+            .expect("remove exact wallet");
+        let wallet = repo
+            .get_wallet(&alias, &CurrencyUnit::Sat)
+            .await
+            .expect("alias wallet again");
+        assert_eq!(wallet.mint_url, local);
+    }
+
+    #[tokio::test]
+    async fn get_token_data_decodes_a_token_naming_a_mint_url_alias() {
+        use crate::nuts::Token;
+        use crate::wallet::test_utils::{test_keyset_id, test_proof};
+
+        let repo = create_test_repository().await;
+        let (local, alias, unrelated) = alias_test_urls();
+        repo.create_wallet(
+            local.clone(),
+            CurrencyUnit::Sat,
+            Some(alias_wallet_config(&alias)),
+        )
+        .await
+        .expect("create alias wallet");
+        let proofs = vec![
+            test_proof(test_keyset_id(), 2),
+            test_proof(test_keyset_id(), 8),
+        ];
+
+        let token = Token::new(alias.clone(), proofs.clone(), None, CurrencyUnit::Sat);
+        let data = repo
+            .get_token_data(&token)
+            .await
+            .expect("token data through alias");
+        assert_eq!(data.mint_url, alias);
+        assert_eq!(data.value, cdk_common::Amount::from(10));
+        assert_eq!(data.proofs.len(), 2);
+        assert!(data.redeem_fee.is_some());
+
+        let token = Token::new(unrelated, proofs, None, CurrencyUnit::Sat);
+        assert!(matches!(
+            repo.get_token_data(&token).await,
+            Err(Error::UnknownWallet(_))
+        ));
     }
 }

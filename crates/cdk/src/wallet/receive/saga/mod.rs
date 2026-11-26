@@ -762,6 +762,63 @@ mod tests {
         }
     }
 
+    /// A federation wallet is keyed by one member's URL; a token minted
+    /// through another member names that member's URL and must still be
+    /// received, while a token for an unrelated mint is refused.
+    #[tokio::test]
+    async fn test_receive_accepts_token_naming_a_mint_url_alias() {
+        use std::str::FromStr;
+
+        use crate::mint_url::MintUrl;
+        use crate::nuts::{CurrencyUnit, Token};
+        use crate::wallet::WalletBuilder;
+
+        let (fixture_wallet, mock, input, signature) = receive_fixture().await;
+        let alias = MintUrl::from_str("https://member2.example.com").unwrap();
+        let wallet = WalletBuilder::new()
+            .mint_url(fixture_wallet.mint_url.clone())
+            .unit(CurrencyUnit::Sat)
+            .localstore(fixture_wallet.localstore.clone())
+            .seed([42; 64])
+            .shared_client(mock.clone())
+            .with_mint_url_aliases([alias.clone()])
+            .build()
+            .unwrap();
+        let options = ReceiveOptions {
+            amount_split_target: SplitTarget::Values(vec![Amount::from(2)]),
+            ..Default::default()
+        };
+
+        let unrelated = Token::new(
+            MintUrl::from_str("https://unrelated.example.com").unwrap(),
+            vec![input.clone()],
+            None,
+            CurrencyUnit::Sat,
+        );
+        let result = wallet
+            .receive(&unrelated.to_string(), options.clone())
+            .await;
+        assert!(matches!(result, Err(Error::IncorrectMint)), "{result:?}");
+
+        mock.set_post_swap_response(Ok(SwapResponse {
+            signatures: vec![signature],
+        }));
+        let token = Token::new(alias, vec![input], None, CurrencyUnit::Sat);
+        let amount = wallet.receive(&token.to_string(), options).await.unwrap();
+
+        assert_eq!(amount, Amount::from(2));
+        assert_eq!(wallet.total_balance().await.unwrap(), amount);
+        let proofs = wallet
+            .localstore
+            .get_proofs(None, None, None, None)
+            .await
+            .unwrap();
+        assert!(!proofs.is_empty());
+        assert!(proofs
+            .iter()
+            .all(|proof| proof.mint_url == fixture_wallet.mint_url));
+    }
+
     #[tokio::test]
     async fn test_receive_accepts_valid_signatures_with_optional_dleq() {
         for include_dleq in [true, false] {

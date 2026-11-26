@@ -1,6 +1,6 @@
 #![doc = include_str!("./README.md")]
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -165,6 +165,9 @@ pub struct Wallet {
     pub metadata_cache: Arc<MintMetadataCache>,
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
+    /// Other mint URLs that name this wallet's mint, such as the public mint
+    /// URLs of the other members of a federation. Never contains `mint_url`.
+    mint_url_aliases: Arc<BTreeSet<MintUrl>>,
     auth_wallet: Arc<TokioRwLock<Option<AuthWallet>>>,
     auth_connector: Option<Arc<dyn AuthMintConnector + Send + Sync>>,
     #[cfg(feature = "npubcash")]
@@ -318,6 +321,26 @@ impl Wallet {
             .seed(seed)
             .target_proof_count(target_proof_count.unwrap_or(3))
             .build()
+    }
+
+    /// Other mint URLs that name this wallet's mint.
+    ///
+    /// A federation wallet is keyed by one local mint URL, but tokens and
+    /// payment requests may name any member's public mint URL. Those URLs are
+    /// set with [`WalletBuilder::with_mint_url_aliases`] or
+    /// [`WalletConfig::with_mint_url_aliases`]. The set never contains
+    /// [`Wallet::mint_url`].
+    pub fn mint_url_aliases(&self) -> &BTreeSet<MintUrl> {
+        &self.mint_url_aliases
+    }
+
+    /// Whether `mint_url` names this wallet's mint: it is the wallet's mint
+    /// URL or one of its [aliases](Wallet::mint_url_aliases).
+    ///
+    /// Every check that compares a token's or payment request's mint URL with
+    /// this wallet goes through here.
+    pub fn accepts_mint_url(&self, mint_url: &MintUrl) -> bool {
+        &self.mint_url == mint_url || self.mint_url_aliases.contains(mint_url)
     }
 
     /// Replace the client-side rate-limit configuration at runtime.
@@ -966,11 +989,11 @@ impl Wallet {
                 "Must set locktime".to_string(),
             ));
         }
-        if token.mint_url()? != self.mint_url {
+        let token_mint_url = token.mint_url()?;
+        if !self.accepts_mint_url(&token_mint_url) {
             return Err(Error::IncorrectWallet(format!(
                 "Should be {} not {}",
-                self.mint_url,
-                token.mint_url()?
+                self.mint_url, token_mint_url
             )));
         }
         // We need the keysets information to properly convert from token proof to proof
@@ -1061,7 +1084,7 @@ impl Wallet {
     #[instrument(skip(self, token))]
     pub async fn verify_token_signatures(&self, token: &Token) -> Result<(), Error> {
         let token_mint_url = token.mint_url()?;
-        if token_mint_url != self.mint_url {
+        if !self.accepts_mint_url(&token_mint_url) {
             return Err(Error::IncorrectWallet(format!(
                 "Should be {} not {}",
                 self.mint_url, token_mint_url

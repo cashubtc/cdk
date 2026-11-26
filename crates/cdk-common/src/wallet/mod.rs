@@ -1037,6 +1037,11 @@ pub trait Wallet: Send + Sync {
     /// Get the mint URL this wallet is connected to
     fn mint_url(&self) -> Self::MintUrl;
 
+    /// Other mint URLs that name this wallet's mint, such as the public mint
+    /// URLs of a federation's other members. Tokens and payment requests that
+    /// name an alias are accepted as if they named [`Self::mint_url`].
+    fn mint_url_aliases(&self) -> Vec<Self::MintUrl>;
+
     /// Get the currency unit of this wallet
     fn unit(&self) -> Self::CurrencyUnit;
 

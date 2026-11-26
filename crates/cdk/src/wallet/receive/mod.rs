@@ -80,7 +80,10 @@ impl Wallet {
             ensure_cdk!(!token.is_multi_mint(), Error::MultiMintTokenNotSupported);
         }
 
-        ensure_cdk!(self.mint_url == token.mint_url()?, Error::IncorrectMint);
+        ensure_cdk!(
+            self.accepts_mint_url(&token.mint_url()?),
+            Error::IncorrectMint
+        );
 
         let amount = self
             .receive_proofs(

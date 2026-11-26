@@ -48,6 +48,10 @@ impl WalletTrait for super::Wallet {
         self.mint_url.clone()
     }
 
+    fn mint_url_aliases(&self) -> Vec<MintUrl> {
+        self.mint_url_aliases().iter().cloned().collect()
+    }
+
     fn unit(&self) -> CurrencyUnit {
         self.unit.clone()
     }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,6 +34,7 @@ use crate::wallet::{
 /// manager into every wallet it creates.
 pub struct WalletBuilder {
     mint_url: Option<MintUrl>,
+    mint_url_aliases: BTreeSet<MintUrl>,
     unit: Option<CurrencyUnit>,
     localstore: Option<Arc<dyn WalletDatabase<database::Error> + Send + Sync>>,
     target_proof_count: Option<usize>,
@@ -54,6 +55,7 @@ impl std::fmt::Debug for WalletBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WalletBuilder")
             .field("mint_url", &self.mint_url)
+            .field("mint_url_aliases", &self.mint_url_aliases)
             .field("unit", &self.unit)
             .field("target_proof_count", &self.target_proof_count)
             .finish_non_exhaustive()
@@ -64,6 +66,7 @@ impl Default for WalletBuilder {
     fn default() -> Self {
         Self {
             mint_url: None,
+            mint_url_aliases: BTreeSet::new(),
             unit: None,
             localstore: None,
             target_proof_count: Some(3),
@@ -124,6 +127,20 @@ impl WalletBuilder {
     /// Set the mint URL
     pub fn mint_url(mut self, mint_url: MintUrl) -> Self {
         self.mint_url = Some(mint_url);
+        self
+    }
+
+    /// Set other mint URLs that name the same mint as [`Self::mint_url`].
+    ///
+    /// A federation is one mint reached through several member URLs. A wallet
+    /// keyed by one of them accepts tokens and payment requests that name any
+    /// alias, see [`Wallet::accepts_mint_url`]. The wallet's own mint URL is
+    /// ignored if it appears here. Replaces any aliases set before.
+    pub fn with_mint_url_aliases<I>(mut self, aliases: I) -> Self
+    where
+        I: IntoIterator<Item = MintUrl>,
+    {
+        self.mint_url_aliases = aliases.into_iter().collect();
         self
     }
 
@@ -276,6 +293,8 @@ impl WalletBuilder {
         let seed: [u8; 64] = self
             .seed
             .ok_or(Error::Custom("Seed required".to_string()))?;
+        let mut mint_url_aliases = std::mem::take(&mut self.mint_url_aliases);
+        mint_url_aliases.remove(&mint_url);
 
         let metadata_cache = self.metadata_cache.take().unwrap_or_else(|| {
             // Check if we already have a cache for this mint in the HashMap
@@ -364,6 +383,7 @@ impl WalletBuilder {
             localstore,
             metadata_cache,
             target_proof_count: self.target_proof_count.unwrap_or(3),
+            mint_url_aliases: Arc::new(mint_url_aliases),
             auth_wallet: Arc::new(TokioRwLock::new(auth_wallet)),
             auth_connector: self.auth_connector.take(),
             #[cfg(feature = "npubcash")]
@@ -427,6 +447,26 @@ mod tests {
             .unit(crate::nuts::CurrencyUnit::Sat)
             .localstore(store)
             .seed([0u8; 64])
+    }
+
+    #[tokio::test]
+    async fn mint_url_aliases_exclude_the_wallet_mint_url() {
+        let own = MintUrl::from_str("https://mint.example.com").unwrap();
+        let alias = MintUrl::from_str("https://member2.example.com").unwrap();
+        let other = MintUrl::from_str("https://other.example.com").unwrap();
+        let wallet = base_builder()
+            .await
+            .with_mint_url_aliases([own.clone(), alias.clone()])
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            wallet.mint_url_aliases().iter().collect::<Vec<_>>(),
+            vec![&alias]
+        );
+        assert!(wallet.accepts_mint_url(&own));
+        assert!(wallet.accepts_mint_url(&alias));
+        assert!(!wallet.accepts_mint_url(&other));
     }
 
     #[tokio::test]

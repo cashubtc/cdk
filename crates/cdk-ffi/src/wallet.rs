@@ -106,6 +106,29 @@ impl Wallet {
         self.inner.mint_url.clone().into()
     }
 
+    /// Other mint URLs that name this wallet's mint
+    ///
+    /// For a federation wallet these are the public mint URLs of the members
+    /// other than `mint_url`. Tokens and payment requests that name an alias
+    /// are accepted by this wallet.
+    pub fn mint_url_aliases(&self) -> Vec<MintUrl> {
+        self.inner
+            .mint_url_aliases()
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect()
+    }
+
+    /// Whether `mint_url` names this wallet's mint: it is `mint_url` or one
+    /// of `mint_url_aliases`. An invalid URL is not accepted.
+    pub fn accepts_mint_url(&self, mint_url: MintUrl) -> bool {
+        match cdk::mint_url::MintUrl::try_from(mint_url) {
+            Ok(mint_url) => self.inner.accepts_mint_url(&mint_url),
+            Err(_) => false,
+        }
+    }
+
     /// Get the currency unit
     pub fn unit(&self) -> CurrencyUnit {
         self.inner.unit.clone().into()

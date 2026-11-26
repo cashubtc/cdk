@@ -1193,7 +1193,10 @@ impl Wallet {
 
         let unit = token.unit().unwrap_or_default();
         ensure_cdk!(unit == self.unit, Error::UnsupportedUnit);
-        ensure_cdk!(self.mint_url == token.mint_url()?, Error::IncorrectMint);
+        ensure_cdk!(
+            self.accepts_mint_url(&token.mint_url()?),
+            Error::IncorrectMint
+        );
 
         let proofs = self.token_proofs(&token).await?;
 

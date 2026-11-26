@@ -41,6 +41,10 @@ impl WalletTraitDef for Wallet {
         Wallet::mint_url(self)
     }
 
+    fn mint_url_aliases(&self) -> Vec<Self::MintUrl> {
+        Wallet::mint_url_aliases(self)
+    }
+
     fn unit(&self) -> Self::CurrencyUnit {
         Wallet::unit(self)
     }
