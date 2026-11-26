@@ -9094,3 +9094,229 @@ async fn post_melt_custom_quote_accepts_normalized_method_match() {
         "mixed-case body method should create a quote under the normalized payment method"
     );
 }
+
+#[cfg(feature = "federation")]
+async fn insert_unpaid_bolt11_mint_quote(state: &MintState, amount: u64) -> cdk::mint::MintQuote {
+    let quote_id = QuoteId::new();
+    let quote = cdk::mint::MintQuote::new(
+        Some(quote_id.clone()),
+        format!("lnbc1wait{quote_id}"),
+        CurrencyUnit::Sat,
+        Some(cdk::Amount::new(amount, CurrencyUnit::Sat)),
+        4_102_444_800,
+        PaymentIdentifier::CustomId(format!("lookup-{quote_id}")),
+        None,
+        cdk::Amount::new(0, CurrencyUnit::Sat),
+        cdk::Amount::new(0, CurrencyUnit::Sat),
+        PaymentMethod::Known(KnownMethod::Bolt11),
+        0,
+        0,
+        vec![],
+        vec![],
+        None,
+    );
+    let mut tx = state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin transaction");
+    tx.add_mint_quote(quote.clone())
+        .await
+        .expect("add mint quote");
+    tx.commit().await.expect("commit mint quote");
+    quote
+}
+
+#[cfg(feature = "federation")]
+async fn mark_mint_quote_paid_in_store(
+    state: &MintState,
+    quote_id: &QuoteId,
+) -> cdk::mint::MintQuote {
+    let mut tx = state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin transaction");
+    let mut quote = tx
+        .get_mint_quote(quote_id)
+        .await
+        .expect("get mint quote")
+        .expect("quote exists");
+    let amount = quote.amount.clone().expect("quote amount");
+    quote
+        .add_payment(amount, format!("payment-{quote_id}"), Some(0))
+        .expect("record payment");
+    tx.update_mint_quote(&mut quote)
+        .await
+        .expect("update mint quote");
+    tx.commit().await.expect("commit paid quote");
+    (*quote).clone()
+}
+
+#[cfg(feature = "federation")]
+#[tokio::test]
+async fn wait_for_federation_mint_quotes_paid_locally_wakes_immediately_on_pubsub() {
+    let state = Box::pin(create_federated_test_state()).await;
+    let quote = insert_unpaid_bolt11_mint_quote(&state, 42).await;
+    let quote_id = quote.id.clone();
+
+    let state_for_task = state.clone();
+    let quote_id_for_task = quote_id.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let paid_quote = mark_mint_quote_paid_in_store(&state_for_task, &quote_id_for_task).await;
+        let amount_paid = paid_quote.amount_paid();
+        state_for_task
+            .mint
+            .pubsub_manager()
+            .mint_quote_payment(&paid_quote, amount_paid);
+    });
+
+    let started = tokio::time::Instant::now();
+    // 10s fallback guarantees this completes quickly only via event notification.
+    tokio::time::timeout(
+        Duration::from_millis(500),
+        wait_for_federation_mint_quotes_paid_locally_with_fallback(
+            &state,
+            std::slice::from_ref(&quote_id),
+            Duration::from_secs(10),
+        ),
+    )
+    .await
+    .expect("waiter must wake before timeout")
+    .expect("waiter must succeed once quote is paid");
+
+    assert!(
+        started.elapsed() < Duration::from_millis(100),
+        "expected event-driven wakeup without 100ms polling latency, took {}ms",
+        started.elapsed().as_millis()
+    );
+    assert_eq!(state.mint.pubsub_manager().active_subscribers(), 0);
+}
+
+#[cfg(feature = "federation")]
+#[tokio::test]
+async fn wait_for_federation_mint_quotes_paid_locally_wakes_immediately_on_applied_frontier() {
+    let state = Box::pin(create_federated_test_state()).await;
+    let quote = insert_unpaid_bolt11_mint_quote(&state, 42).await;
+    let quote_id = quote.id.clone();
+
+    let state_for_task = state.clone();
+    let quote_id_for_task = quote_id.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let _ = mark_mint_quote_paid_in_store(&state_for_task, &quote_id_for_task).await;
+        // Advance only the finalized journal frontier (no pubsub publish) to prove
+        // the watch channel independently wakes waiters.
+        state_for_task
+            .federation
+            .notifications()
+            .expect("federation notifications")
+            .notify_applied_frontier(1, true);
+    });
+
+    let started = tokio::time::Instant::now();
+    tokio::time::timeout(
+        Duration::from_millis(500),
+        wait_for_federation_mint_quotes_paid_locally_with_fallback(
+            &state,
+            std::slice::from_ref(&quote_id),
+            Duration::from_secs(10),
+        ),
+    )
+    .await
+    .expect("waiter must wake on applied frontier advance")
+    .expect("waiter must succeed once quote is paid");
+
+    assert!(
+        started.elapsed() < Duration::from_millis(100),
+        "expected immediate frontier wakeup, took {}ms",
+        started.elapsed().as_millis()
+    );
+    assert_eq!(state.mint.pubsub_manager().active_subscribers(), 0);
+}
+
+#[cfg(feature = "federation")]
+#[tokio::test]
+async fn wait_for_federation_mint_quotes_paid_locally_handles_preexisting_paid_and_batch_and_deadline(
+) {
+    let state = Box::pin(create_federated_test_state()).await;
+    let paid_quote = insert_unpaid_bolt11_mint_quote(&state, 21).await;
+    let _ = mark_mint_quote_paid_in_store(&state, &paid_quote.id).await;
+
+    // Pre-existing paid quote returns immediately without subscribing or waiting.
+    let started = tokio::time::Instant::now();
+    tokio::time::timeout(
+        Duration::from_millis(100),
+        wait_for_federation_mint_quotes_paid_locally_with_fallback(
+            &state,
+            std::slice::from_ref(&paid_quote.id),
+            Duration::from_secs(10),
+        ),
+    )
+    .await
+    .expect("pre-existing paid quote must not time out")
+    .expect("pre-existing paid quote must succeed immediately");
+    assert!(started.elapsed() < Duration::from_millis(50));
+
+    // Unpaid quote respects external deadline and cleans up its pubsub subscription on drop.
+    let unpaid_quote = insert_unpaid_bolt11_mint_quote(&state, 21).await;
+    let timed_out = tokio::time::timeout(
+        Duration::from_millis(40),
+        wait_for_federation_mint_quotes_paid_locally_with_fallback(
+            &state,
+            std::slice::from_ref(&unpaid_quote.id),
+            Duration::from_secs(10),
+        ),
+    )
+    .await;
+    assert!(timed_out.is_err(), "unpaid quote must time out at deadline");
+    assert_eq!(
+        state.mint.pubsub_manager().active_subscribers(),
+        0,
+        "timed-out waiter must drop its pubsub subscription cleanly"
+    );
+
+    // Multi-quote batch waits until every quote is paid and wakes immediately on the last one.
+    let second_unpaid = insert_unpaid_bolt11_mint_quote(&state, 21).await;
+    let state_for_task = state.clone();
+    let first_id = unpaid_quote.id.clone();
+    let second_id = second_unpaid.id.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let first_paid = mark_mint_quote_paid_in_store(&state_for_task, &first_id).await;
+        let first_amount = first_paid.amount_paid();
+        state_for_task
+            .mint
+            .pubsub_manager()
+            .mint_quote_payment(&first_paid, first_amount);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let second_paid = mark_mint_quote_paid_in_store(&state_for_task, &second_id).await;
+        let second_amount = second_paid.amount_paid();
+        state_for_task
+            .mint
+            .pubsub_manager()
+            .mint_quote_payment(&second_paid, second_amount);
+    });
+
+    let batch_started = tokio::time::Instant::now();
+    tokio::time::timeout(
+        Duration::from_millis(500),
+        wait_for_federation_mint_quotes_paid_locally_with_fallback(
+            &state,
+            &[unpaid_quote.id.clone(), second_unpaid.id.clone()],
+            Duration::from_secs(10),
+        ),
+    )
+    .await
+    .expect("batch waiter must wake when all quotes are paid")
+    .expect("batch waiter must succeed");
+    assert!(
+        batch_started.elapsed() < Duration::from_millis(150),
+        "expected immediate batch wakeup, took {}ms",
+        batch_started.elapsed().as_millis()
+    );
+    assert_eq!(state.mint.pubsub_manager().active_subscribers(), 0);
+}

@@ -30,8 +30,8 @@ use crate::MintState;
 
 const PREFER_HEADER_KEY: &str = "Prefer";
 #[cfg(feature = "federation")]
-const FEDERATION_MINT_PAYMENT_WAIT_POLL_INTERVAL: std::time::Duration =
-    std::time::Duration::from_millis(100);
+const FEDERATION_MINT_PAYMENT_WAIT_FALLBACK_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(1);
 
 /// Header extractor for the Prefer header
 ///
@@ -421,33 +421,204 @@ async fn ensure_federation_mint_quotes_paid_for_signing(
 }
 
 #[cfg(feature = "federation")]
+struct FederationMintQuoteWaitSubscription {
+    id: std::sync::Arc<cdk::subscription::SubId>,
+    topics: Vec<cdk::nuts::nut17::NotificationId<QuoteId>>,
+}
+
+#[cfg(feature = "federation")]
+impl cdk_common::pub_sub::SubscriptionRequest for FederationMintQuoteWaitSubscription {
+    type Topic = cdk::nuts::nut17::NotificationId<QuoteId>;
+    type SubscriptionId = cdk::subscription::SubId;
+
+    fn try_get_topics(&self) -> Result<Vec<Self::Topic>, cdk_common::pub_sub::Error> {
+        Ok(self.topics.clone())
+    }
+
+    fn subscription_name(&self) -> std::sync::Arc<Self::SubscriptionId> {
+        std::sync::Arc::clone(&self.id)
+    }
+}
+
+#[cfg(feature = "federation")]
+fn mint_quote_notification_topic(
+    quote: &cdk::mint::MintQuote,
+) -> cdk::nuts::nut17::NotificationId<QuoteId> {
+    match &quote.payment_method {
+        PaymentMethod::Known(cdk::nuts::nut00::KnownMethod::Bolt11) => {
+            cdk::nuts::nut17::NotificationId::MintQuoteBolt11(quote.id.clone())
+        }
+        PaymentMethod::Known(cdk::nuts::nut00::KnownMethod::Bolt12) => {
+            cdk::nuts::nut17::NotificationId::MintQuoteBolt12(quote.id.clone())
+        }
+        PaymentMethod::Known(cdk::nuts::nut00::KnownMethod::Onchain) => {
+            cdk::nuts::nut17::NotificationId::MintQuoteOnchain(quote.id.clone())
+        }
+        PaymentMethod::Custom(method) => {
+            cdk::nuts::nut17::NotificationId::MintQuoteCustom(method.clone(), quote.id.clone())
+        }
+    }
+}
+
+#[cfg(feature = "federation")]
+fn mint_event_may_be_paid(event: &cdk::event::MintEvent<QuoteId>) -> bool {
+    match event.inner() {
+        cdk::nuts::nut17::NotificationPayload::MintQuoteBolt11Response(response) => matches!(
+            response.state,
+            cdk::nuts::MintQuoteState::Paid | cdk::nuts::MintQuoteState::Issued
+        ),
+        cdk::nuts::nut17::NotificationPayload::MintQuoteBolt12Response(response) => {
+            response.amount_paid > cdk::Amount::ZERO || response.amount_issued > cdk::Amount::ZERO
+        }
+        cdk::nuts::nut17::NotificationPayload::MintQuoteOnchainResponse(response) => {
+            response.amount_paid > cdk::Amount::ZERO || response.amount_issued > cdk::Amount::ZERO
+        }
+        cdk::nuts::nut17::NotificationPayload::CustomMintQuoteResponse(_, response) => {
+            response.amount_paid > cdk::Amount::ZERO || response.amount_issued > cdk::Amount::ZERO
+        }
+        _ => false,
+    }
+}
+
+#[cfg(feature = "federation")]
+async fn federation_mint_quotes_are_paid_locally(
+    state: &MintState,
+    quote_ids: &[QuoteId],
+) -> Result<bool, cdk::Error> {
+    for quote_id in quote_ids {
+        let quote = state
+            .mint
+            .localstore()
+            .get_mint_quote(quote_id)
+            .await?
+            .ok_or(cdk::Error::UnknownQuote)?;
+        if !matches!(
+            quote.state(),
+            cdk::nuts::MintQuoteState::Paid | cdk::nuts::MintQuoteState::Issued
+        ) {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+#[cfg(feature = "federation")]
 async fn wait_for_federation_mint_quotes_paid_locally(
     state: &MintState,
     quote_ids: &[QuoteId],
 ) -> Result<(), cdk::Error> {
+    wait_for_federation_mint_quotes_paid_locally_with_fallback(
+        state,
+        quote_ids,
+        FEDERATION_MINT_PAYMENT_WAIT_FALLBACK_INTERVAL,
+    )
+    .await
+}
+
+#[cfg(feature = "federation")]
+async fn wait_for_federation_mint_quotes_paid_locally_with_fallback(
+    state: &MintState,
+    quote_ids: &[QuoteId],
+    fallback_interval: std::time::Duration,
+) -> Result<(), cdk::Error> {
+    let mut all_paid = true;
+    let mut topics = Vec::with_capacity(quote_ids.len());
+    for quote_id in quote_ids {
+        let quote = state
+            .mint
+            .localstore()
+            .get_mint_quote(quote_id)
+            .await?
+            .ok_or(cdk::Error::UnknownQuote)?;
+        if !matches!(
+            quote.state(),
+            cdk::nuts::MintQuoteState::Paid | cdk::nuts::MintQuoteState::Issued
+        ) {
+            all_paid = false;
+        }
+        topics.push(mint_quote_notification_topic(&quote));
+    }
+
+    if all_paid {
+        return Ok(());
+    }
+
+    // Subscribe to both quote-payment pubsub events and the finalized journal
+    // frontier BEFORE re-checking SQLite so concurrent updates cannot be missed.
+    let mut applied_frontier = state.federation.subscribe_applied_frontier();
+    let mut pubsub_sub = match state.mint.pubsub_manager().subscribe(
+        FederationMintQuoteWaitSubscription {
+            id: std::sync::Arc::new(cdk::subscription::SubId::from(format!(
+                "fed-mint-wait-{}",
+                uuid::Uuid::new_v4()
+            ))),
+            topics,
+        },
+    ) {
+        Ok(sub) => Some(sub),
+        Err(err) => {
+            tracing::warn!(
+                    "Failed to subscribe to local mint quote notifications; falling back to frontier/timer wait: {}",
+                    err
+                );
+            None
+        }
+    };
+    let mut pubsub_closed = pubsub_sub.is_none();
+    let mut frontier_closed = applied_frontier.is_none();
+
     loop {
-        let mut all_paid = true;
-        for quote_id in quote_ids {
-            let quote = state
-                .mint
-                .localstore()
-                .get_mint_quote(quote_id)
-                .await?
-                .ok_or(cdk::Error::UnknownQuote)?;
-            if !matches!(
-                quote.state(),
-                cdk::nuts::MintQuoteState::Paid | cdk::nuts::MintQuoteState::Issued
-            ) {
-                all_paid = false;
-                break;
+        if let Some(frontier) = applied_frontier.as_mut() {
+            if !frontier_closed {
+                let _ = *frontier.borrow_and_update();
             }
         }
 
-        if all_paid {
+        if federation_mint_quotes_are_paid_locally(state, quote_ids).await? {
             return Ok(());
         }
 
-        tokio::time::sleep(FEDERATION_MINT_PAYMENT_WAIT_POLL_INTERVAL).await;
+        let fallback = tokio::time::sleep(fallback_interval);
+        tokio::pin!(fallback);
+
+        loop {
+            tokio::select! {
+                event = async {
+                    match pubsub_sub.as_mut() {
+                        Some(sub) => sub.recv().await,
+                        None => std::future::pending().await,
+                    }
+                }, if !pubsub_closed => {
+                    match event {
+                        Some(event) => {
+                            if mint_event_may_be_paid(&event) {
+                                break;
+                            }
+                        }
+                        None => {
+                            pubsub_closed = true;
+                        }
+                    }
+                }
+                changed = async {
+                    match applied_frontier.as_mut() {
+                        Some(frontier) => frontier.changed().await,
+                        None => std::future::pending().await,
+                    }
+                }, if !frontier_closed => {
+                    match changed {
+                        Ok(()) => break,
+                        Err(_) => {
+                            frontier_closed = true;
+                        }
+                    }
+                }
+                () = &mut fallback => {
+                    break;
+                }
+            }
+        }
     }
 }
 

@@ -535,11 +535,24 @@ pub fn validate_federation_submit_response(
     Ok(())
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct FederationOperationNotifications {
     pub inner: Mutex<FederationOperationNotificationState>,
+    applied_frontier: tokio::sync::watch::Sender<u64>,
     #[cfg(any(test, feature = "test-utils"))]
     pub waiter_count_changed: tokio::sync::Notify,
+}
+
+impl Default for FederationOperationNotifications {
+    fn default() -> Self {
+        let (applied_frontier, _) = tokio::sync::watch::channel(0);
+        Self {
+            inner: Mutex::new(FederationOperationNotificationState::default()),
+            applied_frontier,
+            #[cfg(any(test, feature = "test-utils"))]
+            waiter_count_changed: tokio::sync::Notify::new(),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -795,6 +808,72 @@ impl FederationOperationNotifications {
             .register_waiter(operation_id, waiter_limit)?
             .wait()
             .await)
+    }
+
+    /// Subscribe to notifications emitted whenever local journal application advances.
+    pub fn subscribe_applied_frontier(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.applied_frontier.subscribe()
+    }
+
+    /// Return the latest locally applied journal frontier published by this runtime.
+    pub fn applied_frontier(&self) -> u64 {
+        *self.applied_frontier.borrow()
+    }
+
+    /// Publish a locally applied journal frontier update.
+    ///
+    /// Keeps the stored frontier monotonic while ensuring waiters still wake when
+    /// `mutated` is true (for example, after retrying a previously failed entry).
+    pub fn notify_applied_frontier(&self, next_index: u64, mutated: bool) {
+        self.applied_frontier.send_if_modified(|current| {
+            let advanced = next_index > *current;
+            if advanced {
+                *current = next_index;
+            }
+            advanced || mutated
+        });
+    }
+}
+
+#[cfg(test)]
+mod applied_frontier_tests {
+    use std::time::Duration;
+
+    use super::FederationOperationNotifications;
+
+    #[tokio::test]
+    async fn applied_frontier_wakes_waiters_monotonically() {
+        let notifications = FederationOperationNotifications::default();
+        let mut rx = notifications.subscribe_applied_frontier();
+        assert_eq!(*rx.borrow_and_update(), 0);
+        assert_eq!(notifications.applied_frontier(), 0);
+
+        notifications.notify_applied_frontier(3, true);
+        tokio::time::timeout(Duration::from_millis(100), rx.changed())
+            .await
+            .expect("frontier advance must wake immediately")
+            .expect("watch sender stays alive");
+        assert_eq!(*rx.borrow_and_update(), 3);
+        assert_eq!(notifications.applied_frontier(), 3);
+
+        // Unmutated replay at or below current frontier must not spuriously wake waiters.
+        notifications.notify_applied_frontier(3, false);
+        notifications.notify_applied_frontier(2, false);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), rx.changed())
+                .await
+                .is_err(),
+            "non-mutating replay at or below frontier must not wake waiters"
+        );
+
+        // Mutated retry at or below current frontier wakes waiters without regressing the value.
+        notifications.notify_applied_frontier(2, true);
+        tokio::time::timeout(Duration::from_millis(100), rx.changed())
+            .await
+            .expect("mutated retry must wake waiters")
+            .expect("watch sender stays alive");
+        assert_eq!(*rx.borrow_and_update(), 3);
+        assert_eq!(notifications.applied_frontier(), 3);
     }
 }
 
