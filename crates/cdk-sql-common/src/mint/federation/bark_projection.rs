@@ -1594,6 +1594,44 @@ where
     }
 }
 
+/// Highest operation index of any Bark row: one indexed `MAX` per table.
+pub(super) async fn get_projection_frontier<C>(connection: &C) -> Result<Option<u64>, Error>
+where
+    C: DatabaseExecutor,
+{
+    let Some(row) = query(
+        r#"
+        SELECT MAX(frontier)
+        FROM (
+            SELECT MAX(latest_operation_index) AS frontier FROM federation_bark_actions
+            UNION ALL
+            SELECT MAX(latest_operation_index) AS frontier FROM federation_bark_vtxos
+            UNION ALL
+            SELECT MAX(operation_index) AS frontier FROM federation_bark_derivation_allocations
+            UNION ALL
+            SELECT MAX(operation_index) AS frontier FROM federation_bark_reservations
+            UNION ALL
+            SELECT MAX(operation_index) AS frontier FROM federation_bark_transitions
+            UNION ALL
+            SELECT MAX(operation_index) AS frontier FROM federation_bark_observations
+        ) AS frontiers
+        "#,
+    )?
+    .fetch_one(connection)
+    .await?
+    else {
+        return Ok(None);
+    };
+    unpack_into!(let (frontier) = row);
+    match frontier {
+        Column::Null => Ok(None),
+        value => {
+            let frontier: u64 = column_as_number!(value);
+            Ok(Some(frontier))
+        }
+    }
+}
+
 async fn fetch_records<C, T>(connection: &C, sql: &str, label: &str) -> Result<Vec<T>, Error>
 where
     C: DatabaseExecutor,

@@ -29,13 +29,15 @@ use crate::federation::{
     FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
     FederationFrostSealedStorageMetadata, FederationId, FederationJournalAppendOutcome,
     FederationJournalConsensusEvidence, FederationJournalEntry, FederationMaterializedStateDigest,
-    FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
-    FederationOnchainConfirmationPolicy, FederationOperation, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
-    FederationPaymentObservationContext, FederationPaymentObservationRecord,
-    FederationPaymentObservationReport, FederationPaymentObservationReportStatus,
-    FederationSignatureShareRecord, InMemoryFederationJournal, MemberConfigPrivate,
-    MemberConfigPublic, MemberId, ThresholdParams, FEDERATION_CHECKPOINT_VERSION,
+    FederationMaterializedStateKey, FederationMaterializedStateKeyRecord,
+    FederationMaterializedStateKind, FederationMintQuoteOperation,
+    FederationMintQuotePaymentObservation, FederationOnchainConfirmationPolicy,
+    FederationOperation, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationPaymentObservationRecord, FederationPaymentObservationReport,
+    FederationPaymentObservationReportStatus, FederationSignatureShareRecord,
+    InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams,
+    FEDERATION_CHECKPOINT_VERSION,
 };
 use crate::mint::{MeltPaymentRequest, MeltQuote, Operation, OperationKind};
 use crate::mint_url::MintUrl;
@@ -827,7 +829,7 @@ where
         0
     );
     assert!(db
-        .get_federation_materialized_state_keys()
+        .get_federation_materialized_state_keys(FederationMaterializedStateKind::MintQuote)
         .await
         .expect("materialized keys after application rollback")
         .is_empty());
@@ -868,7 +870,7 @@ where
     assert_eq!(frontier.application_next_index, 2);
     assert_eq!(frontier.application_digest, expected_application_digest);
     let materialized_keys = db
-        .get_federation_materialized_state_keys()
+        .get_federation_materialized_state_keys(FederationMaterializedStateKind::MintQuote)
         .await
         .expect("direct materialized-state keys");
     assert_eq!(materialized_keys.len(), 1);
@@ -1919,6 +1921,192 @@ where
         .expect("load keyed melt quotes");
     assert_eq!(melt_quotes.len(), 1);
     assert_eq!(melt_quotes[0].id, selected_quote_id);
+}
+
+/// Rows the hot keyed and ranged federation reads return.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HotReadRows {
+    live_quote_observations: usize,
+    all_live_observations: usize,
+    registry_kind: usize,
+    journal_page: usize,
+    journal_entry: usize,
+}
+
+/// Grow retained history with finished quotes and show that the hot reads
+/// return the same rows at every size, while the history they skip grows.
+///
+/// Each finished quote adds a journal entry, a retired payment observation and
+/// a proof-state row of the materialized-state key registry; the live state
+/// (two observations of one open quote and one mint-quote registry row) stays
+/// the same. The SQLite plan test shows the same reads use indexed searches,
+/// so the rows they examine do not grow either.
+pub async fn federation_hot_reads_stay_bounded_as_history_grows<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    let mut journal = InMemoryFederationJournal::new();
+    let live = (1..=2)
+        .map(|member| {
+            appended(
+                journal
+                    .append(payment_observation_envelope_for_member(
+                        "live-quote",
+                        member,
+                        21,
+                        "settled",
+                    ))
+                    .expect("append live observation"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut tx = Database::begin_transaction(&db).await.expect("begin live");
+    for entry in &live {
+        tx.add_federation_journal_entry(entry)
+            .await
+            .expect("persist live entry");
+        let record = FederationPaymentObservationRecord::from_journal_entry(entry)
+            .expect("live observation record");
+        tx.add_federation_payment_observation(&record, None)
+            .await
+            .expect("persist live observation");
+    }
+    tx.add_federation_materialized_state_keys(&[FederationMaterializedStateKeyRecord {
+        operation_index: live[0].index,
+        operation_id: live[0].operation_id,
+        key: FederationMaterializedStateKey::MintQuote {
+            quote: "live-quote".to_string(),
+        },
+    }])
+    .await
+    .expect("persist live registry row");
+    tx.commit().await.expect("commit live state");
+
+    let mut finished = 0_u64;
+    let mut measured = Vec::new();
+    for history in [64_u64, 256] {
+        let mut tx = Database::begin_transaction(&db)
+            .await
+            .expect("begin history");
+        while finished < history {
+            let entry = appended(
+                journal
+                    .append(payment_observation_envelope_for_member(
+                        &format!("finished-{finished}"),
+                        1,
+                        21,
+                        "settled",
+                    ))
+                    .expect("append finished observation"),
+            );
+            tx.add_federation_journal_entry(&entry)
+                .await
+                .expect("persist finished entry");
+            let record = FederationPaymentObservationRecord::from_journal_entry(&entry)
+                .expect("finished observation record");
+            tx.add_federation_payment_observation(&record, Some(entry.index))
+                .await
+                .expect("persist retired observation");
+            let mut y = [0_u8; 32];
+            y[24..].copy_from_slice(&(finished + 1).to_be_bytes());
+            tx.add_federation_materialized_state_keys(&[FederationMaterializedStateKeyRecord {
+                operation_index: entry.index,
+                operation_id: entry.operation_id,
+                key: FederationMaterializedStateKey::ProofState {
+                    y: SecretKey::from_slice(&y)
+                        .expect("proof secret")
+                        .public_key(),
+                },
+            }])
+            .await
+            .expect("persist finished registry row");
+            finished += 1;
+        }
+        tx.commit().await.expect("commit history");
+
+        let tip = db
+            .get_federation_journal_tip()
+            .await
+            .expect("journal tip")
+            .expect("journal holds entries")
+            .index;
+        let rows = HotReadRows {
+            live_quote_observations: db
+                .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+                    context: FederationPaymentObservationContext::MintQuote,
+                    quote: "live-quote",
+                })
+                .await
+                .expect("live observations of one quote")
+                .len(),
+            all_live_observations: db
+                .get_federation_payment_observations(FederationPaymentObservationSelection::AllLive)
+                .await
+                .expect("all live observations")
+                .len(),
+            registry_kind: db
+                .get_federation_materialized_state_keys(FederationMaterializedStateKind::MintQuote)
+                .await
+                .expect("registry rows of one kind")
+                .len(),
+            journal_page: db
+                .get_federation_journal_entries(FederationIndexRange::page(
+                    tip.saturating_sub(15),
+                    tip + 1,
+                    8,
+                ))
+                .await
+                .expect("journal page")
+                .len(),
+            journal_entry: usize::from(
+                db.get_federation_journal_entry(
+                    FederationJournalEntryKey::Operation(live[1].operation_id),
+                    None,
+                )
+                .await
+                .expect("journal entry by operation")
+                .is_some(),
+            ),
+        };
+        measured.push(rows);
+
+        // The history the hot reads skip did grow.
+        assert_eq!(
+            db.get_federation_journal_entries(FederationIndexRange::ALL)
+                .await
+                .expect("whole journal")
+                .len(),
+            usize::try_from(history + 2).expect("history fits usize")
+        );
+        assert_eq!(
+            db.get_federation_materialized_state_keys(FederationMaterializedStateKind::ProofState)
+                .await
+                .expect("grown registry kind")
+                .len(),
+            usize::try_from(history).expect("history fits usize")
+        );
+        assert_eq!(
+            db.get_federation_payment_observations(
+                FederationPaymentObservationSelection::History {
+                    context: FederationPaymentObservationContext::MintQuote,
+                    quote: "finished-0",
+                }
+            )
+            .await
+            .expect("retired observation history")[0]
+                .terminal_operation_index,
+            Some(2)
+        );
+    }
+
+    let expected = HotReadRows {
+        live_quote_observations: 2,
+        all_live_observations: 2,
+        registry_kind: 1,
+        journal_page: 8,
+        journal_entry: 1,
+    };
+    assert_eq!(measured, vec![expected, expected]);
 }
 
 /// Assert payment observations persist as durable per-member quorum evidence.

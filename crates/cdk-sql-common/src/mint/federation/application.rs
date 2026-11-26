@@ -136,6 +136,7 @@ where
 
     async fn get_federation_materialized_state_keys(
         &self,
+        kind: cdk_common::federation::FederationMaterializedStateKind,
     ) -> Result<Vec<FederationMaterializedStateKeyRecord>, Self::Err> {
         let conn = self
             .pool
@@ -146,9 +147,11 @@ where
             r#"
             SELECT state_kind, state_key, operation_index, operation_id, record_json
             FROM federation_materialized_state_keys
-            ORDER BY state_kind ASC, state_key ASC
+            WHERE state_kind = :state_kind
+            ORDER BY state_key ASC
             "#,
         )?
+        .bind("state_kind", kind.label())
         .fetch_all(&*conn)
         .await?
         .into_iter()

@@ -21,12 +21,13 @@ use crate::federation::{
     FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
     FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
     FederationId, FederationJournalEntry, FederationJournalTip,
-    FederationMaterializedStateKeyRecord, FederationMaterializedStateRow,
-    FederationOperationConflictKey, FederationOperationId, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationRetentionFloor, FederationSetupActivation,
-    FederationSetupApproval, FederationSetupEnrollment, FederationSetupId,
-    FederationSetupInvitationId, FederationSetupInvitationRecord, FederationSetupManifest,
-    FederationSetupProposal, FederationSetupRecord, FederationSetupSession, FederationSetupStep,
+    FederationMaterializedStateKeyRecord, FederationMaterializedStateKind,
+    FederationMaterializedStateRow, FederationOperationConflictKey, FederationOperationId,
+    FederationPaymentObservationContext, FederationPaymentObservationRecord,
+    FederationRetentionFloor, FederationSetupActivation, FederationSetupApproval,
+    FederationSetupEnrollment, FederationSetupId, FederationSetupInvitationId,
+    FederationSetupInvitationRecord, FederationSetupManifest, FederationSetupProposal,
+    FederationSetupRecord, FederationSetupSession, FederationSetupStep,
     FederationSignatureShareRecord, FederationStateSnapshotInfo, FederationStateSnapshotRow,
     FederationStateTransferWindowBounds, MemberId, VerifiedFederationCheckpointQuorum,
     VerifiedFederationStateTransferWindow,
@@ -912,9 +913,11 @@ pub trait FederationApplicationDatabase {
         selection: FederationPaymentObservationSelection<'_>,
     ) -> Result<Vec<FederationStoredPaymentObservation>, Self::Err>;
 
-    /// Get the direct registry of consensus-authoritative materialized row keys.
+    /// Get the registry records of one kind of consensus-authoritative
+    /// materialized row key, in row-key order.
     async fn get_federation_materialized_state_keys(
         &self,
+        kind: FederationMaterializedStateKind,
     ) -> Result<Vec<FederationMaterializedStateKeyRecord>, Self::Err>;
 
     /// Get melt quotes needed for convergence projection by quote ID.

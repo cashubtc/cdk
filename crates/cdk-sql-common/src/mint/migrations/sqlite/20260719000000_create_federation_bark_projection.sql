@@ -47,6 +47,9 @@ ON federation_bark_vtxos (state, latest_operation_index);
 CREATE INDEX idx_federation_bark_vtxos_reservation
 ON federation_bark_vtxos (reservation_action_id);
 
+CREATE INDEX idx_federation_bark_vtxos_latest_operation
+ON federation_bark_vtxos (latest_operation_index);
+
 CREATE TABLE federation_bark_derivation_allocations (
     locator_role INTEGER NOT NULL,
     locator_index INTEGER NOT NULL,
@@ -63,6 +66,12 @@ CREATE TABLE federation_bark_derivation_allocations (
 CREATE INDEX idx_federation_bark_allocations_action
 ON federation_bark_derivation_allocations (action_id, operation_index);
 
+CREATE INDEX idx_federation_bark_allocations_operation
+ON federation_bark_derivation_allocations (operation_index);
+
+CREATE INDEX idx_federation_bark_allocations_locator_index
+ON federation_bark_derivation_allocations (locator_index);
+
 CREATE TABLE federation_bark_reservations (
     vtxo_id TEXT PRIMARY KEY NOT NULL,
     action_id TEXT NOT NULL,
@@ -77,6 +86,9 @@ ON federation_bark_reservations (action_id, operation_index);
 
 CREATE INDEX idx_federation_bark_reservations_operation
 ON federation_bark_reservations (operation_id);
+
+CREATE INDEX idx_federation_bark_reservations_operation_index
+ON federation_bark_reservations (operation_index);
 
 CREATE TABLE federation_bark_transitions (
     operation_id TEXT PRIMARY KEY NOT NULL,

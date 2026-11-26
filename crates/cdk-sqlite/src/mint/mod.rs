@@ -571,6 +571,15 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_hot_reads_stay_bounded_as_history_grows() {
+        cdk_common::database::mint::test::federation_hot_reads_stay_bounded_as_history_grows(
+            provide_db("federation_hot_reads_stay_bounded_as_history_grows".to_string()).await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_materialized_projection_keyed_reads() {
         cdk_common::database::mint::test::federation_materialized_projection_keyed_reads(
             provide_db("federation_materialized_projection_keyed_reads".to_string()).await,
@@ -1570,6 +1579,110 @@ mod test {
             .expect("blind-signature quote-id query plan"),
         );
         assert_uses_indexed_search(&blind_signature_quote_id_plan, "blind_signature");
+
+        // Reads that stay bounded as retired history grows.
+        let live_observations_plan = explain_details(
+            query(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT operation_id, operation_index, observation_json, terminal_operation_index
+                FROM federation_payment_observations
+                WHERE terminal_operation_index IS NULL
+                ORDER BY operation_index ASC, observer_member_id ASC
+                "#,
+            )
+            .expect("live-observation plan query")
+            .fetch_all(&*conn)
+            .await
+            .expect("live-observation query plan"),
+        );
+        assert_uses_indexed_search(&live_observations_plan, "federation_payment_observations");
+
+        let registry_kind_plan = explain_details(
+            query(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT state_kind, state_key, operation_index, operation_id, record_json
+                FROM federation_materialized_state_keys
+                WHERE state_kind = 'keyset_rotation'
+                ORDER BY state_key ASC
+                "#,
+            )
+            .expect("registry-kind plan query")
+            .fetch_all(&*conn)
+            .await
+            .expect("registry-kind query plan"),
+        );
+        assert_uses_indexed_search(&registry_kind_plan, "federation_materialized_state_keys");
+
+        let journal_page_plan = explain_details(
+            query(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT operation_index, operation_id
+                FROM federation_journal_entries
+                WHERE operation_index >= 1
+                  AND operation_index < 9
+                ORDER BY operation_index ASC
+                LIMIT 8
+                "#,
+            )
+            .expect("journal page plan query")
+            .fetch_all(&*conn)
+            .await
+            .expect("journal page query plan"),
+        );
+        assert_uses_indexed_search(&journal_page_plan, "federation_journal_entries");
+
+        let bark_frontier_plan = explain_details(
+            query(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT MAX(frontier)
+                FROM (
+                    SELECT MAX(latest_operation_index) AS frontier FROM federation_bark_actions
+                    UNION ALL
+                    SELECT MAX(latest_operation_index) AS frontier FROM federation_bark_vtxos
+                    UNION ALL
+                    SELECT MAX(operation_index) AS frontier FROM federation_bark_derivation_allocations
+                    UNION ALL
+                    SELECT MAX(operation_index) AS frontier FROM federation_bark_reservations
+                    UNION ALL
+                    SELECT MAX(operation_index) AS frontier FROM federation_bark_transitions
+                    UNION ALL
+                    SELECT MAX(operation_index) AS frontier FROM federation_bark_observations
+                ) AS frontiers
+                "#,
+            )
+            .expect("Bark frontier plan query")
+            .fetch_all(&*conn)
+            .await
+            .expect("Bark frontier query plan"),
+        );
+        for table in [
+            "federation_bark_actions",
+            "federation_bark_vtxos",
+            "federation_bark_derivation_allocations",
+            "federation_bark_reservations",
+            "federation_bark_transitions",
+            "federation_bark_observations",
+        ] {
+            assert_uses_indexed_search(&bark_frontier_plan, table);
+        }
+
+        let bark_locator_plan = explain_details(
+            query(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT MAX(locator_index) FROM federation_bark_derivation_allocations
+                "#,
+            )
+            .expect("Bark locator plan query")
+            .fetch_all(&*conn)
+            .await
+            .expect("Bark locator query plan"),
+        );
+        assert_uses_indexed_search(&bark_locator_plan, "federation_bark_derivation_allocations");
 
         drop(conn);
         drop(pool);

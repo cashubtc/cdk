@@ -815,3 +815,58 @@ operator action deletes anything.
 Signature shares, address allocations and the mint's proof and blind-signature
 tables stay. They are needed for restore and deposit attribution regardless of
 checkpoints.
+
+## Readers and retained history (2026-11-26)
+
+After stage 3, terminal rows are retired and deleted below the retention
+floor, so a reader that reads only live rows is bounded by unfinished work
+plus at most one checkpoint interval of retired rows. This table records, for
+every reader that loaded a whole store, whether its cost now follows live
+state or still follows retained history.
+
+| Reader | What it reads | Bounded by | Notes |
+|---|---|---|---|
+| Startup suffix (`cdk-federation` `bootstrap.rs`) | Journal and finalized items from the trusted checkpoint (`FederationIndexRange::starting_at`) | One checkpoint interval | Without a trusted checkpoint it reads everything, but nothing is pruned before the first checkpoint either |
+| Catch-up and state-transfer window serving | `FederationIndexRange::page` | The page limit | |
+| Bark replay (`reconcile_federation_bark_runtime`) | Journal from the per-scope marker | Entries not yet replayed | Prerequisite 3 |
+| Operator Bark reconcile route | `FederationBarkStore::bark_projection_frontier` | One indexed `MAX` per Bark table | Read the whole projection to compute the frontier before |
+| Bark custody signing wait (`wait_for_bark_custody_projection`) | The action and the plan's input VTXOs by key | The plan | Polled the whole projection before; accepts only if the action head is unchanged after the input read |
+| Bark locator allocation on apply (`bark_max_locator_index`) | `MAX(locator_index)` | One index entry | Scanned every allocation before the `locator_index` index |
+| Effective config rebuild (`rebuild_effective_federation_config`) | Registry rows of kind `keyset_rotation` | Keyset rotations | Read the whole materialized-state key registry (one row per quote, proof and signature ever) before |
+| Payment-observation operator report | Live observations, once | Live observations | Grouped in memory instead of one extra query per quote. Live observations of Bolt12 and on-chain mint quotes and of unpaid melts never retire ("Not pruned"), so the report follows those quotes |
+| Apply-path payment observations | Live observations of one quote | That quote | Indexed by context, quote and operation index |
+| `FederationStoredState::load`, `read_federation_state`: transaction state | Every row of the namespace | Live lineages plus one interval | Settled lineages are deleted whole below the floor |
+| The same: Bark recovery reservations | Every row | Unpublished reservations plus one interval | |
+| The same: chain observation | Every row | **Retained history** | Spent outputs keep a permanent tombstone, and unspent, reorged and quarantined outputs are never pruned |
+| The same: address allocations | Every row | **Retained history** | Allocations are never deleted: an address can receive another deposit at any time |
+| Bark drivers and recovery driver (`federation_bark_ready_projection`, `federation_bark_recovery_projection`, `FederatedBarkReplaySource::replay_projection`), Bark send plan materialization | `bark_projection_snapshot` | **Retained history** | Retired actions stay as the replay guard and VTXOs, allocations and VTXO reservations are never deleted |
+| Bark operator status | `bark_projection_snapshot` | **Retained history** | The report counts VTXOs by state, spent ones included, and receive intents over all retained transitions |
+| Bark recovery FROST authorization | `bark_projection_snapshot` and the chain-observation projection | **Retained history** | Needs the chain projection whole (see above) |
+| Checkpoint materialization (live digest, capture, audit, snapshot) | `get_federation_materialized_state_source` and the four projections | **Retained history** | Quotes, proofs, blind signatures, completed operations, signature shares and address allocations are never deleted, and the digest covers them |
+
+### Why the remaining readers are not bounded
+
+- **Chain observation and address allocations.** Validation of an
+  allocation, a deposit or reorg observation, a transaction proposal and an
+  on-chain quote payment works on the whole in-memory projection: cumulative
+  quote payments merge tombstones with live outputs, and allocation and UTXO
+  invariants are checked across entities. The rows are loaded whole by the
+  2026-11-24 decision ("rows loaded whole, not lazy keyed queries"). Reading
+  only the rows an operation touches needs a projection that fetches outputs,
+  tombstones and allocations by outpoint and quote inside the apply
+  transaction, which is a change to the validation code, not to storage.
+- **Bark drivers.** The projection snapshot is passed to about twenty runtime
+  functions that select over every VTXO (refresh candidates, receive claim
+  proposals, send plans), allocate the next locator from every allocation, and
+  look up actions by quote across final phases (an existing send action for a
+  quote is found even after it failed). Bounding them needs a store-backed
+  projection view that these functions query, and a decision about which
+  retired actions and spent VTXOs a driver may stop seeing; both are design
+  changes, not storage changes.
+- **Checkpoint materialization.** The digest covers every retained row by
+  definition, including the tables that are never deleted, so it must read
+  them all. Streaming it would need every table produced in the digest's
+  global row order, which is Rust string order over keys such as decimal
+  numbers and hex, not the SQL collation, and scheduled capture stores every
+  row as the frozen snapshot anyway. It stays one in-memory build per
+  capture, audit or requested status digest.

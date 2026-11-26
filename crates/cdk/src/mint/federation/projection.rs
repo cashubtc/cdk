@@ -66,7 +66,8 @@ impl Mint {
         })
     }
 
-    /// Load the whole accepted Bark projection for workers and operator status.
+    /// Load the whole accepted Bark projection for the drivers and operator
+    /// status.
     #[instrument(skip_all)]
     pub async fn federation_bark_projection_snapshot(
         &self,
@@ -74,6 +75,16 @@ impl Mint {
         Ok(self
             .federation_bark_store()?
             .bark_projection_snapshot()
+            .await?)
+    }
+
+    /// Highest accepted operation index in the Bark projection, without
+    /// loading it.
+    #[instrument(skip_all)]
+    pub async fn federation_bark_projection_frontier(&self) -> Result<Option<u64>, Error> {
+        Ok(self
+            .federation_bark_store()?
+            .bark_projection_frontier()
             .await?)
     }
 

@@ -142,9 +142,9 @@ pub use self::journal::{
     FederationApplicationState, FederationJournalAppendOutcome, FederationJournalConsensusEvidence,
     FederationJournalDigest, FederationJournalEntry, FederationJournalTip,
     FederationMaterializedStateDigest, FederationMaterializedStateKey,
-    FederationMaterializedStateKeyRecord, FederationMaterializedStateRow,
-    FederationMaterializedStateRowFingerprint, FederationMaterializedStateSnapshot,
-    FederationOperationStatus, InMemoryFederationJournal,
+    FederationMaterializedStateKeyRecord, FederationMaterializedStateKind,
+    FederationMaterializedStateRow, FederationMaterializedStateRowFingerprint,
+    FederationMaterializedStateSnapshot, FederationOperationStatus, InMemoryFederationJournal,
 };
 pub use self::liveness::{
     federation_wallet_signing_attempt_at, federation_wallet_signing_attempt_is_current,

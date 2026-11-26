@@ -34,14 +34,15 @@ use cdk_common::error::Error;
 use cdk_common::federation::{
     FederatedKeyset, FederationAddressAllocationScope, FederationAddressKeychain,
     FederationApplicationState, FederationError, FederationJournalEntry,
-    FederationKeysetRotationOperation, FederationMaterializedStateKey, FederationMeltOperation,
-    FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation, FederationMintOperation,
-    FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
-    FederationOnchainMeltPaymentReceipt, FederationOperation, FederationOperationConflictKey,
-    FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
-    FederationPaymentObservationContext, FederationPaymentObservationRecord,
-    FederationPaymentObservationReport, FederationSignatureShareRecord, FederationStoredState,
-    FederationSwapOperation, FederationTransactionState, MemberId,
+    FederationKeysetRotationOperation, FederationMaterializedStateKey,
+    FederationMaterializedStateKind, FederationMeltOperation, FederationMeltQuoteOperation,
+    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
+    FederationMintQuotePaymentObservation, FederationOnchainMeltPaymentReceipt,
+    FederationOperation, FederationOperationConflictKey, FederationOperationId,
+    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationPaymentObservationRecord, FederationPaymentObservationReport,
+    FederationSignatureShareRecord, FederationStoredState, FederationSwapOperation,
+    FederationTransactionState, MemberId,
 };
 use cdk_common::mint::{
     MeltQuote, MeltSagaState, MintQuote, Operation, OperationKind, SagaStateEnum,
@@ -1244,7 +1245,7 @@ impl Mint {
         let mut effective = config.clone();
         let mut rotations = self
             .localstore
-            .get_federation_materialized_state_keys()
+            .get_federation_materialized_state_keys(FederationMaterializedStateKind::KeysetRotation)
             .await?
             .into_iter()
             .filter_map(|record| match record.key {

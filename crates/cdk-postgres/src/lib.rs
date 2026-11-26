@@ -781,6 +781,18 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_hot_reads_stay_bounded_as_history_grows() {
+        cdk_common::database::mint::test::federation_hot_reads_stay_bounded_as_history_grows(
+            provide_mint_db(unique_federation_test_id(
+                "federation_hot_reads_stay_bounded_as_history_grows",
+            ))
+            .await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_materialized_projection_keyed_reads() {
         cdk_common::database::mint::test::federation_materialized_projection_keyed_reads(
             provide_mint_db(unique_federation_test_id(

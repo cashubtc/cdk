@@ -1,6 +1,4 @@
-#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
 use std::str::FromStr;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -1401,37 +1399,30 @@ pub async fn payment_observation_report_summaries(
     let Some(runtime_config) = state.mint.federation_config() else {
         return Ok(Vec::new());
     };
-    let db = state.mint.localstore();
-    let mut report_keys = BTreeSet::new();
-    for record in db
+    // One read of the live observations, grouped by quote in consensus order.
+    let mut observations_by_quote = BTreeMap::<_, Vec<_>>::new();
+    for observation in state
+        .mint
+        .localstore()
         .get_federation_payment_observations(FederationPaymentObservationSelection::AllLive)
         .await?
-        .into_iter()
-        .map(|observation| observation.record)
-        .collect::<Vec<_>>()
     {
-        report_keys.insert((
-            record.observation.context(),
-            record.observation.quote().to_string(),
-        ));
+        observations_by_quote
+            .entry((
+                observation.record.observation.context(),
+                observation.record.observation.quote().to_string(),
+            ))
+            .or_default()
+            .push(observation.record);
     }
 
-    let mut reports = Vec::with_capacity(report_keys.len());
+    let mut reports = Vec::with_capacity(observations_by_quote.len());
     let now = current_unix_time();
-    for (context, quote) in report_keys {
+    for ((context, quote), observations) in observations_by_quote {
         let required = runtime_config
             .public_config()
             .payment_verification_policy(context)
             .required_matching_observations();
-        let observations = db
-            .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
-                context,
-                quote: &quote,
-            })
-            .await?
-            .into_iter()
-            .map(|observation| observation.record)
-            .collect::<Vec<_>>();
         let report = FederationPaymentObservationReport::from_records(
             context,
             &quote,

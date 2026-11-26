@@ -306,9 +306,10 @@ async fn wiped_member_installs_checkpoint_state_then_catches_up_and_restores() {
     assert!(third
         .mint
         .localstore()
-        .get_federation_materialized_state_keys()
+        .get_federation_materialized_state_source()
         .await
         .expect("state keys after refused install")
+        .state_keys
         .is_empty());
     assert_eq!(
         third
