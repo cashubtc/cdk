@@ -46,6 +46,14 @@ where
     }
 }
 
+/// The status a signatory at capacity answers with.
+///
+/// Sent as a gRPC status rather than an in-band error code, so clients that
+/// predate [`cdk_common::Error::Busy`] still read it as a generic failure.
+fn busy_status() -> Status {
+    Status::resource_exhausted(cdk_common::Error::Busy.to_string())
+}
+
 #[tonic::async_trait]
 impl<S, T> signatory_server::Signatory for CdkSignatoryServer<S, T>
 where
@@ -60,13 +68,16 @@ where
         let metadata = request.metadata();
         let signatory = self.load_signatory(metadata).await?;
 
-        let blinded_messages = request.into_inner().blinded_messages;
-        let mut converted_messages = Vec::with_capacity(blinded_messages.len());
-        for msg in blinded_messages {
+        let request = request.into_inner();
+        // An unknown value reads as the default, `Unbounded`: never refusing
+        // is the behaviour every client already copes with.
+        let admission = request.admission().into();
+        let mut converted_messages = Vec::with_capacity(request.blinded_messages.len());
+        for msg in request.blinded_messages {
             converted_messages.push(msg.try_into()?);
         }
 
-        let result = match signatory.blind_sign(converted_messages).await {
+        let result = match signatory.blind_sign(converted_messages, admission).await {
             Ok(blind_signatures) => proto::BlindSignResponse {
                 sigs: Some(proto::BlindSignatures {
                     blind_signatures: blind_signatures
@@ -76,6 +87,7 @@ where
                 }),
                 ..Default::default()
             },
+            Err(cdk_common::Error::Busy) => return Err(busy_status()),
             Err(err) => proto::BlindSignResponse {
                 error: Some(err.into()),
                 ..Default::default()
@@ -106,6 +118,7 @@ where
                 ..Default::default()
             },
 
+            Err(cdk_common::Error::Busy) => return Err(busy_status()),
             Err(cdk_common::Error::DHKE(_)) => proto::BooleanResponse {
                 success: false,
                 ..Default::default()
@@ -212,6 +225,7 @@ where
                 }),
                 ..Default::default()
             },
+            Err(cdk_common::Error::Busy) => return Err(busy_status()),
             Err(err) => proto::ReconstructDleqResponse {
                 error: Some(err.into()),
                 ..Default::default()

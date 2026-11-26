@@ -241,6 +241,7 @@ impl Signatory for GatedSignatory {
     async fn blind_sign(
         &self,
         messages: Vec<cdk_common::BlindedMessage>,
+        admission: cdk_common::work_pool::Admission,
     ) -> Result<Vec<cdk_common::BlindSignature>, cdk::Error> {
         if self.enabled.load(Ordering::SeqCst) {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
@@ -249,7 +250,7 @@ impl Signatory for GatedSignatory {
                 self.resume[call].notified().await;
             }
         }
-        self.inner.blind_sign(messages).await
+        self.inner.blind_sign(messages, admission).await
     }
 
     async fn verify_proofs(&self, proofs: Vec<cdk_common::Proof>) -> Result<(), cdk::Error> {

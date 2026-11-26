@@ -1003,8 +1003,15 @@ impl Mint {
                 );
             }
 
-            // Phase 4: Generate blind signatures (stateless, safe outside transaction)
-            let all_blind_signatures = self.blind_sign(input.outputs().to_vec()).await?;
+            // Phase 4: Generate blind signatures (stateless, safe outside transaction).
+            // Nothing is reserved until Phase 5, so an overloaded signatory may
+            // refuse and the client retries the whole request.
+            let all_blind_signatures = self
+                .blind_sign(
+                    input.outputs().to_vec(),
+                    cdk_common::work_pool::Admission::Bounded,
+                )
+                .await?;
             let blinded_secrets = input
                 .outputs()
                 .iter()

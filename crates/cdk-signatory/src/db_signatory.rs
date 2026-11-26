@@ -20,6 +20,7 @@ use cdk_common::database::MintKeyDatabaseTransaction;
 use cdk_common::dhke::{sign_message, verify_message};
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id, MintKeySet, Proof};
+use cdk_common::work_pool::{Admission, WorkPool};
 use cdk_common::{database, Error, PublicKey};
 use tokio::sync::{watch, Mutex};
 use tracing::instrument;
@@ -78,9 +79,43 @@ pub struct DbSignatory {
     /// Latest keyset snapshot, published on every reload (initial load and each
     /// rotation).
     keyset_updates: watch::Sender<SignatoryKeysets>,
+    /// Runs signing and verification off the async workers, a bounded
+    /// number of batches at a time.
+    work_pool: Arc<WorkPool>,
+}
+
+/// A pool with one slot, held by a job until the returned sender is dropped,
+/// and no queue, so every other job finds it full.
+#[cfg(test)]
+pub(crate) async fn saturated_work_pool() -> (Arc<WorkPool>, std::sync::mpsc::Sender<()>) {
+    let pool = Arc::new(WorkPool::new(
+        std::num::NonZeroUsize::MIN,
+        0,
+        Duration::ZERO,
+    ));
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let (started, running) = tokio::sync::oneshot::channel();
+    tokio::spawn({
+        let pool = pool.clone();
+        async move {
+            pool.run(Admission::Unbounded, move || {
+                let _ = started.send(());
+                let _ = held.recv();
+            })
+            .await
+        }
+    });
+    running.await.expect("occupying job started");
+    (pool, release)
 }
 
 impl DbSignatory {
+    /// Replace the pool signing and verification run on.
+    #[cfg(test)]
+    pub(crate) fn set_work_pool(&mut self, work_pool: Arc<WorkPool>) {
+        self.work_pool = work_pool;
+    }
+
     /// Creates a new signatory, loading its keysets from the database.
     ///
     /// The load is attempted once and any error is bubbled up: a failed load
@@ -115,6 +150,7 @@ impl DbSignatory {
             secp_ctx,
             xpriv,
             keyset_updates,
+            work_pool: Arc::new(WorkPool::sized_to_host()),
         };
 
         signatory.boot_load().await?;
@@ -336,57 +372,34 @@ impl Signatory for DbSignatory {
         format!("Signatory {}", env!("CARGO_PKG_VERSION"))
     }
 
+    /// Signing waits for a work-pool slot as the caller's `admission` says:
+    /// briefly when nothing has been reserved yet, however long it takes when
+    /// refusing would unwind reserved inputs.
     #[instrument(skip_all)]
     async fn blind_sign(
         &self,
         blinded_messages: Vec<BlindedMessage>,
+        admission: Admission,
     ) -> Result<Vec<BlindSignature>, Error> {
-        let keysets = self.keysets.load();
-
-        blinded_messages
-            .into_iter()
-            .map(|blinded_message| {
-                let BlindedMessage {
-                    amount,
-                    blinded_secret,
-                    keyset_id,
-                    ..
-                } = blinded_message;
-
-                let (info, key) = keysets.by_id.get(&keyset_id).ok_or(Error::UnknownKeySet)?;
-                if info.is_expired() {
-                    return Err(Error::ExpiredKeyset);
-                }
-
-                let key_pair = key.keys.get(&amount).ok_or(Error::UnknownKeySet)?;
-                let c = sign_message(&key_pair.secret_key, &blinded_secret)?;
-
-                let blinded_signature = BlindSignature::new(
-                    amount,
-                    c,
-                    keyset_id,
-                    &blinded_message.blinded_secret,
-                    &key_pair.secret_key,
-                )?;
-
-                Ok(blinded_signature)
+        let keysets = self.keysets.load_full();
+        self.work_pool
+            .run(admission, move || {
+                blind_sign_with(&keysets, blinded_messages)
             })
-            .collect::<Result<Vec<_>, _>>()
+            .await?
     }
 
+    /// Verification waits for a work-pool slot only briefly, then fails with
+    /// [`Error::Busy`]: it precedes any state change, so the request can be
+    /// retried.
     #[tracing::instrument(skip_all)]
     async fn verify_proofs(&self, proofs: Vec<Proof>) -> Result<(), Error> {
-        let keysets = self.keysets.load();
-
-        proofs.into_iter().try_for_each(|proof| {
-            let (_, key) = keysets
-                .by_id
-                .get(&proof.keyset_id)
-                .ok_or(Error::UnknownKeySet)?;
-            let key_pair = key.keys.get(&proof.amount).ok_or(Error::UnknownKeySet)?;
-            verify_message(&key_pair.secret_key, proof.c, proof.secret.as_bytes())?;
-            Ok(())
-        })
+        let keysets = self.keysets.load_full();
+        self.work_pool
+            .run(Admission::Bounded, move || {
+                verify_proofs_with(&keysets, &proofs)
+            })
+            .await?
     }
 
     #[tracing::instrument(skip_all)]
@@ -489,38 +502,101 @@ impl Signatory for DbSignatory {
         Ok(signatory_keyset)
     }
 
+    /// Reconstruction re-signs every entry, so it runs on the work pool. Like
+    /// verification it only reads, so it waits for a slot only briefly, then
+    /// fails with [`Error::Busy`].
+    #[tracing::instrument(skip_all)]
     async fn reconstruct_dleq(
         &self,
         args: Vec<ReconstructDleqArguments>,
     ) -> Result<Vec<BlindSignature>, Error> {
-        let keysets = self.keysets.load();
-        let mut reconstructed = Vec::with_capacity(args.len());
+        let keysets = self.keysets.load_full();
+        self.work_pool
+            .run(Admission::Bounded, move || {
+                reconstruct_dleq_with(&keysets, args)
+            })
+            .await?
+    }
+}
 
-        for arg in args {
-            let (mut blind_signature, blind_secret) = (arg.blind_signature, arg.blind_secret);
+/// Rebuild the DLEQ proofs of `args` with the keys in `keysets`.
+fn reconstruct_dleq_with(
+    keysets: &KeysetSnapshot,
+    args: Vec<ReconstructDleqArguments>,
+) -> Result<Vec<BlindSignature>, Error> {
+    let mut reconstructed = Vec::with_capacity(args.len());
 
-            let (_, key) = keysets
-                .by_id
-                .get(&blind_signature.keyset_id)
-                .ok_or(Error::UnknownKeySet)?;
+    for arg in args {
+        let (mut blind_signature, blind_secret) = (arg.blind_signature, arg.blind_secret);
 
-            let key_pair = key
-                .keys
-                .get(&blind_signature.amount)
-                .ok_or(Error::UnknownKeySet)?;
+        let (_, key) = keysets
+            .by_id
+            .get(&blind_signature.keyset_id)
+            .ok_or(Error::UnknownKeySet)?;
 
-            let restored_signature = sign_message(&key_pair.secret_key, &blind_secret)?;
+        let key_pair = key
+            .keys
+            .get(&blind_signature.amount)
+            .ok_or(Error::UnknownKeySet)?;
 
-            if blind_signature.c != restored_signature {
-                return Err(Error::SignatureMissingOrInvalid);
-            }
+        let restored_signature = sign_message(&key_pair.secret_key, &blind_secret)?;
 
-            blind_signature.add_dleq_proof(&blind_secret, &key_pair.secret_key)?;
-            reconstructed.push(blind_signature);
+        if blind_signature.c != restored_signature {
+            return Err(Error::SignatureMissingOrInvalid);
         }
 
-        Ok(reconstructed)
+        blind_signature.add_dleq_proof(&blind_secret, &key_pair.secret_key)?;
+        reconstructed.push(blind_signature);
     }
+
+    Ok(reconstructed)
+}
+
+/// Sign `blinded_messages` with the keys in `keysets`.
+fn blind_sign_with(
+    keysets: &KeysetSnapshot,
+    blinded_messages: Vec<BlindedMessage>,
+) -> Result<Vec<BlindSignature>, Error> {
+    blinded_messages
+        .into_iter()
+        .map(|blinded_message| {
+            let BlindedMessage {
+                amount,
+                blinded_secret,
+                keyset_id,
+                ..
+            } = blinded_message;
+
+            let (info, key) = keysets.by_id.get(&keyset_id).ok_or(Error::UnknownKeySet)?;
+            if info.is_expired() {
+                return Err(Error::ExpiredKeyset);
+            }
+
+            let key_pair = key.keys.get(&amount).ok_or(Error::UnknownKeySet)?;
+            let c = sign_message(&key_pair.secret_key, &blinded_secret)?;
+
+            Ok(BlindSignature::new(
+                amount,
+                c,
+                keyset_id,
+                &blinded_message.blinded_secret,
+                &key_pair.secret_key,
+            )?)
+        })
+        .collect()
+}
+
+/// Verify `proofs` against the keys in `keysets`.
+fn verify_proofs_with(keysets: &KeysetSnapshot, proofs: &[Proof]) -> Result<(), Error> {
+    proofs.iter().try_for_each(|proof| {
+        let (_, key) = keysets
+            .by_id
+            .get(&proof.keyset_id)
+            .ok_or(Error::UnknownKeySet)?;
+        let key_pair = key.keys.get(&proof.amount).ok_or(Error::UnknownKeySet)?;
+        verify_message(&key_pair.secret_key, proof.c, proof.secret.as_bytes())?;
+        Ok(())
+    })
 }
 
 #[cfg(test)]
@@ -535,6 +611,77 @@ mod test {
     use cdk_common::{Amount, MintKeySet, PublicKey};
 
     use super::*;
+
+    #[tokio::test]
+    async fn work_pool_refuses_bounded_work_and_queues_unbounded_signing() {
+        use std::str::FromStr;
+
+        use cdk_common::secret::Secret;
+
+        let store = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+        let mut signatory = DbSignatory::new(
+            store,
+            b"work-pool-test-seed",
+            Default::default(),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+        // Every job finds the pool full until `_release` is dropped.
+        let (pool, _release) = saturated_work_pool().await;
+        signatory.set_work_pool(pool);
+        let signatory = Arc::new(signatory);
+
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let proof = Proof::new(
+            Amount::from(1),
+            keyset_id,
+            Secret::generate(),
+            SecretKey::generate().public_key(),
+        );
+
+        // Verification is refused rather than queued.
+        assert!(matches!(
+            signatory.verify_proofs(vec![proof]).await,
+            Err(Error::Busy)
+        ));
+
+        let output = BlindedMessage::new(
+            Amount::from(1),
+            keyset_id,
+            SecretKey::generate().public_key(),
+        );
+
+        // So is signing that has not reserved anything.
+        assert!(matches!(
+            signatory
+                .blind_sign(vec![output.clone()], Admission::Bounded)
+                .await,
+            Err(Error::Busy)
+        ));
+
+        // So is DLEQ reconstruction.
+        assert!(matches!(
+            signatory.reconstruct_dleq(Vec::new()).await,
+            Err(Error::Busy)
+        ));
+
+        // Signing after a reservation waits for a slot instead.
+        let signing = tokio::spawn({
+            let signatory = signatory.clone();
+            async move {
+                signatory
+                    .blind_sign(vec![output], Admission::Unbounded)
+                    .await
+            }
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), signing)
+                .await
+                .is_err(),
+            "signing must wait while every slot is taken"
+        );
+    }
 
     #[tokio::test]
     async fn keysets_epoch_moves_only_on_change() {
@@ -743,7 +890,7 @@ mod test {
         let blinded_secret = SecretKey::generate().public_key();
         let msg = BlindedMessage::new(Amount::from(1), expired_keyset.id, blinded_secret);
 
-        let result = signatory.blind_sign(vec![msg]).await;
+        let result = signatory.blind_sign(vec![msg], Admission::Unbounded).await;
 
         assert!(
             matches!(result, Err(Error::ExpiredKeyset)),
@@ -1722,7 +1869,10 @@ mod test {
             BlindedMessage::new(Amount::from(2), keyset.id, secret2),
         ];
 
-        let signed = signatory.blind_sign(messages).await.expect("blind_sign");
+        let signed = signatory
+            .blind_sign(messages, Admission::Unbounded)
+            .await
+            .expect("blind_sign");
         assert_eq!(signed.len(), 2);
 
         let args: Vec<ReconstructDleqArguments> = signed

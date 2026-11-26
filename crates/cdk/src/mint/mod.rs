@@ -13,6 +13,7 @@ use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id};
 use cdk_common::payment::{DynMintPayment, WaitPaymentResponse};
 pub use cdk_common::quote_id::QuoteId;
 use cdk_common::stream::{BackoffPolicy, SupervisedStream};
+pub use cdk_common::work_pool::Admission;
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::MintMetricGuard;
 use cdk_signatory::signatory::{
@@ -1332,10 +1333,16 @@ impl Mint {
     }
 
     /// Blind Sign
+    ///
+    /// Pass [`Admission::Bounded`] when nothing has been reserved yet, so an
+    /// overloaded signatory may refuse with [`Error::Busy`] and the client can
+    /// retry, and [`Admission::Unbounded`] when signing follows a state change
+    /// that a refusal would have to unwind.
     #[tracing::instrument(skip_all)]
     pub async fn blind_sign(
         &self,
         blinded_message: Vec<BlindedMessage>,
+        admission: Admission,
     ) -> Result<Vec<BlindSignature>, Error> {
         #[cfg(test)]
         {
@@ -1347,7 +1354,7 @@ impl Mint {
         #[cfg(feature = "prometheus")]
         let metrics = MintMetricGuard::new("blind_sign");
 
-        let result = self.signatory.blind_sign(blinded_message).await;
+        let result = self.signatory.blind_sign(blinded_message, admission).await;
 
         #[cfg(feature = "prometheus")]
         {
@@ -1448,6 +1455,9 @@ impl Mint {
 
                 match self.signatory.reconstruct_dleq(dleq_args).await {
                     Ok(signatures) => signatures,
+                    // Restore only reads, so the client retries rather than
+                    // get signatures without DLEQ proofs.
+                    Err(Error::Busy) => return Err(Error::Busy),
                     Err(Error::SignatureMissingOrInvalid) => {
                         tracing::error!(
                             "Stored signature failed DLEQ reconstruction during restore"
@@ -1567,6 +1577,8 @@ mod tests {
     pub struct MockSignatory {
         updates: watch::Sender<SignatoryKeysets>,
         reconstruct_error: Option<fn() -> Error>,
+        pub(super) signing_requests:
+            Option<tokio::sync::mpsc::UnboundedSender<(Vec<BlindedMessage>, Admission)>>,
     }
 
     impl MockSignatory {
@@ -1575,6 +1587,7 @@ mod tests {
             Self {
                 updates,
                 reconstruct_error: None,
+                signing_requests: None,
             }
         }
 
@@ -1592,8 +1605,13 @@ mod tests {
 
         async fn blind_sign(
             &self,
-            _blinded_messages: Vec<BlindedMessage>,
+            blinded_messages: Vec<BlindedMessage>,
+            admission: Admission,
         ) -> Result<Vec<BlindSignature>, Error> {
+            if let Some(requests) = &self.signing_requests {
+                requests.send((blinded_messages, admission)).unwrap();
+                return Err(Error::Busy);
+            }
             Err(Error::Custom("unsupported in mock".to_string()))
         }
 
@@ -2011,8 +2029,9 @@ mod tests {
         async fn blind_sign(
             &self,
             blinded_messages: Vec<BlindedMessage>,
+            admission: Admission,
         ) -> Result<Vec<BlindSignature>, Error> {
-            self.inner.blind_sign(blinded_messages).await
+            self.inner.blind_sign(blinded_messages, admission).await
         }
 
         async fn verify_proofs(&self, proofs: Vec<cdk_common::Proof>) -> Result<(), Error> {
@@ -2303,7 +2322,10 @@ mod tests {
             .await
             .unwrap();
         outputs.reverse();
-        let signatures = mint.blind_sign(outputs.clone()).await.unwrap();
+        let signatures = mint
+            .blind_sign(outputs.clone(), Admission::Unbounded)
+            .await
+            .unwrap();
         assert!(signatures.iter().all(|signature| signature.dleq.is_some()));
 
         let blinded_secrets: Vec<_> = outputs.iter().map(|output| output.blinded_secret).collect();
@@ -2343,7 +2365,10 @@ mod tests {
         let (outputs, _) = create_test_blinded_messages(&mint, Amount::from(3))
             .await
             .unwrap();
-        let mut signatures = mint.blind_sign(outputs.clone()).await.unwrap();
+        let mut signatures = mint
+            .blind_sign(outputs.clone(), Admission::Unbounded)
+            .await
+            .unwrap();
         signatures[1].c = SecretKey::generate().public_key();
 
         let blinded_secrets: Vec<_> = outputs.iter().map(|output| output.blinded_secret).collect();

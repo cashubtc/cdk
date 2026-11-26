@@ -1,7 +1,7 @@
 use tracing::instrument;
 
 use crate::mint::nut22::MintAuthRequest;
-use crate::mint::{AuthToken, MintResponse};
+use crate::mint::{Admission, AuthToken, CurrencyUnit, MintResponse};
 use crate::{Amount, Error, Mint};
 
 impl Mint {
@@ -36,23 +36,24 @@ impl Mint {
             ));
         }
 
-        if !mint_auth_request.outputs.is_empty() {
-            self.verify_outputs_keyset(&mint_auth_request.outputs)?;
+        let outputs = mint_auth_request.outputs;
+        if outputs.is_empty() {
+            return Ok(MintResponse {
+                signatures: Vec::new(),
+            });
         }
 
-        let mut blind_signatures = Vec::with_capacity(mint_auth_request.outputs.len());
-
-        for blinded_message in mint_auth_request.outputs.iter() {
-            if blinded_message.amount != Amount::from(1) {
-                return Err(Error::AmountKey);
-            }
-
-            let blind_signature = self.auth_blind_sign(blinded_message).await?;
-            blind_signatures.push(blind_signature);
+        if self.verify_outputs_keyset(&outputs)? != CurrencyUnit::Auth {
+            return Err(Error::BlindAuthFailed);
+        }
+        if outputs
+            .iter()
+            .any(|output| output.amount != Amount::from(1))
+        {
+            return Err(Error::AmountKey);
         }
 
-        Ok(MintResponse {
-            signatures: blind_signatures,
-        })
+        let signatures = self.blind_sign(outputs, Admission::Bounded).await?;
+        Ok(MintResponse { signatures })
     }
 }
