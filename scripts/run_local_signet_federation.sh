@@ -158,8 +158,8 @@ ttl = 60
 tti = 60
 
 [mint_info]
-name = "$MINT_NAME member $member"
-description = "Five-member CDK federation on Second signet (Bark Lightning, FROST on-chain)"
+name = "$MINT_NAME"
+description = "CDK federation on Second signet (Bark Lightning, FROST on-chain). This is member $member of $MEMBERS."
 
 [prometheus]
 enabled = true

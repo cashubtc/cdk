@@ -172,9 +172,9 @@ build_swift() {
     local target_dir="$BUILD_ROOT/target-swift"
     local dist="$BUILD_ROOT/ios-dist"
     local framework_root="$BUILD_ROOT/swift-frameworks"
-    local device_lib="$target_dir/aarch64-apple-ios/release/libcdk_ffi_swift.a"
-    local simulator_arm_lib="$target_dir/aarch64-apple-ios-sim/release/libcdk_ffi_swift.a"
-    local simulator_x86_lib="$target_dir/x86_64-apple-ios/release/libcdk_ffi_swift.a"
+    local device_lib="$target_dir/aarch64-apple-ios/release-ffi/libcdk_ffi_swift.a"
+    local simulator_arm_lib="$target_dir/aarch64-apple-ios-sim/release-ffi/libcdk_ffi_swift.a"
+    local simulator_x86_lib="$target_dir/x86_64-apple-ios/release-ffi/libcdk_ffi_swift.a"
     local simulator_lib="$BUILD_ROOT/libcdk_ffi_swift-simulator.a"
     local bindgen="$target_dir/release/uniffi-bindgen-swift"
     local device_framework="$framework_root/ios-device/CashuDevKitFFI.framework"
@@ -202,19 +202,19 @@ build_swift() {
             DEVELOPER_DIR="$xcode_dir" \
             IPHONEOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
             "$CARGO_BIN" build --manifest-path bindings/swift/rust/Cargo.toml \
-                --release --target aarch64-apple-ios
+                --profile release-ffi --target aarch64-apple-ios
         env \
             CARGO_TARGET_DIR="$target_dir" \
             DEVELOPER_DIR="$xcode_dir" \
             IPHONEOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
             "$CARGO_BIN" build --manifest-path bindings/swift/rust/Cargo.toml \
-                --release --target aarch64-apple-ios-sim
+                --profile release-ffi --target aarch64-apple-ios-sim
         env \
             CARGO_TARGET_DIR="$target_dir" \
             DEVELOPER_DIR="$xcode_dir" \
             IPHONEOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
             "$CARGO_BIN" build --manifest-path bindings/swift/rust/Cargo.toml \
-                --release --target x86_64-apple-ios
+                --profile release-ffi --target x86_64-apple-ios
         env CARGO_TARGET_DIR="$target_dir" "$CARGO_BIN" build \
             --manifest-path bindings/swift/rust/Cargo.toml \
             --release --bin uniffi-bindgen-swift
