@@ -243,7 +243,7 @@ impl SupabaseWalletDatabase {
     /// This must match the latest `schema_version` value set in the migration files.
     /// When adding new migrations, update this constant and set the same value
     /// in the new migration's `INSERT INTO schema_info` statement.
-    pub const REQUIRED_SCHEMA_VERSION: u32 = 11;
+    pub const REQUIRED_SCHEMA_VERSION: u32 = 12;
 
     /// Get the full database schema SQL
     ///
@@ -1546,7 +1546,7 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         // This calls the increment_keyset_counter PostgreSQL function
         let rpc_body = serde_json::json!({
             "p_keyset_id": keyset_id.to_string(),
-            "p_increment": count as i32
+            "p_increment": count
         });
 
         let url = self.join_url("rest/v1/rpc/increment_keyset_counter")?;
@@ -1573,14 +1573,87 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
         if status.is_success() {
             // RPC returns the new counter value directly
-            let new_counter: i32 = serde_json::from_str(&text).map_err(|e| {
+            let new_counter: i64 = serde_json::from_str(&text).map_err(|e| {
                 DatabaseError::Internal(format!("Failed to parse counter response: {}", e))
             })?;
-            return Ok(new_counter as u32);
+            return u32::try_from(new_counter).map_err(|_| DatabaseError::AmountOverflow);
+        }
+
+        if serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("code")
+                    .and_then(|code| code.as_str())
+                    .map(str::to_owned)
+            })
+            .as_deref()
+            == Some("22003")
+        {
+            return Err(DatabaseError::AmountOverflow);
         }
 
         Err(DatabaseError::Internal(format!(
             "increment_keyset_counter RPC failed: HTTP {}. Ensure migrations have been run.",
+            status
+        )))
+    }
+
+    async fn advance_keyset_counter(
+        &self,
+        keyset_id: &Id,
+        minimum_counter: u32,
+    ) -> Result<u32, DatabaseError> {
+        let rpc_body = serde_json::json!({
+            "p_keyset_id": keyset_id.to_string(),
+            "p_minimum_counter": minimum_counter
+        });
+
+        let url = self.join_url("rest/v1/rpc/advance_keyset_counter")?;
+        let auth_bearer = self.get_auth_bearer().await;
+
+        tracing::debug!(method = "POST", url = %url, keyset_id = %keyset_id, minimum_counter = minimum_counter, "Supabase RPC request");
+
+        let res = self
+            .client
+            .post(url.clone())
+            .header("apikey", &self.api_key)
+            .header("Authorization", format!("Bearer {}", auth_bearer))
+            .header("Content-Type", "application/json")
+            .header("Prefer", "return=representation")
+            .json(&rpc_body)
+            .send()
+            .await
+            .map_err(Error::Reqwest)?;
+
+        let status = res.status();
+        let text = res.text().await.map_err(Error::Reqwest)?;
+
+        tracing::debug!(method = "POST", url = %url, status = %status, response_len = text.len(), "Supabase RPC response");
+
+        if status.is_success() {
+            let new_counter: i64 = serde_json::from_str(&text).map_err(|e| {
+                DatabaseError::Internal(format!("Failed to parse counter response: {}", e))
+            })?;
+            return u32::try_from(new_counter).map_err(|_| DatabaseError::AmountOverflow);
+        }
+
+        if serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("code")
+                    .and_then(|code| code.as_str())
+                    .map(str::to_owned)
+            })
+            .as_deref()
+            == Some("22003")
+        {
+            return Err(DatabaseError::AmountOverflow);
+        }
+
+        Err(DatabaseError::Internal(format!(
+            "advance_keyset_counter RPC failed: HTTP {}. Ensure migrations have been run.",
             status
         )))
     }
@@ -3484,6 +3557,29 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn advance_keyset_counter_uses_atomic_rpc() {
+        let mut server = mockito::Server::new_async().await;
+        let db =
+            SupabaseWalletDatabase::new(Url::parse(&server.url()).unwrap(), "anon-key".to_owned())
+                .await
+                .unwrap();
+        let keyset_id: Id = "009a1f293253e41e".parse().unwrap();
+        let success = server
+            .mock("POST", "/rest/v1/rpc/advance_keyset_counter")
+            .match_header("authorization", "Bearer anon-key")
+            .match_body(Matcher::Json(serde_json::json!({
+                "p_keyset_id": keyset_id.to_string(),
+                "p_minimum_counter": 70
+            })))
+            .with_status(200)
+            .with_body("70")
+            .create_async()
+            .await;
+        assert_eq!(db.advance_keyset_counter(&keyset_id, 70).await.unwrap(), 70);
+        success.assert_async().await;
+    }
+
     #[test]
     fn schema_sql_tracks_required_schema_version() {
         let schema_sql = SupabaseWalletDatabase::get_schema_sql();
@@ -3499,6 +3595,7 @@ mod tests {
         assert!(schema_sql.contains("CREATE TABLE IF NOT EXISTS derivation_counter"));
         assert!(schema_sql.contains("CREATE OR REPLACE FUNCTION increment_derivation_counter"));
         assert!(schema_sql.contains("CREATE OR REPLACE FUNCTION public.reserve_derivation_index"));
+        assert!(schema_sql.contains("CREATE OR REPLACE FUNCTION public.advance_keyset_counter"));
         assert!(schema_sql
             .contains("ALTER TABLE proof ADD COLUMN IF NOT EXISTS derivation_index INTEGER"));
         assert!(schema_sql.contains("ALTER TABLE proof ADD COLUMN IF NOT EXISTS p2pk_e TEXT"));

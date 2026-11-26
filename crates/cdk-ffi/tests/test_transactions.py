@@ -175,6 +175,14 @@ async def test_wallet_keyset_counter():
         print(f"✓ Current counter: {counter3}")
         assert counter3 == 6, f"Expected counter 6, got {counter3}"
 
+        assert await db.advance_keyset_counter(keyset_id, 4) == 6
+        assert await db.advance_keyset_counter(keyset_id, 20) == 20
+        advanced = await asyncio.gather(
+            *(db.advance_keyset_counter(keyset_id, 50) for _ in range(8))
+        )
+        assert advanced == [50] * 8, advanced
+        assert await db.increment_keyset_counter(keyset_id, 0) == 50
+
         print("✓ Test passed: Keyset counter works")
 
     finally:

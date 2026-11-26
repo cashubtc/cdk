@@ -1,0 +1,1 @@
+ALTER TABLE keyset_counter ALTER COLUMN counter TYPE BIGINT;

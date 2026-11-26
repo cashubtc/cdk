@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::mint_quote::quote_state_from_amounts;
 use crate::mint_url::MintUrl;
 use crate::nuts::{
-    CurrencyUnit, MeltQuoteState, MintQuoteState, SecretKey, SpendingConditions, State,
+    CurrencyUnit, Id, MeltQuoteState, MintQuoteState, SecretKey, SpendingConditions, State,
 };
 use crate::{Amount, Error};
 
@@ -380,15 +380,50 @@ impl MintQuote {
     }
 }
 
-/// Amounts recovered during a restore operation
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Default)]
+/// Amounts and next scan positions recovered during a restore operation.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Restored {
-    /// Amount in the restore that has already been spent
+    /// Amount in the restore that has already been spent.
     pub spent: Amount,
-    /// Amount restored that is unspent
+    /// Amount restored that is unspent.
     pub unspent: Amount,
-    /// Amount restored that is pending
+    /// Amount restored that is pending.
     pub pending: Amount,
+    /// Next derivation index to scan for each keyset in this wallet.
+    ///
+    /// For a completed keyset scan, this is one past the highest recovered
+    /// signature index (or the keyset's starting index if nothing was
+    /// recovered). When returned inside [`Error::RestoreInterrupted`], the
+    /// interrupted keyset records the start of the failed batch while
+    /// completed keysets record their final next index and unstarted keysets
+    /// record their initial start index.
+    ///
+    /// Pass this map to [`RestoreStart::KeysetIndices`] to continue scanning
+    /// without repeating completed batches.
+    pub next_keyset_indices: HashMap<Id, u32>,
+}
+
+/// Starting position for each keyset during a seed restore.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum RestoreStart {
+    /// Scan every keyset from index zero.
+    #[default]
+    FromZero,
+    /// Inclusive starting indices by keyset ID. Missing wallet keysets start
+    /// at zero; unknown keyset IDs not belonging to this wallet are rejected.
+    /// Starting indices must be strictly less than `u32::MAX`.
+    ///
+    /// Obtain per-keyset positions from [`Restored::next_keyset_indices`] after
+    /// a completed restore or from [`Error::RestoreInterrupted`] after an
+    /// interrupted restore.
+    KeysetIndices(HashMap<Id, u32>),
+    /// Subtract this lookback from each keyset's stored next derivation index,
+    /// clamped to zero. Keysets without a stored counter start at zero.
+    ///
+    /// Batches starting before the stored counter do not count toward the gap
+    /// limit. The counter tracks secret allocation, not completed recovery work,
+    /// so this mode can skip earlier proofs and is not a reliable scan checkpoint.
+    Lookback(u32),
 }
 
 /// Options for restoring a wallet from seed.
@@ -397,13 +432,16 @@ pub struct Restored {
 /// (<https://github.com/cashubtc/nuts/blob/main/13.md#generate-blindedmessages>):
 /// a batch of 100 blinded messages and three consecutive empty batches to
 /// signal end-of-history. Callers that need more conservative pacing or
-/// different gap tolerance can override either field.
+/// different gap tolerance can override either field. The default starting
+/// position is zero for every keyset.
 #[derive(Debug, Clone)]
 pub struct NUT13Options {
     /// Number of blinded messages to request per batch.
     pub batch_size: u32,
     /// Number of consecutive empty batches that terminate the scan.
     pub max_gap: u32,
+    /// Starting position, applied independently to each keyset.
+    pub start: RestoreStart,
 }
 
 impl Default for NUT13Options {
@@ -411,6 +449,7 @@ impl Default for NUT13Options {
         Self {
             batch_size: Self::DEFAULT_BATCH_SIZE,
             max_gap: Self::DEFAULT_MAX_GAP,
+            start: RestoreStart::default(),
         }
     }
 }
@@ -427,12 +466,20 @@ impl NUT13Options {
         let opts = Self {
             batch_size,
             max_gap,
+            start: RestoreStart::default(),
         };
         opts.validate()?;
         Ok(opts)
     }
 
-    pub(crate) fn validate(&self) -> Result<(), Error> {
+    /// Set the starting position for each keyset's restore scan.
+    pub fn with_start(mut self, start: RestoreStart) -> Self {
+        self.start = start;
+        self
+    }
+
+    /// Validate NUT-13 restore options.
+    pub fn validate(&self) -> Result<(), Error> {
         if self.batch_size == 0 {
             return Err(Error::InvalidNut13Options {
                 field: "batch_size",
@@ -445,6 +492,15 @@ impl NUT13Options {
                 field: "max_gap",
                 reason: "must be greater than zero",
             });
+        }
+
+        if let RestoreStart::KeysetIndices(indices) = &self.start {
+            if indices.values().any(|&index| index == u32::MAX) {
+                return Err(Error::InvalidNut13Options {
+                    field: "start",
+                    reason: "keyset starting index must be less than u32::MAX",
+                });
+            }
         }
 
         Ok(())
@@ -1251,6 +1307,7 @@ mod tests {
         let opts = NUT13Options::default();
         assert_eq!(opts.batch_size, NUT13Options::DEFAULT_BATCH_SIZE);
         assert_eq!(opts.max_gap, NUT13Options::DEFAULT_MAX_GAP);
+        assert_eq!(opts.start, RestoreStart::FromZero);
     }
 
     #[test]
@@ -1259,6 +1316,7 @@ mod tests {
         let cloned = opts.clone();
         assert_eq!(cloned.batch_size, 25);
         assert_eq!(cloned.max_gap, 2);
+        assert_eq!(cloned.start, RestoreStart::FromZero);
     }
 
     #[test]
@@ -1283,6 +1341,24 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn nut13_options_reject_max_u32_keyset_start_index() {
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let invalid = NUT13Options::default().with_start(RestoreStart::KeysetIndices(
+            HashMap::from([(keyset_id, u32::MAX)]),
+        ));
+        let err = invalid.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidNut13Options { field: "start", .. }
+        ));
+
+        let valid = NUT13Options::default().with_start(RestoreStart::KeysetIndices(HashMap::from(
+            [(keyset_id, u32::MAX - 1)],
+        )));
+        assert!(valid.validate().is_ok());
     }
 
     #[test]

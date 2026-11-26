@@ -442,6 +442,21 @@ pub enum Error {
         /// Reason the option value is invalid.
         reason: &'static str,
     },
+    /// Seed restore failed after completing at least one batch.
+    ///
+    /// `partial` holds the amounts recovered in completed batches and the
+    /// per-keyset next scan indices (`partial.next_keyset_indices`) that can
+    /// be passed to [`crate::wallet::RestoreStart::KeysetIndices`] to resume
+    /// without repeating completed batches.
+    #[cfg(feature = "wallet")]
+    #[error("Restore interrupted: {source}")]
+    RestoreInterrupted {
+        /// Amounts recovered and next per-keyset scan indices before the error.
+        partial: Box<crate::wallet::Restored>,
+        /// Underlying error that stopped the restore.
+        #[source]
+        source: Box<Error>,
+    },
     /// Url path segments could not be joined
     #[error("Url path segments could not be joined")]
     UrlPathSegments,
@@ -675,6 +690,12 @@ mod tests {
         }
         .is_definitive_failure());
         #[cfg(feature = "wallet")]
+        assert!(!Error::RestoreInterrupted {
+            partial: Box::default(),
+            source: Box::new(Error::Timeout),
+        }
+        .is_definitive_failure());
+        #[cfg(feature = "wallet")]
         assert!(Error::PaymentRequestDeliveryUnsupported.is_definitive_failure());
         #[cfg(feature = "wallet")]
         assert!(Error::UnverifiedTlsEndpoint {
@@ -868,7 +889,8 @@ impl Error {
 
             #[cfg(feature = "wallet")]
             Self::PaymentRequestDeliveryFailed { .. }
-            | Self::PaymentRequestDeliveryRedirected { .. } => false,
+            | Self::PaymentRequestDeliveryRedirected { .. }
+            | Self::RestoreInterrupted { .. } => false,
 
             #[cfg(feature = "wallet")]
             Self::PaymentRequestDeliveryUnsupported
@@ -1274,6 +1296,14 @@ impl From<Error> for ErrorResponse {
                 code: ErrorCode::BatchSizeExceeded,
                 detail: err.to_string(),
             },
+            #[cfg(feature = "wallet")]
+            Error::RestoreInterrupted { source, .. } => {
+                let inner = ErrorResponse::from(*source);
+                ErrorResponse {
+                    code: inner.code,
+                    detail: format!("Restore interrupted: {}", inner.detail),
+                }
+            }
             // Fallback for any remaining errors - use Unknown(99999) instead of TokenNotVerified
             _ => ErrorResponse {
                 code: ErrorCode::Unknown(50000),

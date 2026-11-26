@@ -968,6 +968,58 @@ where
     assert_eq!(counter1, 5);
 }
 
+/// Test that advancing a keyset counter is monotonic, isolated, and atomic.
+pub async fn advance_keyset_counter_is_monotonic_and_atomic<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + Sync,
+{
+    let keyset_id_1 = test_keyset_id();
+    let keyset_id_2 = test_keyset_id_2();
+
+    assert_eq!(db.advance_keyset_counter(&keyset_id_1, 5).await.unwrap(), 5);
+    assert_eq!(db.advance_keyset_counter(&keyset_id_1, 3).await.unwrap(), 5);
+    assert_eq!(db.advance_keyset_counter(&keyset_id_1, 5).await.unwrap(), 5);
+    assert_eq!(
+        db.advance_keyset_counter(&keyset_id_1, 20).await.unwrap(),
+        20
+    );
+
+    // Concurrent advances to the same floor must not over-increment.
+    let (a, b, c, d, e, f, g, h) = tokio::join!(
+        db.advance_keyset_counter(&keyset_id_1, 50),
+        db.advance_keyset_counter(&keyset_id_1, 50),
+        db.advance_keyset_counter(&keyset_id_1, 50),
+        db.advance_keyset_counter(&keyset_id_1, 50),
+        db.advance_keyset_counter(&keyset_id_1, 50),
+        db.advance_keyset_counter(&keyset_id_1, 50),
+        db.advance_keyset_counter(&keyset_id_1, 50),
+        db.advance_keyset_counter(&keyset_id_1, 50),
+    );
+    for value in [a, b, c, d, e, f, g, h] {
+        assert_eq!(value.unwrap(), 50);
+    }
+    assert_eq!(
+        db.increment_keyset_counter(&keyset_id_1, 0).await.unwrap(),
+        50
+    );
+
+    // Other keysets stay independent, and full u32 values are accepted.
+    assert_eq!(
+        db.increment_keyset_counter(&keyset_id_2, 0).await.unwrap(),
+        0
+    );
+    assert_eq!(
+        db.advance_keyset_counter(&keyset_id_2, u32::MAX)
+            .await
+            .unwrap(),
+        u32::MAX
+    );
+    assert_eq!(
+        db.advance_keyset_counter(&keyset_id_2, 10).await.unwrap(),
+        u32::MAX
+    );
+}
+
 /// Test incrementing a derivation counter.
 pub async fn increment_derivation_counter<DB>(db: DB)
 where
@@ -1994,6 +2046,7 @@ macro_rules! wallet_db_test {
             get_balance_by_state,
             increment_keyset_counter,
             keyset_counter_isolation,
+            advance_keyset_counter_is_monotonic_and_atomic,
             increment_derivation_counter,
             derivation_counters_are_independent,
             derivation_counter_is_atomic,

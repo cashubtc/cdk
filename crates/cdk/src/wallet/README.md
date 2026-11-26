@@ -36,3 +36,51 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+## Choose a seed restore starting position
+
+`restore()` scans each keyset from index zero. `restore_with_opts()` also starts
+from zero by default, and accepts a `RestoreStart` mode through `NUT13Options`:
+
+- `FromZero` performs a full scan.
+- `KeysetIndices(HashMap<Id, u32>)` sets an inclusive starting index for each
+  keyset. Missing wallet keysets start at zero, unknown keyset IDs are rejected,
+  and starting indices must be less than `u32::MAX`. Pass positions returned in
+  `Restored::next_keyset_indices` (after a completed restore) or
+  `Error::RestoreInterrupted` (after an interrupted restore) to resume reliably.
+- `Lookback(u32)` starts at each keyset's stored next derivation index minus
+  the lookback, clamped to zero. For example, a lookback of 100 starts keysets
+  with counters of 1,000 and 250 at 900 and 150. Keysets without a stored counter
+  start at zero. Empty batches starting before the stored counter do not count
+  toward the gap limit, preserving forward scan coverage.
+
+```rust,no_run
+use cdk::wallet::{NUT13Options, RestoreStart};
+
+# async fn example(wallet: cdk::Wallet) -> Result<(), cdk::Error> {
+let opts = NUT13Options::new(100, 3)?;
+let restored = match wallet.restore_with_opts(opts.clone()).await {
+    Ok(restored) => restored,
+    Err(cdk::Error::RestoreInterrupted { partial, .. }) => {
+        wallet
+            .restore_with_opts(opts.with_start(RestoreStart::KeysetIndices(
+                partial.next_keyset_indices,
+            )))
+            .await?
+    }
+    Err(err) => return Err(err),
+};
+# let _ = restored.next_keyset_indices;
+# Ok(())
+# }
+```
+
+Recovered batches atomically advance the stored next derivation index past
+recovered signatures without decreasing or over-incrementing an existing
+counter. Empty batches do not advance it. These counters track secret
+allocation, not completed recovery work, so lookback can skip earlier proofs and
+does not reliably resume an interrupted scan. Use a full scan or the per-keyset
+positions returned in `Restored::next_keyset_indices` /
+`Error::RestoreInterrupted` when earlier history must be recovered. Returned
+amounts include all proofs found in the scanned range, including proofs already
+stored locally.

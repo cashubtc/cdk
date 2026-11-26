@@ -1051,6 +1051,39 @@ where
         Ok(new_counter)
     }
 
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    async fn advance_keyset_counter(
+        &self,
+        keyset_id: &Id,
+        minimum_counter: u32,
+    ) -> Result<u32, database::Error> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+
+        let new_counter = query(
+            r#"
+            INSERT INTO keyset_counter (keyset_id, counter)
+            VALUES (:keyset_id, :minimum_counter)
+            ON CONFLICT(keyset_id) DO UPDATE SET counter = CASE
+                WHEN keyset_counter.counter < :minimum_counter THEN :minimum_counter
+                ELSE keyset_counter.counter END
+            RETURNING counter
+            "#,
+        )?
+        .bind("keyset_id", keyset_id.to_string())
+        .bind("minimum_counter", minimum_counter)
+        .pluck(&*conn)
+        .await?
+        .map(|n| Ok::<_, Error>(column_as_number!(n)))
+        .transpose()?
+        .ok_or_else(|| Error::Internal("Counter update returned no value".to_owned()))?;
+
+        Ok(new_counter)
+    }
+
     #[instrument(skip(self))]
     async fn increment_derivation_counter(
         &self,

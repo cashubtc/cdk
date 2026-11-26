@@ -2379,6 +2379,8 @@ async fn test_p2bk_multi_key_receive() {
 /// 3. Mints more tokens under the new active keyset
 /// 4. Creates a new wallet with the same seed but empty storage
 /// 5. Restores and verifies that proofs from BOTH keysets are recovered
+/// 6. Resumes recovery of newly minted proofs
+/// 7. Rescans without duplicating balance
 #[tokio::test]
 async fn test_restore_after_keyset_rotation() {
     setup_tracing();
@@ -2434,6 +2436,58 @@ async fn test_restore_after_keyset_rotation() {
         restored.unspent,
         Amount::from(total),
         "Restore should recover proofs from both active and inactive keysets"
+    );
+    assert_eq!(restored.next_keyset_indices.len(), 2);
+    assert!(restored
+        .next_keyset_indices
+        .values()
+        .all(|&next_index| next_index > 0));
+
+    // Starting at the reported per-keyset positions finds only subsequently minted proofs.
+    fund_wallet(&wallet, 4, None)
+        .await
+        .expect("Failed to fund wallet after restore");
+    let continued = wallet_restored
+        .restore_with_opts(cdk::wallet::NUT13Options::default().with_start(
+            cdk::wallet::RestoreStart::KeysetIndices(restored.next_keyset_indices),
+        ))
+        .await
+        .expect("Restore from reported keyset indices failed");
+    assert_eq!(continued.unspent, Amount::from(4));
+    assert_eq!(
+        wallet_restored.total_balance().await.unwrap(),
+        Amount::from(total + 4)
+    );
+
+    // Starting at the stored counters finds only subsequently minted proofs.
+    fund_wallet(&wallet, 8, None)
+        .await
+        .expect("Failed to fund wallet after restore");
+    let resumed = wallet_restored
+        .restore_with_opts(
+            cdk::wallet::NUT13Options::default().with_start(cdk::wallet::RestoreStart::Lookback(0)),
+        )
+        .await
+        .expect("Restore from stored counters failed");
+    assert_eq!(resumed.unspent, Amount::from(8));
+    assert_eq!(
+        wallet_restored.total_balance().await.unwrap(),
+        Amount::from(total + 12)
+    );
+
+    // Looking back across both keysets recovers the same proofs idempotently.
+    let rescanned = wallet_restored
+        .restore_with_opts(
+            cdk::wallet::NUT13Options::new(10, 1)
+                .unwrap()
+                .with_start(cdk::wallet::RestoreStart::Lookback(100)),
+        )
+        .await
+        .expect("Restore with lookback failed");
+    assert_eq!(rescanned.unspent, Amount::from(total + 12));
+    assert_eq!(
+        wallet_restored.total_balance().await.unwrap(),
+        Amount::from(total + 12)
     );
 }
 
