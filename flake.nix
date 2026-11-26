@@ -500,6 +500,85 @@
           }
         );
 
+        # Dependency layer on top of `workspaceDepsCi` for a check that selects
+        # packages or features (`-p`, `--features`, `--exclude`). Cargo resolves
+        # dependency features per selection, so such a check misses much of the
+        # `--workspace` cache and would recompile those dependencies on every
+        # run. `warmCommands` are the check's own cargo invocations, run against
+        # Crane's dummy sources; only the artifacts that differ from
+        # `workspaceDepsCi` are stored. Like the base cache, a layer changes
+        # only with the lockfile, the manifests or its commands.
+        mkDepsCiLayer =
+          name: warmCommands:
+          craneLib.mkCargoDerivation (
+            commonCraneArgs
+            // {
+              pname = "cdk-deps-ci-${name}";
+              src = craneLib.mkDummySrc commonCraneArgs;
+              cargoArtifacts = workspaceDepsCi;
+              buildPhaseCargoCommand = warmCommands;
+              doCheck = false;
+              doInstallCargoArtifacts = true;
+            }
+          );
+
+        # Warm the dependencies of `cargo test` commands without running them.
+        warmTestCommands = lib.concatMapStringsSep "\n" (command: "${command} --no-run");
+
+        # The cargo invocations of one clippy + test selection, shared by the
+        # check and its dependency layer so both resolve the same features.
+        clippyAndTestCommands = cargoArgs: {
+          clippy = "cargo clippy --profile ci ${cargoArgs}";
+          test = "cargo test --profile ci ${if builtins.match ".*cdk-cli.*" cargoArgs != null then "--bins" else "--lib"} ${cargoArgs}";
+        };
+
+        prUnitTestCommands = [
+          "cargo test --profile ci --lib --workspace --exclude cdk-postgres --exclude cdk-integration-tests"
+          "cargo test --profile ci --bins -p cdk-cli"
+          "cargo test --profile ci --lib -p cdk-nostr --all-features"
+        ];
+
+        prFeatureTestCommands = [
+          "cargo test --profile ci --lib -p cdk-sqlite --features sqlcipher"
+          "cargo test --profile ci --bins -p cdk-cli --features redb"
+          "cargo test --profile ci --lib -p cdk-common --no-default-features --features wallet"
+          "cargo test --profile ci --lib -p cdk-common --no-default-features --features mint"
+          "cargo test --profile ci --lib -p cdk-sql-common --no-default-features --features wallet"
+          "cargo test --profile ci --lib -p cdk-sql-common --no-default-features --features mint"
+        ];
+        prFeatureCheckCommand = "cargo check --profile ci -p cdk-mintd --features redis";
+
+        # One dependency layer per check, exposed as `deps-ci-<check>` packages
+        # so CI can push them to the binary cache.
+        ciDepsLayers =
+          (builtins.mapAttrs
+            (name: cargoArgsList:
+              mkDepsCiLayer name (
+                lib.concatMapStringsSep "\n"
+                  (cargoArgs:
+                    let
+                      commands = clippyAndTestCommands cargoArgs;
+                    in
+                    ''
+                      ${commands.clippy}
+                      ${commands.test} --no-run
+                    '')
+                  cargoArgsList
+              ))
+            clippyAndTestChecks)
+          // {
+            pr-unit-tests = mkDepsCiLayer "pr-unit-tests" (warmTestCommands prUnitTestCommands);
+            pr-feature-tests = mkDepsCiLayer "pr-feature-tests" ''
+              ${warmTestCommands prFeatureTestCommands}
+              ${prFeatureCheckCommand}
+            '';
+            postgres-tests = mkDepsCiLayer "postgres-tests" ''
+              cargo clippy --profile ci -p cdk-postgres
+              cargo test --profile ci -p cdk-postgres --no-run
+              cargo test --profile ci -p cdk-integration-tests --test signatory_rotation --no-run
+            '';
+          };
+
         # Helper function to create combined clippy + test checks
         # Runs both in a single derivation to share build artifacts.
         # Now accepts a list of cargoArgs to run multiple checks sequentially.
@@ -509,14 +588,18 @@
             commonCraneArgs
             // {
               pname = "cdk-check-${name}";
-              cargoArtifacts = workspaceDepsCi;
+              cargoArtifacts = ciDepsLayers.${name};
               buildPhaseCargoCommand = builtins.concatStringsSep "\n" (
                 builtins.map
-                  (cargoArgs: ''
-                    echo "Running check with args: ${cargoArgs}"
-                    cargo clippy --profile ci ${cargoArgs} -- -D warnings
-                    cargo test --profile ci ${if builtins.match ".*cdk-cli.*" cargoArgs != null then "--bins" else "--lib"} ${cargoArgs}
-                  '')
+                  (cargoArgs:
+                    let
+                      commands = clippyAndTestCommands cargoArgs;
+                    in
+                    ''
+                      echo "Running check with args: ${cargoArgs}"
+                      ${commands.clippy} -- -D warnings
+                      ${commands.test}
+                    '')
                   cargoArgsList
               );
               doCheck = false;
@@ -1686,7 +1769,9 @@
               value = mkExamplePackage name;
             })
             exampleChecks
-        ));
+        ))
+        # Per-check dependency layers (`deps-ci-<check>`) for cache pushes
+        // lib.mapAttrs' (name: layer: lib.nameValuePair "deps-ci-${name}" layer) ciDepsLayers;
         checks =
           lib.mapAttrs' (endpoint: check: lib.nameValuePair "rusqlite-compat-${endpoint}" check) rusqliteCompatChecks
           //
@@ -1743,12 +1828,8 @@
               commonCraneArgs
               // {
                 pname = "cdk-pr-unit-tests";
-                cargoArtifacts = workspaceDepsCi;
-                buildPhaseCargoCommand = ''
-                  cargo test --profile ci --lib --workspace --exclude cdk-postgres --exclude cdk-integration-tests
-                  cargo test --profile ci --bins -p cdk-cli
-                  cargo test --profile ci --lib -p cdk-nostr --all-features
-                '';
+                cargoArtifacts = ciDepsLayers.pr-unit-tests;
+                buildPhaseCargoCommand = builtins.concatStringsSep "\n" prUnitTestCommands;
                 doCheck = false;
                 installPhaseCommand = "mkdir -p $out";
                 doInstallCargoArtifacts = false;
@@ -1761,15 +1842,10 @@
               commonCraneArgs
               // {
                 pname = "cdk-pr-feature-tests";
-                cargoArtifacts = workspaceDepsCi;
+                cargoArtifacts = ciDepsLayers.pr-feature-tests;
                 buildPhaseCargoCommand = ''
-                  cargo test --profile ci --lib -p cdk-sqlite --features sqlcipher
-                  cargo test --profile ci --bins -p cdk-cli --features redb
-                  cargo check --profile ci -p cdk-mintd --features redis
-                  cargo test --profile ci --lib -p cdk-common --no-default-features --features wallet
-                  cargo test --profile ci --lib -p cdk-common --no-default-features --features mint
-                  cargo test --profile ci --lib -p cdk-sql-common --no-default-features --features wallet
-                  cargo test --profile ci --lib -p cdk-sql-common --no-default-features --features mint
+                  ${builtins.concatStringsSep "\n" prFeatureTestCommands}
+                  ${prFeatureCheckCommand}
                 '';
                 doCheck = false;
                 installPhaseCommand = "mkdir -p $out";
@@ -1797,7 +1873,7 @@
               commonCraneArgs
               // {
                 pname = "cdk-postgres-tests";
-                cargoArtifacts = workspaceDepsCi;
+                cargoArtifacts = ciDepsLayers.postgres-tests;
                 nativeBuildInputs = commonCraneArgs.nativeBuildInputs ++ [
                   startPostgres
                   stopPostgres

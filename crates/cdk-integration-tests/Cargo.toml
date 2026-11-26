@@ -8,6 +8,9 @@ license.workspace = true
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
 
+[[test]]
+name = "signatory_rotation"
+path = "tests/signatory_rotation.rs"
 
 [features]
 http_subscription = ["cdk/http_subscription"]
