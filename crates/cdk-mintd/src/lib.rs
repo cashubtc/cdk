@@ -152,7 +152,12 @@ async fn federation_operator_transport(args: &CLIArgs) -> Result<cdk_axum::Feder
     {
         let (work_dir, settings) = federation_transport_settings(args).await?;
         let endpoint_id = iroh_runtime::protected_endpoint_id(&settings, &work_dir)?;
-        iroh_runtime::validate_federation_roster_endpoint(&settings, endpoint_id)?;
+        let federation = FederationStartup::load(&settings)?;
+        iroh_runtime::validate_federation_roster_endpoint(
+            &settings,
+            federation.as_ref().map(|federation| &federation.runtime),
+            endpoint_id,
+        )?;
         return federation_client_transport(&settings).await;
     }
     #[cfg(not(feature = "iroh"))]
@@ -1339,6 +1344,7 @@ async fn configure_mint_builder_with_wallet_info(
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     work_dir: &Path,
     kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+    #[cfg(feature = "federation")] federation: Option<&FederationStartup>,
 ) -> Result<(MintBuilder, ConfiguredWalletInfoProvider)> {
     settings
         .validate_backend_pairing()
@@ -1348,7 +1354,7 @@ async fn configure_mint_builder_with_wallet_info(
     let mint_builder = configure_basic_info(settings, mint_builder);
 
     #[cfg(feature = "federation")]
-    let mint_builder = configure_federation(settings, mint_builder)?;
+    let mint_builder = configure_federation(federation, mint_builder);
 
     // Check that fake wallet is not used on mainnet
     #[cfg(feature = "fakewallet")]
@@ -1429,17 +1435,17 @@ async fn configure_mint_builder(
     work_dir: &Path,
     kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
 ) -> Result<MintBuilder> {
-    Ok(
-        configure_mint_builder_with_wallet_info(
-            settings,
-            mint_builder,
-            runtime,
-            work_dir,
-            kv_store,
-        )
-        .await?
-        .0,
+    Ok(configure_mint_builder_with_wallet_info(
+        settings,
+        mint_builder,
+        runtime,
+        work_dir,
+        kv_store,
+        #[cfg(feature = "federation")]
+        FederationStartup::load(settings)?.as_ref(),
     )
+    .await?
+    .0)
 }
 
 /// Configures basic mint information (name, contact info, descriptions, etc.)
@@ -1892,18 +1898,18 @@ async fn configure_onchain_backend_with_wallet_info(
                 if settings.bdk.is_some() {
                     bail!("standalone [bdk] configuration is forbidden with federated-bdk");
                 }
-                let network =
-                    parse_federation_bitcoin_network(wallet.network.as_deref().ok_or_else(
-                        || anyhow!("federation.onchain_wallet.network must be set"),
-                    )?)?;
-                let confirmations = wallet.minimum_confirmations.ok_or_else(|| {
-                    anyhow!("federation.onchain_wallet.minimum_confirmations must be set")
-                })?;
-                let policy_version = wallet.fee_policy_version.ok_or_else(|| {
-                    anyhow!("federation.onchain_wallet.fee_policy_version must be set")
-                })?;
-                let policy =
-                    cdk::mint::FederationOnchainTransactionPolicy::for_version(policy_version)?;
+                let application = mint_builder
+                    .federation_config()
+                    .and_then(|runtime| runtime.public_config().frost_wallet.as_ref())
+                    .and_then(|wallet| wallet.cdk_onchain_application.as_ref())
+                    .ok_or_else(|| {
+                        anyhow!("federated-bdk requires the active CDK on-chain FROST application")
+                    })?;
+                let network = application.network;
+                let confirmations = application.confirmation_policy.minimum_confirmations;
+                let policy = cdk::mint::FederationOnchainTransactionPolicy::for_version(
+                    application.fee_policy_version,
+                )?;
                 let chain_source = federation_chain_source(wallet)?;
                 let backend = federated_bdk_backend::FederatedBdkPaymentAdapter::new(
                     network,
@@ -2495,18 +2501,23 @@ impl PreparedMintd {
         routers: Vec<Router>,
         auth_localstore: Option<cdk_common::database::DynMintAuthDatabase>,
         activation: Option<ConfigurationActivation>,
+        #[cfg(feature = "federation")] federation: Option<FederationStartup>,
     ) -> Result<Self> {
         #[cfg(feature = "iroh")]
         let iroh_runtime = iroh_runtime::initialize(settings, _work_dir).await?;
         #[cfg(all(feature = "iroh", feature = "federation"))]
-        iroh_runtime::validate_federation_roster(settings, iroh_runtime.as_ref())?;
+        iroh_runtime::validate_federation_roster(
+            settings,
+            federation.as_ref().map(|federation| &federation.runtime),
+            iroh_runtime.as_ref(),
+        )?;
         #[cfg(not(feature = "iroh"))]
         {
             if !settings.info.http_enabled || settings.info.url.starts_with("iroh:") {
                 bail!("Iroh listener configuration requires the iroh feature");
             }
             #[cfg(feature = "federation")]
-            validate_federation_transport_build(settings)?;
+            validate_federation_transport_build(federation.as_ref())?;
         }
         #[cfg(feature = "federation")]
         let federation_transport = {
@@ -2801,7 +2812,7 @@ impl PreparedMintd {
             settings.info.enable_info_page.unwrap_or(true),
             cdk_axum::FederationRouterConfig {
                 peer_sync: federation_peer_sync_config(settings),
-                dkg: federation_dkg_auto_start_config(settings)?,
+                dkg: federation.and_then(|federation| federation.dkg),
                 #[cfg(feature = "federation-bdk")]
                 bdk: federation_bdk_local_config(settings, _work_dir)?,
                 #[cfg(feature = "federation-bark")]
@@ -3021,6 +3032,7 @@ async fn start_services_with_shutdown(
     routers: Vec<Router>,
     auth_localstore: Option<cdk_common::database::DynMintAuthDatabase>,
     activation: Option<ConfigurationActivation>,
+    #[cfg(feature = "federation")] federation: Option<FederationStartup>,
 ) -> Result<()> {
     let prepared = PreparedMintd::prepare(
         mint,
@@ -3031,6 +3043,8 @@ async fn start_services_with_shutdown(
         routers,
         auth_localstore,
         activation,
+        #[cfg(feature = "federation")]
+        federation,
     )
     .await?;
     let running = prepared.activate().await?;
@@ -3248,11 +3262,15 @@ async fn run_mintd_with_database_and_shutdown(
         bark_store,
         ..
     } = databases;
+    // The member's federation config is read once here and passed down.
     #[cfg(feature = "federation")]
-    federation_backup::validate_configured_restore(settings, &localstore).await?;
+    let federation = FederationStartup::load(settings)?;
+    #[cfg(feature = "federation")]
+    federation_backup::validate_configured_restore(settings, federation.as_ref(), &localstore)
+        .await?;
 
     #[cfg(feature = "federation")]
-    reconcile_federation_dkg_ceremony(settings, &localstore).await?;
+    reconcile_federation_dkg_ceremony(federation.as_ref(), &localstore).await?;
 
     let mint_builder = MintBuilder::new(localstore);
     #[cfg(feature = "federation-bark")]
@@ -3295,6 +3313,8 @@ async fn run_mintd_with_database_and_shutdown(
         runtime,
         work_dir,
         Some(kv),
+        #[cfg(feature = "federation")]
+        federation.as_ref(),
     )
     .await?;
     let (mint_builder, auth_localstore) =
@@ -3324,6 +3344,8 @@ async fn run_mintd_with_database_and_shutdown(
         routers,
         auth_localstore,
         activation,
+        #[cfg(feature = "federation")]
+        federation,
     )
     .await
 }
@@ -3533,6 +3555,42 @@ pub async fn run_mintd_from_database(
 #[cfg(test)]
 mod tests {
     use std::fs;
+
+    /// [`configure_federation`] over the config [`FederationStartup::load`] reads.
+    #[cfg(feature = "federation")]
+    fn configure_federation_from_settings(
+        settings: &config::Settings,
+        builder: MintBuilder,
+    ) -> Result<MintBuilder> {
+        Ok(configure_federation(
+            FederationStartup::load(settings)?.as_ref(),
+            builder,
+        ))
+    }
+
+    /// Check the Iroh roster against the member config files `settings` names.
+    #[cfg(all(feature = "federation", feature = "iroh"))]
+    fn validate_roster(
+        settings: &config::Settings,
+        runtime: &iroh_runtime::MintdIrohRuntime,
+    ) -> Result<()> {
+        let federation = settings.federation.as_ref().expect("federation settings");
+        let public_config = read_public_federation_config(
+            federation
+                .public_config_path
+                .as_deref()
+                .expect("public config path"),
+        )?;
+        let private_config = read_federation_json(
+            federation
+                .private_config_path
+                .as_deref()
+                .expect("private config path"),
+            "private federation config",
+        )?;
+        let configured = cdk::mint::FederationRuntimeConfig::new(public_config, private_config)?;
+        iroh_runtime::validate_federation_roster(settings, Some(&configured), Some(runtime))
+    }
 
     #[cfg(feature = "iroh")]
     use axum::{extract::Extension, routing::get};
@@ -3751,6 +3809,107 @@ mod tests {
         let (bundle, _) = two_member_trusted_dealer_bundle();
         validate_federation_setup_method_startup_policy(&bundle.public_config)
             .expect("test-utils build accepts trusted-dealer setup");
+    }
+
+    #[cfg(all(
+        feature = "federation",
+        feature = "sqlite",
+        feature = "federation-test-utils"
+    ))]
+    #[tokio::test]
+    async fn federation_config_is_read_once_into_the_startup_value() {
+        assert!(FederationStartup::load(&config::Settings::default())
+            .expect("standalone settings")
+            .is_none());
+        let disabled = config::Settings {
+            federation: Some(config::Federation::default()),
+            ..config::Settings::default()
+        };
+        assert!(FederationStartup::load(&disabled)
+            .expect("disabled federation")
+            .is_none());
+
+        let (bundle, member_id) = two_member_trusted_dealer_bundle();
+        let (public_config_path, private_config_path) = write_federation_config_fixture(
+            "read_once",
+            serde_json::to_string(&bundle.public_config).expect("public config JSON"),
+            serde_json::to_string(
+                bundle
+                    .private_configs
+                    .get(&member_id)
+                    .expect("private config"),
+            )
+            .expect("private config JSON"),
+        );
+        let settings = config::Settings {
+            federation: Some(config::Federation {
+                enabled: true,
+                allow_development_payment_observation_policy: true,
+                public_config_path: Some(public_config_path.clone()),
+                private_config_path: Some(private_config_path.clone()),
+                ..config::Federation::default()
+            }),
+            ..config::Settings::default()
+        };
+        let startup = FederationStartup::load(&settings)
+            .expect("member config")
+            .expect("federation enabled");
+        assert_eq!(startup.runtime.member_id(), member_id);
+        assert!(startup.dkg.is_none());
+
+        // Later startup steps use the parsed value, not the files.
+        fs::remove_file(&public_config_path).expect("remove public config");
+        fs::remove_file(&private_config_path).expect("remove private config");
+        let builder = configure_federation(
+            Some(&startup),
+            MintBuilder::new(Arc::new(
+                cdk_sqlite::mint::memory::empty().await.expect("database"),
+            )),
+        );
+        assert_eq!(
+            builder
+                .federation_config()
+                .expect("attached federation config")
+                .member_id(),
+            member_id
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn federation_member_config_does_not_restate_consensus_bindings() {
+        for (label, document) in [
+            (
+                "on-chain network",
+                "[onchain_wallet]\nnetwork = \"regtest\"\n",
+            ),
+            (
+                "on-chain confirmations",
+                "[onchain_wallet]\nminimum_confirmations = 1\n",
+            ),
+            (
+                "on-chain fee policy",
+                "[onchain_wallet]\nfee_policy_version = 1\n",
+            ),
+        ] {
+            let error = toml::from_str::<config::Federation>(document)
+                .expect_err(label)
+                .to_string();
+            assert!(error.contains("unknown field"), "{label}: {error}");
+        }
+        #[cfg(feature = "federation-bark")]
+        for (label, document) in [
+            ("Bark network", "[bark]\nnetwork = \"regtest\"\n"),
+            (
+                "Ark server key",
+                "[bark]\nark_server_public_key = \"02aa\"\n",
+            ),
+        ] {
+            let error = toml::from_str::<config::Federation>(document)
+                .expect_err(label)
+                .to_string();
+            assert!(error.contains("unknown field"), "{label}: {error}");
+        }
     }
 
     #[cfg(all(feature = "federation", feature = "sqlite"))]
@@ -4620,7 +4779,8 @@ engine = "sqlite"
         };
         let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
         let builder = MintBuilder::new(localstore);
-        let builder = configure_federation(&settings, builder).expect("federation config");
+        let builder =
+            configure_federation_from_settings(&settings, builder).expect("federation config");
 
         assert_eq!(builder.federation_mode(), FederationMode::Member);
         let runtime_config = builder.federation_config().expect("runtime config");
@@ -4678,23 +4838,21 @@ engine = "sqlite"
             node: local_node.clone(),
         };
 
-        let missing =
-            iroh_runtime::validate_federation_roster(&settings(iroh.clone()), Some(&runtime))
-                .expect_err("static discovery requires the remote roster ticket");
+        let missing = validate_roster(&settings(iroh.clone()), &runtime)
+            .expect_err("static discovery requires the remote roster ticket");
         assert!(missing.to_string().contains("missing endpoint tickets"));
 
         iroh.static_tickets
             .push(remote_node.endpoint_ticket().to_string());
-        iroh_runtime::validate_federation_roster(&settings(iroh.clone()), Some(&runtime))
+        validate_roster(&settings(iroh.clone()), &runtime)
             .expect("matching local endpoint and exact remote ticket");
 
         let mut duplicate_ticket = iroh.clone();
         duplicate_ticket
             .static_tickets
             .push(remote_node.endpoint_ticket().to_string());
-        let duplicate =
-            iroh_runtime::validate_federation_roster(&settings(duplicate_ticket), Some(&runtime))
-                .expect_err("duplicate static tickets must fail closed");
+        let duplicate = validate_roster(&settings(duplicate_ticket), &runtime)
+            .expect_err("duplicate static tickets must fail closed");
         assert!(duplicate.to_string().contains("duplicate endpoint ticket"));
 
         let mismatched_endpoint = cdk_iroh::SecretKey::generate().public();
@@ -4722,7 +4880,7 @@ engine = "sqlite"
             .expect("mismatched private config JSON"),
         )
         .expect("mismatched private config should be written");
-        let mismatch = iroh_runtime::validate_federation_roster(&settings(iroh), Some(&runtime))
+        let mismatch = validate_roster(&settings(iroh), &runtime)
             .expect_err("the local Iroh URL must bind to the protected endpoint key");
         assert!(
             mismatch
@@ -4782,7 +4940,7 @@ engine = "sqlite"
         };
         let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
 
-        let err = configure_federation(&settings, MintBuilder::new(localstore))
+        let err = configure_federation_from_settings(&settings, MintBuilder::new(localstore))
             .expect_err("one-member federation must fail before router startup");
 
         assert!(
@@ -4981,9 +5139,6 @@ engine = "sqlite"
                 enabled: true,
                 onchain_wallet: config::FederationOnchainWallet {
                     enabled: true,
-                    network: Some("regtest".to_string()),
-                    minimum_confirmations: Some(1),
-                    fee_policy_version: Some(1),
                     chain_source_type: "esplora".to_string(),
                     esplora_url: Some("http://127.0.0.1:3002".to_string()),
                     ..config::FederationOnchainWallet::default()
@@ -5164,7 +5319,7 @@ engine = "sqlite"
             }),
             ..Default::default()
         };
-        assert!(federation_dkg_auto_start_config(&settings)
+        assert!(FederationStartup::load(&settings)
             .expect_err("DKG requires federation mode")
             .to_string()
             .contains("federation.enabled=true"));
@@ -5180,7 +5335,7 @@ engine = "sqlite"
             }),
             ..Default::default()
         };
-        assert!(federation_dkg_auto_start_config(&settings)
+        assert!(FederationStartup::load(&settings)
             .expect_err("DKG requires a certified manifest")
             .to_string()
             .contains("setup_config_path"));
@@ -5253,7 +5408,7 @@ engine = "sqlite"
                 }),
                 ..Default::default()
             };
-            let err = federation_dkg_auto_start_config(&settings).expect_err(label);
+            let err = FederationStartup::load(&settings).expect_err(label);
             assert!(
                 err.to_string().contains(expected),
                 "{label} should mention {expected}: {err}"
@@ -5305,7 +5460,7 @@ engine = "sqlite"
         };
         let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
         let builder = MintBuilder::new(localstore);
-        let err = configure_federation(&settings, builder)
+        let err = configure_federation_from_settings(&settings, builder)
             .expect_err("implicit payment-observation policy should fail startup");
 
         assert!(
@@ -5360,7 +5515,7 @@ engine = "sqlite"
         };
         let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
         let builder = MintBuilder::new(localstore);
-        let err = configure_federation(&settings, builder)
+        let err = configure_federation_from_settings(&settings, builder)
             .expect_err("development payment policy without override should fail startup");
 
         assert!(
@@ -5387,8 +5542,8 @@ engine = "sqlite"
         };
         let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
         let builder = MintBuilder::new(localstore);
-        let builder =
-            configure_federation(&settings, builder).expect("dev override should allow startup");
+        let builder = configure_federation_from_settings(&settings, builder)
+            .expect("dev override should allow startup");
 
         assert_eq!(builder.federation_mode(), FederationMode::Member);
 
@@ -5438,7 +5593,7 @@ engine = "sqlite"
         let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
         let builder = MintBuilder::new(localstore);
 
-        let err = configure_federation(&settings, builder)
+        let err = configure_federation_from_settings(&settings, builder)
             .expect_err("permissive private config must fail startup");
         assert!(
             err.to_string()
@@ -5474,7 +5629,7 @@ engine = "sqlite"
         };
         let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
         let builder = MintBuilder::new(localstore);
-        let err = configure_federation(&settings, builder)
+        let err = configure_federation_from_settings(&settings, builder)
             .expect_err("enabled federation without paths should fail");
 
         assert!(
@@ -5572,7 +5727,7 @@ engine = "sqlite"
             };
             let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
             let builder = MintBuilder::new(localstore);
-            let err = configure_federation(&settings, builder)
+            let err = configure_federation_from_settings(&settings, builder)
                 .expect_err("invalid federation keyset should fail startup");
 
             assert!(

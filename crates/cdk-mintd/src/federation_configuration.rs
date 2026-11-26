@@ -1,8 +1,6 @@
 //! Federation configuration loading and startup validation.
 
 use std::path::{Path, PathBuf};
-#[cfg(feature = "federation-bark")]
-use std::str::FromStr;
 
 use anyhow::{anyhow, bail, Context, Result};
 use cdk::mint::FederationRuntimeConfig;
@@ -23,89 +21,130 @@ use crate::cli::CLIArgs;
 use crate::config::PaymentBackendType;
 use crate::{config, get_work_directory, load_stored_settings};
 
-pub(crate) fn configure_federation(
-    settings: &config::Settings,
-    mint_builder: MintBuilder,
-) -> Result<MintBuilder> {
-    let Some(federation) = settings.federation.as_ref() else {
-        return Ok(mint_builder);
-    };
-
-    if !federation.enabled {
-        return Ok(mint_builder);
-    }
-
-    let runtime_config = configured_federation_runtime(settings)?;
-    let public_config = runtime_config.public_config();
-    validate_federation_threshold_startup_policy(
-        public_config,
-        federation.allow_development_payment_observation_policy,
-    )?;
-    #[cfg(feature = "federation-bdk")]
-    validate_federated_bdk_startup(settings, public_config)?;
-    #[cfg(feature = "federation-bark")]
-    validate_federated_bark_startup(settings, public_config)?;
-    warn_federated_wallet_startup_risks(federation, public_config);
-    validate_federation_setup_method_startup_policy(public_config)?;
-    validate_federation_payment_observation_startup_policy(
-        public_config,
-        federation.allow_development_payment_observation_policy,
-    )?;
-
-    tracing::info!(
-        "Loaded federation {} as member {} using AlephBFT consensus",
-        runtime_config.federation_id(),
-        runtime_config.member_id()
-    );
-
-    Ok(mint_builder.with_federation_config(runtime_config))
+/// The federation member configuration, read and validated once at startup.
+///
+/// Startup passes this one value to every step that needs the member's
+/// federation config: restore validation, the DKG lifecycle, the mint
+/// builder, transport and roster checks, and the node's runtime.
+#[derive(Debug)]
+pub(crate) struct FederationStartup {
+    /// This member's public and private federation config.
+    pub(crate) runtime: FederationRuntimeConfig,
+    /// The certified DKG ceremony to run while `federation.dkg` is enabled.
+    pub(crate) dkg: Option<cdk_axum::FederationDkgAutoStartConfig>,
 }
 
-pub(crate) fn configured_federation_runtime(
-    settings: &config::Settings,
-) -> Result<FederationRuntimeConfig> {
-    let federation = settings
-        .federation
-        .as_ref()
-        .ok_or_else(|| anyhow!("federation settings are missing"))?;
-    if federation.dkg.enabled {
-        if federation.public_config_path.is_some() || federation.private_config_path.is_some() {
-            bail!(
-                "certified DKG startup uses federation.setup_config_path, not raw public/private federation config paths"
-            );
+impl FederationStartup {
+    /// Read and validate the member's federation config; `None` for a
+    /// standalone mint.
+    pub(crate) fn load(settings: &config::Settings) -> Result<Option<Self>> {
+        let Some(federation) = settings.federation.as_ref() else {
+            return Ok(None);
+        };
+        if !federation.enabled {
+            if federation.dkg.enabled {
+                bail!("federation.dkg.enabled requires federation.enabled=true");
+            }
+            return Ok(None);
         }
-        let setup_config_path = federation.setup_config_path.as_deref().ok_or_else(|| {
-            anyhow!("federation.setup_config_path must be set when DKG is enabled")
-        })?;
-        let handoff = load_certified_dkg_handoff(setup_config_path)?;
-        return FederationRuntimeConfig::new(handoff.public_config, handoff.private_config)
-            .context("invalid manifest-derived federation runtime config");
+        let startup = match federation.dkg.enabled {
+            true => {
+                let driver = federation_dkg_driver_config(&federation.dkg)?;
+                if federation.public_config_path.is_some()
+                    || federation.private_config_path.is_some()
+                {
+                    bail!(
+                        "certified DKG startup uses federation.setup_config_path, not raw public/private federation config paths"
+                    );
+                }
+                let setup_config_path =
+                    federation.setup_config_path.as_deref().ok_or_else(|| {
+                        anyhow!("federation.setup_config_path must be set when DKG is enabled")
+                    })?;
+                let handoff = load_certified_dkg_handoff(setup_config_path)?;
+                let dkg = cdk_axum::FederationDkgAutoStartConfig::from_manifest(
+                    &handoff.manifest,
+                    handoff.url_policy,
+                    driver,
+                )?;
+                let runtime =
+                    FederationRuntimeConfig::new(handoff.public_config, handoff.private_config)
+                        .context("invalid manifest-derived federation runtime config")?;
+                Self {
+                    runtime,
+                    dkg: Some(dkg),
+                }
+            }
+            false => {
+                if federation.setup_config_path.is_some() {
+                    bail!(
+                        "federation.setup_config_path is only valid while certified DKG is enabled"
+                    );
+                }
+                let public_config_path =
+                    federation.public_config_path.as_deref().ok_or_else(|| {
+                        anyhow!(
+                            "federation.public_config_path must be set when federation is enabled"
+                        )
+                    })?;
+                let private_config_path =
+                    federation.private_config_path.as_deref().ok_or_else(|| {
+                        anyhow!(
+                            "federation.private_config_path must be set when federation is enabled"
+                        )
+                    })?;
+                let public_config = read_public_federation_config(public_config_path)?;
+                validate_private_federation_config_file(private_config_path)?;
+                let private_config: MemberConfigPrivate =
+                    read_federation_json(private_config_path, "private federation config")?;
+                let runtime = FederationRuntimeConfig::new(public_config, private_config)
+                    .context("invalid federation runtime config")?;
+                Self { runtime, dkg: None }
+            }
+        };
+        let public_config = startup.runtime.public_config();
+        validate_federation_threshold_startup_policy(
+            public_config,
+            federation.allow_development_payment_observation_policy,
+        )?;
+        #[cfg(feature = "federation-bdk")]
+        validate_federated_bdk_startup(settings, public_config)?;
+        #[cfg(feature = "federation-bark")]
+        validate_federated_bark_startup(settings, public_config)?;
+        warn_federated_wallet_startup_risks(federation, public_config);
+        validate_federation_setup_method_startup_policy(public_config)?;
+        validate_federation_payment_observation_startup_policy(
+            public_config,
+            federation.allow_development_payment_observation_policy,
+        )?;
+        Ok(Some(startup))
     }
-    if federation.setup_config_path.is_some() {
-        bail!("federation.setup_config_path is only valid while certified DKG is enabled");
-    }
-    let public_config_path = federation.public_config_path.as_deref().ok_or_else(|| {
-        anyhow!("federation.public_config_path must be set when federation is enabled")
-    })?;
-    let private_config_path = federation.private_config_path.as_deref().ok_or_else(|| {
-        anyhow!("federation.private_config_path must be set when federation is enabled")
-    })?;
-    let public_config = read_public_federation_config(public_config_path)?;
-    validate_private_federation_config_file(private_config_path)?;
-    let private_config: MemberConfigPrivate =
-        read_federation_json(private_config_path, "private federation config")?;
-    FederationRuntimeConfig::new(public_config, private_config)
-        .context("invalid federation runtime config")
+}
+
+/// Attach the member's federation config to the mint.
+pub(crate) fn configure_federation(
+    federation: Option<&FederationStartup>,
+    mint_builder: MintBuilder,
+) -> MintBuilder {
+    let Some(federation) = federation else {
+        return mint_builder;
+    };
+    tracing::info!(
+        "Loaded federation {} as member {} using AlephBFT consensus",
+        federation.runtime.federation_id(),
+        federation.runtime.member_id()
+    );
+    mint_builder.with_federation_config(federation.runtime.clone())
 }
 
 #[cfg(all(feature = "federation", not(feature = "iroh")))]
-pub(crate) fn validate_federation_transport_build(settings: &config::Settings) -> Result<()> {
-    let Some(federation) = settings.federation.as_ref().filter(|value| value.enabled) else {
+pub(crate) fn validate_federation_transport_build(
+    federation: Option<&FederationStartup>,
+) -> Result<()> {
+    let Some(federation) = federation else {
         return Ok(());
     };
-    let _ = federation;
-    let runtime = configured_federation_runtime(settings)?;
-    for member in runtime.public_config().members.values() {
+    for member in federation.runtime.public_config().members.values() {
         if [&member.public_mint_url, &member.federation_api_url]
             .iter()
             .any(|url| url.to_string().starts_with("iroh://"))
@@ -146,26 +185,6 @@ pub(crate) fn validate_federated_bark_startup(
     }
     let application = cdk_federation_bark::federation_bark_application(public_config)?
         .ok_or_else(|| anyhow!("federated Bark requires an accepted Bark FROST application"))?;
-    let network = federation
-        .bark
-        .network
-        .as_deref()
-        .ok_or_else(|| anyhow!("federation.bark.network must be explicitly configured"))?;
-    if parse_federation_bitcoin_network(network)? != application.network {
-        bail!("federation.bark.network differs from the accepted Bark application");
-    }
-    let ark_server = federation
-        .bark
-        .ark_server_public_key
-        .as_deref()
-        .ok_or_else(|| {
-            anyhow!("federation.bark.ark_server_public_key must be explicitly configured")
-        })?;
-    let ark_server = cdk::secp256k1::PublicKey::from_str(ark_server)
-        .context("invalid federation.bark.ark_server_public_key")?;
-    if ark_server.serialize() != application.ark_server_public_key {
-        bail!("federation.bark.ark_server_public_key differs from the accepted Bark application");
-    }
     if application.policy.receive_base_fee_sat != 0
         || application.policy.receive_fee_ppm != 0
         || application.policy.receive_anti_dos != FederationBarkReceiveAntiDosPolicy::NoProof
@@ -262,38 +281,9 @@ pub(crate) fn validate_federated_bdk_startup(
         .cdk_onchain_application
         .as_ref()
         .ok_or_else(|| anyhow!("federated-bdk requires the CDK on-chain FROST application"))?;
-    let network = wallet.network.as_deref().ok_or_else(|| {
-        anyhow!("federation.onchain_wallet.network must be explicitly configured")
-    })?;
-    let network = parse_federation_bitcoin_network(network)?;
-    let minimum_confirmations = wallet.minimum_confirmations.ok_or_else(|| {
-        anyhow!("federation.onchain_wallet.minimum_confirmations must be explicitly configured")
-    })?;
-    let fee_policy_version = wallet.fee_policy_version.ok_or_else(|| {
-        anyhow!("federation.onchain_wallet.fee_policy_version must be explicitly configured")
-    })?;
-    if network != application.network
-        || minimum_confirmations != application.confirmation_policy.minimum_confirmations
-        || fee_policy_version != application.fee_policy_version
-    {
-        bail!(
-            "federation.onchain_wallet network, confirmation policy, or fee policy differs from the active consensus application"
-        );
-    }
-    cdk::mint::FederationOnchainTransactionPolicy::for_version(fee_policy_version)?;
+    cdk::mint::FederationOnchainTransactionPolicy::for_version(application.fee_policy_version)?;
     federation_chain_source(wallet)?;
     Ok(())
-}
-
-#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
-pub(crate) fn parse_federation_bitcoin_network(value: &str) -> Result<bitcoin::Network> {
-    match value.to_ascii_lowercase().as_str() {
-        "mainnet" | "bitcoin" => Ok(bitcoin::Network::Bitcoin),
-        "testnet" => Ok(bitcoin::Network::Testnet),
-        "signet" => Ok(bitcoin::Network::Signet),
-        "regtest" => Ok(bitcoin::Network::Regtest),
-        network => bail!("unknown federation.onchain_wallet.network {network}"),
-    }
 }
 
 pub(crate) fn validate_federation_setup_method_startup_policy(
@@ -745,74 +735,49 @@ pub(crate) fn federation_chain_source(
     Ok(chain_source)
 }
 
-pub(crate) fn federation_dkg_auto_start_config(
-    settings: &config::Settings,
-) -> Result<Option<cdk_axum::FederationDkgAutoStartConfig>> {
-    let Some(federation) = settings.federation.as_ref() else {
-        return Ok(None);
-    };
-    if !federation.dkg.enabled {
-        return Ok(None);
-    }
-    if !federation.enabled {
-        bail!("federation.dkg.enabled requires federation.enabled=true");
-    }
-    if federation.dkg.max_ticks == 0 {
+fn federation_dkg_driver_config(
+    dkg: &config::FederationDkg,
+) -> Result<cdk_axum::FederationDkgDriverRunConfig> {
+    if dkg.max_ticks == 0 {
         bail!("federation.dkg.max_ticks must be greater than zero");
     }
-    if federation.dkg.retry_delay_ms == 0 {
+    if dkg.retry_delay_ms == 0 {
         bail!("federation.dkg.retry_delay_ms must be greater than zero");
     }
-    if federation.dkg.ceremony_timeout_secs == 0 {
+    if dkg.ceremony_timeout_secs == 0 {
         bail!("federation.dkg.ceremony_timeout_secs must be greater than zero");
     }
-    if !(1..=64).contains(&federation.dkg.member_request_burst) {
+    if !(1..=64).contains(&dkg.member_request_burst) {
         bail!("federation.dkg.member_request_burst must be between 1 and 64");
     }
-    if federation.dkg.member_request_refill_ms < 10 {
+    if dkg.member_request_refill_ms < 10 {
         bail!("federation.dkg.member_request_refill_ms must be at least 10");
     }
-    let setup_config_path = federation
-        .setup_config_path
-        .as_deref()
-        .ok_or_else(|| anyhow!("federation.setup_config_path must be set when DKG is enabled"))?;
-    let handoff = load_certified_dkg_handoff(setup_config_path)?;
-    let driver = cdk_axum::FederationDkgDriverRunConfig {
-        max_ticks: federation.dkg.max_ticks,
-        retry_delay: std::time::Duration::from_millis(federation.dkg.retry_delay_ms),
-        ceremony_timeout: std::time::Duration::from_secs(federation.dkg.ceremony_timeout_secs),
+    Ok(cdk_axum::FederationDkgDriverRunConfig {
+        max_ticks: dkg.max_ticks,
+        retry_delay: std::time::Duration::from_millis(dkg.retry_delay_ms),
+        ceremony_timeout: std::time::Duration::from_secs(dkg.ceremony_timeout_secs),
         secret_share_transport:
             cdk_axum::FederationDkgSecretShareTransportPolicy::RequireSecureTransport,
-        member_request_burst: federation.dkg.member_request_burst,
+        member_request_burst: dkg.member_request_burst,
         member_request_refill_interval: std::time::Duration::from_millis(
-            federation.dkg.member_request_refill_ms,
+            dkg.member_request_refill_ms,
         ),
-    };
-    cdk_axum::FederationDkgAutoStartConfig::from_manifest(
-        &handoff.manifest,
-        handoff.url_policy,
-        driver,
-    )
-    .map(Some)
-    .map_err(anyhow::Error::from)
+    })
 }
 
 pub(crate) async fn reconcile_federation_dkg_ceremony(
-    settings: &config::Settings,
+    federation: Option<&FederationStartup>,
     localstore: &DynMintDatabase,
 ) -> Result<()> {
-    let Some(start_config) = federation_dkg_auto_start_config(settings)? else {
+    let Some((runtime_config, start_config)) = federation.and_then(|federation| {
+        federation
+            .dkg
+            .as_ref()
+            .map(|dkg| (&federation.runtime, dkg))
+    }) else {
         return Ok(());
     };
-    let federation = settings
-        .federation
-        .as_ref()
-        .expect("enabled DKG config includes federation settings");
-    let runtime_config = configured_federation_runtime(settings)?;
-    validate_federation_threshold_startup_policy(
-        runtime_config.public_config(),
-        federation.allow_development_payment_observation_policy,
-    )?;
     let desired = FederationDkgCeremonyRecord::active(
         runtime_config.federation_id(),
         runtime_config.public_config().setup_authorization,

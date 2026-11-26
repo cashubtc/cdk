@@ -18,7 +18,7 @@ use cdk_common::nuts::nut01::{evaluate_secret_key_coefficients, BlsSecretKey};
 use cdk_common::{Amount, CurrencyUnit, SecretKey};
 use cdk_federation::setup::ceremony::{publish_final_config_pair, FinalConfigExportFault};
 use cdk_federation::setup::finalize::write_final_config_file;
-#[cfg(feature = "federation-bark")]
+#[cfg(all(feature = "federation-bdk", feature = "federation-bark"))]
 use cdk_federation_bark::{
     federation_bark_application, federation_bark_recovery_application, FederationBarkPolicyConfig,
 };
