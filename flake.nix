@@ -1788,6 +1788,35 @@
 
             # FFI Python tests
             ffi-tests = ffiTests;
+          }
+          # Tests that need a live PostgreSQL server. The server runs inside the
+          # build sandbox, whose private network namespace keeps its fixed port
+          # from colliding with other builds; that isolation is Linux-only.
+          // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+            postgres-tests = craneLib.mkCargoDerivation (
+              commonCraneArgs
+              // {
+                pname = "cdk-postgres-tests";
+                cargoArtifacts = workspaceDepsCi;
+                nativeBuildInputs = commonCraneArgs.nativeBuildInputs ++ [
+                  startPostgres
+                  stopPostgres
+                ];
+                CDK_MINTD_DATABASE_URL = "postgresql://${postgresConf.pgUser}:${postgresConf.pgPassword}@localhost:${postgresConf.pgPort}/${postgresConf.pgDatabase}";
+                buildPhaseCargoCommand = ''
+                  cargo clippy --profile ci -p cdk-postgres -- -D warnings
+                  start-postgres
+                  cargo test --profile ci -p cdk-postgres -- --test-threads 8
+                  cargo test --profile ci -p cdk-integration-tests --test signatory_rotation
+                  stop-postgres
+                '';
+                # Unsandboxed builds would otherwise leave the server running.
+                failureHook = "stop-postgres || true";
+                doCheck = false;
+                installPhaseCommand = "mkdir -p $out";
+                doInstallCargoArtifacts = false;
+              }
+            );
           };
 
         devShells =
