@@ -343,7 +343,8 @@ async fn sustained_dkg_member_rate_limit_preserves_fairness_and_retry() {
         crate::federation_dkg_member_admission(
             &public_config,
             1,
-            std::time::Duration::from_millis(10),
+            // Long enough that request handling under load never spans a refill.
+            std::time::Duration::from_secs(2),
         ),
     ));
     let first_commitment = dkg_commitment_request(&public_config, first_peer.member_id, 21);
@@ -389,7 +390,7 @@ async fn sustained_dkg_member_rate_limit_preserves_fairness_and_retry() {
     assert_eq!(sequences.get(&first_peer.member_id), Some(&1));
     assert_eq!(sequences.get(&second_peer.member_id), Some(&1));
 
-    tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(2_100)).await;
     let _ = post_dkg_commitment(State(state.clone()), Json(limited_retry))
         .await
         .expect("same request is retryable after token refill");
