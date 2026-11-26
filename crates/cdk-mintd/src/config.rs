@@ -1541,9 +1541,11 @@ pub struct FederationBarkWallet {
     pub receive_secret_database_path: Option<PathBuf>,
     /// Durable FROST protocol storage root required by custody workers.
     ///
-    /// Holds the FROST nonce stores (`frost-nonces/`). Exclude this directory
-    /// from backups and never restore it: a restored nonce store can reuse
-    /// nonces and leak the member's key share. Delete it instead if lost.
+    /// Startup only checks that this directory exists. The FROST nonce stores
+    /// are not kept here: they live in `<work-dir>/federation-wallet/frost-nonces/`
+    /// when the on-chain wallet is configured, otherwise in
+    /// `<data_directory>/frost-signing/frost-nonces/`. Those must never be
+    /// restored from a backup; see `docs/federation/operations.md`.
     pub frost_protocol_storage_root: Option<PathBuf>,
     /// Hex-encoded 64-byte operational seed, never used for VTXO custody.
     pub operational_seed_hex: Option<String>,

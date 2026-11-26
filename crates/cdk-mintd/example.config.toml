@@ -427,7 +427,8 @@ max_delay_time = 3
 
 # [federation]
 # Set to true to run this mint as a federation member.
-# The public/private JSON files are produced by the trusted-dealer setup path.
+# The public/private JSON files are produced by `federation setup activate`
+# (the trusted-dealer command produces them only in test builds).
 # enabled = false
 # Federation consensus always uses AlephBFT.
 # Keep false for production. Set true only for local smoke/regtest configs
