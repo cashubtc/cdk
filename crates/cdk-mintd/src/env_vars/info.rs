@@ -87,6 +87,15 @@ impl Info {
             }
         }
 
+        if let Ok(timeout) = env::var(ENV_SHUTDOWN_TIMEOUT_SECONDS) {
+            match timeout.parse() {
+                Ok(seconds) => self.shutdown_timeout_seconds = Some(seconds),
+                Err(err) => tracing::warn!(
+                    "Invalid {ENV_SHUTDOWN_TIMEOUT_SECONDS} '{timeout}' in environment variable: {err}"
+                ),
+            }
+        }
+
         // Logging configuration
         if let Ok(output_str) = env::var(ENV_LOGGING_OUTPUT) {
             if let Ok(output) = LoggingOutput::from_str(&output_str) {

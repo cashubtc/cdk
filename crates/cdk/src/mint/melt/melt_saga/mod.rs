@@ -199,13 +199,29 @@ impl MeltSaga<Initial> {
     /// - `PaidQuote`: Quote has already been paid
     /// - `TokenAlreadySpent`: Input proofs have already been spent
     /// - `UnitMismatch`: Input unit doesn't match quote unit
-    #[instrument(skip_all)]
+    #[cfg(test)]
     pub async fn setup_melt(
         self,
         melt_request: &MeltRequest<QuoteId>,
         input_verification: Verification,
         payment_method: cdk_common::PaymentMethod,
     ) -> Result<MeltSaga<SetupComplete>, Error> {
+        self.setup_with_lease(melt_request, input_verification, payment_method, |_| ())
+            .await
+            .map(|(saga, ())| saga)
+    }
+
+    #[instrument(skip_all)]
+    pub(super) async fn setup_with_lease<F, T>(
+        self,
+        melt_request: &MeltRequest<QuoteId>,
+        input_verification: Verification,
+        payment_method: cdk_common::PaymentMethod,
+        own_lease: F,
+    ) -> Result<(MeltSaga<SetupComplete>, T), Error>
+    where
+        F: FnOnce(&cdk_common::mint::MeltQuote) -> T,
+    {
         let (input_amount, input_ys) = input_verification.into_parts();
         let input_unit = Some(input_amount.unit().clone());
 
@@ -407,6 +423,9 @@ impl MeltSaga<Initial> {
             return Err(err.into());
         }
 
+        // Arm cleanup before submitting the commit. Cancellation can race
+        // the database acknowledging a lease it has already persisted.
+        let lease = own_lease(&quote);
         tx.commit().await?;
 
         tracing::info!(
@@ -444,22 +463,26 @@ impl MeltSaga<Initial> {
         // Transition to SetupComplete state
         // Extract inner MeltQuote from Acquired wrapper - the lock was only meaningful
         // within the transaction that just committed
-        Ok(MeltSaga {
-            mint: self.mint,
-            db: self.db,
-            pubsub: self.pubsub,
-            compensations: self.compensations,
-            operation_id: self.operation_id,
-            #[cfg(feature = "prometheus")]
-            metrics: self.metrics,
-            state_data: SetupComplete {
-                quote: quote.inner(),
+        Ok((
+            MeltSaga {
+                mint: self.mint,
+                db: self.db,
+                pubsub: self.pubsub,
+                compensations: self.compensations,
+                operation_id: self.operation_id,
+                #[cfg(feature = "prometheus")]
+                metrics: self.metrics,
+                state_data: SetupComplete {
+                    quote: quote.inner(),
+                },
             },
-        })
+            lease,
+        ))
     }
 }
 
 impl MeltSaga<SetupComplete> {
+    #[cfg(test)]
     pub(crate) fn lease_quote(&self) -> &cdk_common::mint::MeltQuote {
         &self.state_data.quote
     }

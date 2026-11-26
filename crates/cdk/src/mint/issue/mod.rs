@@ -1117,6 +1117,7 @@ impl Mint {
                         pubsub_manager.mint_quote_issue(mint_quote, mint_quote.amount_issued());
                     }
                 }
+                Ok(())
             });
 
             Ok(MintResponse {

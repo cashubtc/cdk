@@ -1005,7 +1005,32 @@ impl Mint {
         // Admit the melt before it reserves anything. The permit moves into
         // the completion task, so the mint owns the melt until it ends.
         let permit = self.operations.admit()?;
+        let closing = permit.closing();
 
+        let mint = Arc::clone(self);
+        let request = melt_request.clone();
+        let (ready, pending) = tokio::sync::oneshot::channel();
+        let completion = super::tasks::Operations::spawn(permit, async move {
+            mint.run_melt(&request, closing, ready).await
+        });
+        match pending.await {
+            Ok(response) => Ok(PendingMelt {
+                response,
+                completion,
+            }),
+            Err(_) => Err(match completion.await {
+                Ok(Err(err)) => err,
+                _ => Error::Internal,
+            }),
+        }
+    }
+
+    async fn run_melt(
+        self: &Arc<Self>,
+        melt_request: &MeltRequest<QuoteId>,
+        closing: tokio_util::sync::CancellationToken,
+        ready: tokio::sync::oneshot::Sender<MeltQuoteResponse<QuoteId>>,
+    ) -> Result<MeltQuoteResponse<QuoteId>, Error> {
         // Check max outputs limit (if change outputs are provided)
         if let Some(outputs) = melt_request.outputs() {
             let outputs_count = outputs.len();
@@ -1046,232 +1071,238 @@ impl Mint {
         );
 
         // Step 1: Setup (TX1 - reserves inputs and outputs)
-        let setup_saga = init_saga
-            .setup_melt(melt_request, verification, quote.payment_method.clone())
+        let (setup_saga, mut lease) = init_saga
+            .setup_with_lease(
+                melt_request,
+                verification,
+                quote.payment_method.clone(),
+                |quote| {
+                    let mut lease = lease::MeltLease::owned(self.localstore.clone(), quote);
+                    lease.track_cleanup(self.operations.clone());
+                    lease
+                },
+            )
             .await?;
-
-        let mut lease = lease::MeltLease::owned(self.localstore.clone(), setup_saga.lease_quote());
-        let melt_request_owned = melt_request.clone();
         let quote_id_for_log = quote_id.clone();
         let localstore = self.localstore();
         let pubsub = self.pubsub_manager();
         let signatory = self.signatory.clone();
 
         let quote_for_spawn = quote.clone();
-        let completion = super::tasks::Operations::spawn(permit, async move {
-            tracing::debug!(
-                "Starting background melt completion for quote: {}",
-                quote_id_for_log
-            );
+        let mut pending = quote;
+        pending.state = MeltQuoteState::Pending;
+        let _ = ready.send(pending.into_response(None));
 
-            let payment_outcome = lease
-                .run(async {
-                    let (setup_saga, settlement) = setup_saga
-                        .attempt_internal_settlement(&melt_request_owned)
-                        .await?;
-                    setup_saga.make_payment(settlement).await
-                })
-                .await;
+        tracing::debug!(
+            "Starting background melt completion for quote: {}",
+            quote_id_for_log
+        );
 
-            let result = match payment_outcome {
-                Ok(PaymentOutcome::Confirmed(payment_saga)) => {
-                    lease.run(payment_saga.finalize()).await
-                }
-                Ok(PaymentOutcome::Pending {
-                    #[cfg(feature = "prometheus")]
-                    metrics,
-                }) => {
-                    lease.release().await;
-                    drop(active_melt_guard);
-                    let result = async {
-                        // Wait for the background task to complete the payment
-                        let kind = match quote_for_spawn.payment_method {
-                            PaymentMethod::Known(KnownMethod::Bolt11) => Kind::Bolt11MeltQuote,
-                            PaymentMethod::Known(KnownMethod::Bolt12) => Kind::Bolt12MeltQuote,
-                            PaymentMethod::Known(KnownMethod::Onchain) => Kind::OnchainMeltQuote,
-                            PaymentMethod::Custom(ref method) => {
-                                Kind::Custom(format!("{}_melt_quote", method))
-                            }
+        let payment_outcome = lease
+            .run(async {
+                let (setup_saga, settlement) =
+                    setup_saga.attempt_internal_settlement(melt_request).await?;
+                setup_saga.make_payment(settlement).await
+            })
+            .await;
+
+        let result = match payment_outcome {
+            Ok(PaymentOutcome::Confirmed(payment_saga)) => lease.run(payment_saga.finalize()).await,
+            Ok(PaymentOutcome::Pending {
+                #[cfg(feature = "prometheus")]
+                metrics,
+            }) => {
+                lease.release().await;
+                drop(active_melt_guard);
+                let settlement = async {
+                    // Wait for the background task to complete the payment
+                    let kind = match quote_for_spawn.payment_method {
+                        PaymentMethod::Known(KnownMethod::Bolt11) => Kind::Bolt11MeltQuote,
+                        PaymentMethod::Known(KnownMethod::Bolt12) => Kind::Bolt12MeltQuote,
+                        PaymentMethod::Known(KnownMethod::Onchain) => Kind::OnchainMeltQuote,
+                        PaymentMethod::Custom(ref method) => {
+                            Kind::Custom(format!("{}_melt_quote", method))
+                        }
+                    };
+
+                    let sub_id = crate::subscription::SubId::from(format!(
+                        "melt_sync_wait_{}",
+                        quote_id_for_log
+                    ));
+                    let params = Params {
+                        id: Arc::new(sub_id),
+                        kind,
+                        filters: vec![quote_id_for_log.to_string()],
+                    };
+
+                    let mut sub = match pubsub.subscribe(params) {
+                        Ok(sub) => sub,
+                        Err(_err) => return Err(Error::Internal),
+                    };
+
+                    let start = tokio::time::Instant::now();
+
+                    loop {
+                        if let Some(response) = Self::load_settled_melt_response(
+                            &localstore,
+                            &signatory,
+                            &quote_id_for_log,
+                        )
+                        .await?
+                        {
+                            return Ok(response);
+                        }
+
+                        if start.elapsed() >= pending_melt_wait_timeout() {
+                            return Err(Error::PendingMeltTimeout {
+                                last_backend_error: None,
+                            });
+                        }
+
+                        let Ok(maybe_event) = tokio::time::timeout(
+                            pending_melt_notification_wait_interval(),
+                            sub.recv(),
+                        )
+                        .await
+                        else {
+                            continue;
                         };
 
-                        let sub_id = crate::subscription::SubId::from(format!(
-                            "melt_sync_wait_{}",
-                            quote_id_for_log
-                        ));
-                        let params = Params {
-                            id: Arc::new(sub_id),
-                            kind,
-                            filters: vec![quote_id_for_log.to_string()],
-                        };
-
-                        let mut sub = match pubsub.subscribe(params) {
-                            Ok(sub) => sub,
-                            Err(_err) => return Err(Error::Internal),
-                        };
-
-                        let start = tokio::time::Instant::now();
-
-                        loop {
-                            if let Some(response) = Self::load_settled_melt_response(
-                                &localstore,
-                                &signatory,
-                                &quote_id_for_log,
-                            )
-                            .await?
-                            {
-                                return Ok(response);
-                            }
-
-                            if start.elapsed() >= pending_melt_wait_timeout() {
-                                return Err(Error::PendingMeltTimeout {
-                                    last_backend_error: None,
-                                });
-                            }
-
-                            let Ok(maybe_event) = tokio::time::timeout(
-                                pending_melt_notification_wait_interval(),
-                                sub.recv(),
-                            )
-                            .await
-                            else {
-                                continue;
+                        if let Some(event) = maybe_event {
+                            let (event_quote_id, state) = match event.into_inner() {
+                                NotificationPayload::MeltQuoteBolt11Response(r) => {
+                                    (r.quote, r.state)
+                                }
+                                NotificationPayload::MeltQuoteBolt12Response(r) => {
+                                    (r.quote, r.state)
+                                }
+                                NotificationPayload::CustomMeltQuoteResponse(_, r) => {
+                                    (r.quote, r.state)
+                                }
+                                // Onchain is the one method where the subscription
+                                // fast-path is most valuable, because confirmation is
+                                // inherently asynchronous. We subscribe to
+                                // `OnchainMeltQuote` events above (see `Kind` mapping)
+                                // and must handle them here; otherwise onchain waiters
+                                // would rely solely on the
+                                // explicit quote-check path.
+                                NotificationPayload::MeltQuoteOnchainResponse(r) => {
+                                    (r.quote, r.state)
+                                }
+                                _ => continue,
                             };
 
-                            if let Some(event) = maybe_event {
-                                let (event_quote_id, state) = match event.into_inner() {
-                                    NotificationPayload::MeltQuoteBolt11Response(r) => {
-                                        (r.quote, r.state)
-                                    }
-                                    NotificationPayload::MeltQuoteBolt12Response(r) => {
-                                        (r.quote, r.state)
-                                    }
-                                    NotificationPayload::CustomMeltQuoteResponse(_, r) => {
-                                        (r.quote, r.state)
-                                    }
-                                    // Onchain is the one method where the subscription
-                                    // fast-path is most valuable, because confirmation is
-                                    // inherently asynchronous. We subscribe to
-                                    // `OnchainMeltQuote` events above (see `Kind` mapping)
-                                    // and must handle them here; otherwise onchain waiters
-                                    // would rely solely on the
-                                    // explicit quote-check path.
-                                    NotificationPayload::MeltQuoteOnchainResponse(r) => {
-                                        (r.quote, r.state)
-                                    }
-                                    _ => continue,
+                            if event_quote_id == quote_id_for_log
+                                && state != MeltQuoteState::Pending
+                            {
+                                if let Some(response) = Self::load_settled_melt_response(
+                                    &localstore,
+                                    &signatory,
+                                    &quote_id_for_log,
+                                )
+                                .await?
+                                {
+                                    return Ok(response);
+                                }
+
+                                if start.elapsed() >= pending_melt_wait_timeout() {
+                                    return Err(Error::PendingMeltTimeout {
+                                        last_backend_error: None,
+                                    });
+                                }
+
+                                let Ok(maybe_event) = tokio::time::timeout(
+                                    pending_melt_notification_wait_interval(),
+                                    sub.recv(),
+                                )
+                                .await
+                                else {
+                                    continue;
                                 };
 
-                                if event_quote_id == quote_id_for_log
-                                    && state != MeltQuoteState::Pending
-                                {
-                                    if let Some(response) = Self::load_settled_melt_response(
-                                        &localstore,
-                                        &signatory,
-                                        &quote_id_for_log,
-                                    )
-                                    .await?
-                                    {
-                                        return Ok(response);
-                                    }
-
-                                    if start.elapsed() >= pending_melt_wait_timeout() {
-                                        return Err(Error::PendingMeltTimeout {
-                                            last_backend_error: None,
-                                        });
-                                    }
-
-                                    let Ok(maybe_event) = tokio::time::timeout(
-                                        pending_melt_notification_wait_interval(),
-                                        sub.recv(),
-                                    )
-                                    .await
-                                    else {
-                                        continue;
+                                if let Some(event) = maybe_event {
+                                    let (event_quote_id, state) = match event.into_inner() {
+                                        NotificationPayload::MeltQuoteBolt11Response(r) => {
+                                            (r.quote, r.state)
+                                        }
+                                        NotificationPayload::MeltQuoteBolt12Response(r) => {
+                                            (r.quote, r.state)
+                                        }
+                                        NotificationPayload::CustomMeltQuoteResponse(_, r) => {
+                                            (r.quote, r.state)
+                                        }
+                                        // Onchain is the one method where the subscription
+                                        // fast-path is most valuable, because confirmation is
+                                        // inherently asynchronous. We subscribe to
+                                        // `OnchainMeltQuote` events above (see `Kind` mapping)
+                                        // and must handle them here; otherwise onchain waiters
+                                        // would rely solely on the
+                                        // explicit quote-check path.
+                                        NotificationPayload::MeltQuoteOnchainResponse(r) => {
+                                            (r.quote, r.state)
+                                        }
+                                        _ => continue,
                                     };
 
-                                    if let Some(event) = maybe_event {
-                                        let (event_quote_id, state) = match event.into_inner() {
-                                            NotificationPayload::MeltQuoteBolt11Response(r) => {
-                                                (r.quote, r.state)
-                                            }
-                                            NotificationPayload::MeltQuoteBolt12Response(r) => {
-                                                (r.quote, r.state)
-                                            }
-                                            NotificationPayload::CustomMeltQuoteResponse(_, r) => {
-                                                (r.quote, r.state)
-                                            }
-                                            // Onchain is the one method where the subscription
-                                            // fast-path is most valuable, because confirmation is
-                                            // inherently asynchronous. We subscribe to
-                                            // `OnchainMeltQuote` events above (see `Kind` mapping)
-                                            // and must handle them here; otherwise onchain waiters
-                                            // would rely solely on the
-                                            // explicit quote-check path.
-                                            NotificationPayload::MeltQuoteOnchainResponse(r) => {
-                                                (r.quote, r.state)
-                                            }
-                                            _ => continue,
-                                        };
-
-                                        if event_quote_id == quote_id_for_log
-                                            && state != MeltQuoteState::Pending
+                                    if event_quote_id == quote_id_for_log
+                                        && state != MeltQuoteState::Pending
+                                    {
+                                        if let Some(response) = Self::load_settled_melt_response(
+                                            &localstore,
+                                            &signatory,
+                                            &quote_id_for_log,
+                                        )
+                                        .await?
                                         {
-                                            if let Some(response) =
-                                                Self::load_settled_melt_response(
-                                                    &localstore,
-                                                    &signatory,
-                                                    &quote_id_for_log,
-                                                )
-                                                .await?
-                                            {
-                                                return Ok(response);
-                                            }
+                                            return Ok(response);
                                         }
                                     }
                                 }
                             }
                         }
                     }
-                    .await;
+                };
 
-                    #[cfg(feature = "prometheus")]
-                    if let Some(metrics) = metrics {
-                        metrics.record(result.is_ok());
-                    }
+                // From here this task only waits: the lease is released
+                // and the payment settles through payment events or a
+                // status check. A stopping mint therefore ends the wait
+                // at once instead of draining it. The melt stays pending,
+                // exactly as when the wait times out.
+                let result = tokio::select! {
+                    biased;
+                    _ = closing.cancelled() => Err(Error::PendingMeltTimeout {
+                        last_backend_error: None,
+                    }),
+                    result = settlement => result,
+                };
 
-                    result
+                #[cfg(feature = "prometheus")]
+                if let Some(metrics) = metrics {
+                    metrics.record(result.is_ok());
                 }
-                Err(err) => Err(err),
-            };
-            lease.release().await;
 
-            match &result {
-                Ok(_) => {
-                    tracing::debug!(
-                        "Background melt completed successfully for quote: {}",
-                        quote_id_for_log
-                    );
-                }
-                Err(e) => {
-                    tracing::error!(
-                        "Background melt completion failed for quote {}: {}",
-                        quote_id_for_log,
-                        e
-                    );
-                }
+                result
             }
+            Err(err) => Err(err),
+        };
+        lease.release().await;
 
-            result
-        });
+        match &result {
+            Ok(_) => {
+                tracing::debug!(
+                    "Background melt completed successfully for quote: {}",
+                    quote_id_for_log
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Background melt completion failed for quote {}: {}",
+                    quote_id_for_log,
+                    e
+                );
+            }
+        }
 
-        // Return immediately with the quote in PENDING state and an awaitable completion future.
-        let mut quote_clone = quote.clone();
-        quote_clone.state = MeltQuoteState::Pending;
-        let response = quote_clone.into_response(None);
-
-        Ok(PendingMelt {
-            response,
-            completion,
-        })
+        result
     }
 }

@@ -76,6 +76,7 @@ pub(crate) struct MeltLease {
     committed: Arc<Mutex<bool>>,
     deadline: Instant,
     released: bool,
+    cleanup: Option<crate::mint::tasks::Operations>,
 }
 
 impl MeltLease {
@@ -152,7 +153,12 @@ impl MeltLease {
             committed,
             deadline,
             released: false,
+            cleanup: None,
         }
+    }
+
+    pub(super) fn track_cleanup(&mut self, operations: crate::mint::tasks::Operations) {
+        self.cleanup = Some(operations);
     }
 
     pub(crate) async fn claim(
@@ -262,7 +268,9 @@ impl Drop for MeltLease {
                 let db = self.db.clone();
                 let quote_id = self.quote_id.clone();
                 let owner = self.owner.clone();
+                let permit = self.cleanup.as_ref().map(|operations| operations.track());
                 runtime.spawn(async move {
+                    let _permit = permit;
                     if let Err(err) = release_owner(&db, &quote_id, &owner).await {
                         tracing::warn!("Could not release melt lease for {}: {}", quote_id, err);
                     }

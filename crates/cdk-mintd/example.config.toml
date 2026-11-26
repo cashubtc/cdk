@@ -27,6 +27,12 @@ mnemonic = "env:CDK_MINTD_MNEMONIC"
 # remote [signatory]; that process takes --keyset-refresh-interval-ms instead.
 # keyset_refresh_interval_ms = 5000
 
+# How long, in seconds, a shutdown lets in-flight requests, swaps and melts
+# finish before it aborts them. Defaults to 30. Aborted work is recovered on the
+# next start. Keep it below the stop timeout of your service manager (systemd's
+# TimeoutStopSec defaults to 90 seconds), which otherwise kills the mint first.
+# shutdown_timeout_seconds = 30
+
 [info.quote_ttl]
 # Prefer explicit fields over inline tables for readability and reviewable edits
 mint_ttl = 600
