@@ -110,6 +110,9 @@ pub struct MintInfo {
     /// max length the mint accepts for any array in a request
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_array_length: Option<u64>,
+    /// `true` if the mint's ecash is not backed by real funds
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub demo: Option<bool>,
 }
 
 impl MintInfo {
@@ -228,6 +231,14 @@ impl MintInfo {
     pub fn max_array_length(self, max_array_length: u64) -> Self {
         Self {
             max_array_length: Some(max_array_length),
+            ..self
+        }
+    }
+
+    /// Set demo
+    pub fn demo(self, demo: bool) -> Self {
+        Self {
+            demo: Some(demo),
             ..self
         }
     }
@@ -785,6 +796,18 @@ mod tests {
         assert_eq!(info.time, Some(123));
         assert_eq!(info.tos_url.as_deref(), Some("https://example.com/tos"));
         assert_eq!(info.max_array_length, Some(1000));
+    }
+
+    #[test]
+    fn mint_info_demo_is_omitted_unless_set() {
+        let info = MintInfo::new();
+        assert_eq!(info.demo, None);
+        assert!(!serde_json::to_string(&info).unwrap().contains("demo"));
+
+        let json = serde_json::to_string(&info.demo(true)).unwrap();
+        assert!(json.contains(r#""demo":true"#));
+        let parsed: MintInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.demo, Some(true));
     }
 
     #[test]
