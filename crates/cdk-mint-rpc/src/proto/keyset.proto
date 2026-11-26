@@ -22,14 +22,14 @@ message RotateNextKeysetRequest {
     // Input fee charged per input, in parts per thousand. Defaults to 0 when
     // omitted.
     optional uint64 input_fee_ppk = 3;
-    // Legacy version selector: true selects Version01, false Version00.
-    // Used only when keyset_version is omitted.
+    // Legacy version selector: true (the default) selects Version01, false
+    // Version00. Used only when keyset_version is omitted.
     optional bool use_keyset_v2 = 4;
     // Absolute expiry as seconds since the UNIX epoch. Omit for a keyset
     // that never expires.
     optional uint64 final_expiry = 5;
-    // Version selector: v1/00, v2/01, or v3/02. Defaults to v3 when
-    // neither version selector is supplied. Takes precedence over use_keyset_v2.
+    // Version selector: v1/00, v2/01, or v3/02. Takes precedence over
+    // use_keyset_v2. With neither selector the mint emits a Version01 keyset.
     optional string keyset_version = 6;
 }
 

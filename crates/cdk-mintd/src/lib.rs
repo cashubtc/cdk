@@ -5670,6 +5670,61 @@ backend = "fakewallet"
         );
     }
 
+    #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
+    #[tokio::test]
+    async fn fakewallet_rotation_without_version_creates_a_v1_keyset() {
+        use cdk::mint::MintBuilder;
+        use cdk_common::nut02::KeySetVersion;
+        use cdk_sqlite::mint::memory;
+
+        use crate::config::{FakeWallet, PaymentBackend, PaymentBackendType};
+
+        let fake_wallet: FakeWallet = toml::from_str(
+            r#"
+            [[keyset_rotations]]
+            unit = "sat"
+            expired = true
+            "#,
+        )
+        .expect("rotation entry without a version parses");
+        assert_eq!(fake_wallet.keyset_rotations[0].version, "v1");
+        let settings = config::Settings {
+            payment_backend: vec![PaymentBackend {
+                backend: PaymentBackendType::FakeWallet,
+                unit: CurrencyUnit::Sat,
+                ..Default::default()
+            }],
+            fake_wallet: Some(fake_wallet),
+            ..Default::default()
+        };
+
+        let localstore = Arc::new(memory::empty().await.expect("database"));
+        let builder = MintBuilder::new(localstore.clone());
+        let builder =
+            configure_payment_backends(&settings, builder, None, &std::env::temp_dir(), None)
+                .await
+                .expect("a rotation entry without a version is accepted");
+        let mint = builder
+            .build_with_seed(localstore, &[3; 32])
+            .await
+            .expect("mint builds");
+
+        let versions: Vec<_> = mint
+            .keysets()
+            .keysets
+            .iter()
+            .map(|keyset| keyset.id.get_version())
+            .collect();
+        assert!(
+            versions.contains(&KeySetVersion::Version00),
+            "the rotation creates a v1 keyset: {versions:?}"
+        );
+        assert!(
+            !versions.contains(&KeySetVersion::Version02),
+            "a standalone mint creates no v3 keyset: {versions:?}"
+        );
+    }
+
     #[test]
     fn backend_unit_validation_allows_matching_units() {
         validate_backend_unit(&CurrencyUnit::Eur, "EUR").expect("matching units should pass");

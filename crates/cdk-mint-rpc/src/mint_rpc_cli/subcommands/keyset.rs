@@ -26,7 +26,7 @@ pub struct RotateNextKeysetCommand {
     /// Use keyset v2 (deprecated; prefer --keyset-version)
     #[arg(long)]
     use_keyset_v2: Option<bool>,
-    /// Keyset version to create: v1, v2, or v3
+    /// Keyset version to create: v1, v2 (the default), or v3
     #[arg(long)]
     keyset_version: Option<String>,
     /// Final expiry unix timestamp for the keyset

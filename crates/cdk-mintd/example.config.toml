@@ -371,13 +371,13 @@ max_delay_time = 3
 # Optional keyset rotations to create inactive/expired test keysets
 # Each rotation creates a keyset that gets rotated out during mint build
 # unit: currency unit (e.g. "sat", "usd")
-# version: "v1" (Version00), "v2" (Version01), or "v3" (Version02, default)
+# version: "v1" (Version00, default), "v2" (Version01), or "v3" (Version02, federation builds only)
 # input_fee_ppk: input fee in parts per thousand (default: 0)
 # expired: if true, keyset is created with a past expiry timestamp (default: false)
 #
 # [[fake_wallet.keyset_rotations]]
 # unit = "sat"
-# version = "v3"
+# version = "v1"
 # input_fee_ppk = 0
 # expired = true
 #

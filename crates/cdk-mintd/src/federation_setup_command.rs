@@ -66,6 +66,9 @@ pub(crate) async fn run_setup_command(
     cli_args: &cli::CLIArgs,
     args: &cli::FederationSetupArgs,
 ) -> Result<()> {
+    let config_path = cli_args
+        .command_config()
+        .ok_or_else(|| anyhow!("`federation setup` commands require --config <setup config>"))?;
     match &args.command {
         cli::FederationSetupCommand::Create(args) => {
             let thresholds = ThresholdParams::with_bft_consensus(args.members, args.threshold)
@@ -110,7 +113,7 @@ pub(crate) async fn run_setup_command(
                 .context("failed to open federation setup database")?;
             let created = create_setup(
                 &db,
-                &args.config,
+                config_path,
                 &args.state_dir,
                 &args.database,
                 &spec,
@@ -124,13 +127,13 @@ pub(crate) async fn run_setup_command(
             }
         }
         cli::FederationSetupCommand::Invite(args) => {
-            let config = read_local_config(&args.config)?;
+            let config = read_local_config(config_path)?;
             let db = cdk_sqlite::MintSqliteDatabase::new(config.database_path().to_path_buf())
                 .await
                 .context("failed to open federation setup database")?;
             let invitation = issue_invitation(
                 &db,
-                &args.config,
+                config_path,
                 MemberId::new(args.member).context("invalid setup member ID")?,
                 args.replace,
                 &args.output,
@@ -155,7 +158,7 @@ pub(crate) async fn run_setup_command(
             let enrollment = join_setup(
                 &db,
                 &coordinator,
-                &args.config,
+                config_path,
                 &args.state_dir,
                 &args.database,
                 invitation,
@@ -168,16 +171,16 @@ pub(crate) async fn run_setup_command(
             println!("setup_id: {}", enrollment.setup_id);
             println!("member_id: {}", enrollment.member_id.get());
         }
-        cli::FederationSetupCommand::Propose(args) => {
-            let config = read_local_config(&args.config)?;
+        cli::FederationSetupCommand::Propose => {
+            let config = read_local_config(config_path)?;
             let db = cdk_sqlite::MintSqliteDatabase::new(config.database_path().to_path_buf())
                 .await
                 .context("failed to open federation setup database")?;
-            let proposal = propose_setup(&db, &args.config, current_unix_time()?).await?;
+            let proposal = propose_setup(&db, config_path, current_unix_time()?).await?;
             println!("proposal_hash: {}", proposal.proposal_hash);
         }
         cli::FederationSetupCommand::Review(args) => {
-            let config = read_local_config(&args.config)?;
+            let config = read_local_config(config_path)?;
             let db = cdk_sqlite::MintSqliteDatabase::new(config.database_path().to_path_buf())
                 .await
                 .context("failed to open federation setup database")?;
@@ -188,13 +191,13 @@ pub(crate) async fn run_setup_command(
                         .await
                         .context("failed to load the local setup proposal")?
                         .ok_or_else(|| anyhow!("no local setup proposal is available to review"))?;
-                    review_local_proposal(&db, &args.config, proposal, current_unix_time()?).await?
+                    review_local_proposal(&db, config_path, proposal, current_unix_time()?).await?
                 }
                 FederationSetupLocalRole::Member { .. } => {
                     let coordinator = HttpSetupCoordinator::new(
                         crate::federation_setup_transport(cli_args).await?,
                     );
-                    fetch_and_review_proposal(&db, &coordinator, &args.config, current_unix_time()?)
+                    fetch_and_review_proposal(&db, &coordinator, config_path, current_unix_time()?)
                         .await?
                 }
             };
@@ -206,14 +209,14 @@ pub(crate) async fn run_setup_command(
         cli::FederationSetupCommand::Approve(args) => {
             let coordinator =
                 HttpSetupCoordinator::new(crate::federation_setup_transport(cli_args).await?);
-            let config = read_local_config(&args.config)?;
+            let config = read_local_config(config_path)?;
             let db = cdk_sqlite::MintSqliteDatabase::new(config.database_path().to_path_buf())
                 .await
                 .context("failed to open federation setup database")?;
             let hash = FederationSetupProposalHash::from_str(&args.proposal_hash)
                 .context("invalid exact proposal hash")?;
             let approval =
-                approve_setup(&db, &coordinator, &args.config, hash, current_unix_time()?).await?;
+                approve_setup(&db, &coordinator, config_path, hash, current_unix_time()?).await?;
             println!("approved_proposal_hash: {}", approval.proposal_hash);
         }
         cli::FederationSetupCommand::Serve(args) => {
@@ -231,23 +234,23 @@ pub(crate) async fn run_setup_command(
             };
             let (transport, http_enabled) =
                 crate::federation_setup_server_transport(cli_args).await?;
-            serve_setup_coordinator(&args.config, args.listen, driver, transport, http_enabled)
+            serve_setup_coordinator(config_path, args.listen, driver, transport, http_enabled)
                 .await?;
         }
         cli::FederationSetupCommand::Status(args) => {
             let coordinator =
                 HttpSetupCoordinator::new(crate::federation_setup_transport(cli_args).await?);
-            let status = setup_status_with_client(&args.config, &coordinator.0).await?;
+            let status = setup_status_with_client(config_path, &coordinator.0).await?;
             match args.json {
                 true => println!("{}", serde_json::to_string_pretty(&status)?),
                 false => print_setup_status(&status),
             }
         }
-        cli::FederationSetupCommand::Activate(args) => {
+        cli::FederationSetupCommand::Activate => {
             eprintln!(
                 "Before using real funds, create and verify an encrypted backup of this member's setup state, database, and activated private config."
             );
-            let result = activate_setup(&args.config, current_unix_time()?).await?;
+            let result = activate_setup(config_path, current_unix_time()?).await?;
             print_activation_result(&result);
         }
     }

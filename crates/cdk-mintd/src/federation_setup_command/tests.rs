@@ -62,7 +62,6 @@ fn setup_create_builds_bark_policy_into_the_signed_frost_inputs() {
         .public_key()
         .to_string();
     let args = cli::FederationSetupCreateArgs {
-        config: temp_dir.path().join("setup.json"),
         state_dir: temp_dir.path().join("state"),
         database: temp_dir.path().join("setup.sqlite"),
         members: 3,
