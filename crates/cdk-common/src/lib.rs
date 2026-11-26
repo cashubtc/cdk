@@ -22,6 +22,7 @@ pub const PAYMENT_PROCESSOR_PROTOCOL_VERSION: &str = "4.0.0";
 #[cfg(feature = "grpc")]
 pub mod grpc;
 
+pub mod bip77;
 pub mod bitcoin_uri;
 pub mod common;
 pub mod database;
