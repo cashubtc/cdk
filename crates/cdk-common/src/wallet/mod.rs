@@ -540,9 +540,10 @@ pub struct ReceiveOptions {
     pub preimages: Vec<String>,
     /// Metadata
     pub metadata: HashMap<String, String>,
-    /// Minimum seconds before a received v3 proof's `after` leaf (eg the
-    /// sender's refund) may open for the payment to count as received.
-    /// `None` uses the wallet default of one hour.
+    /// Optional leaf policy for a generic v3 key-path sweep. When set,
+    /// refund leaves must open at least this many seconds from now, and
+    /// threshold and hashlock leaves are refused. By default the wallet
+    /// attempts the swap immediately and credits it on success.
     pub v3_min_refund_horizon: Option<u64>,
     /// The NUT-18 `nutroot` option these proofs pay. When set, every v3
     /// proof must match it exactly (NUT-18 payee checks), and the requested

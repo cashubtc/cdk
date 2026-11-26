@@ -36,10 +36,6 @@ pub(crate) enum V3Spend {
 
 pub(crate) type V3Spends = HashMap<PublicKey, V3Spend>;
 
-/// Default minimum time, in seconds, before an `after` leaf's refund opens
-/// for a received v3 payment to count as received
-pub const DEFAULT_MIN_REFUND_HORIZON: u64 = 3600;
-
 /// Seconds an `after` leaf must have been open on the wallet's clock before
 /// it is preferred over another satisfiable leaf, allowing for clock skew
 /// between the wallet and the mint
@@ -271,8 +267,8 @@ pub(crate) fn bearer_v3_inputs(
 /// Receive checks 1 and 2 for a received v3 proof
 ///
 /// Rebuilds the secret from the spend info (trying the wallet's receiver
-/// keys for a receiver-keyed proof). A proof whose key path the wallet holds
-/// has every disclosed leaf evaluated against the acceptance policy.
+/// keys for a receiver-keyed proof). A key-path sweep applies the caller's
+/// leaf policy only when a minimum refund horizon is supplied.
 ///
 /// Without a key-path key the proof is refused, unless `script_path` carries
 /// the caller's hashlock preimages: the wallet is then a leaf party and must
@@ -282,7 +278,7 @@ pub(crate) fn bearer_v3_inputs(
 pub(crate) fn check_received_v3_proof(
     proof: &Proof,
     receiver_keys: &[SecretKey],
-    min_refund_horizon: u64,
+    min_refund_horizon: Option<u64>,
     script_path: Option<&[String]>,
 ) -> Result<V3Spend, Error> {
     let secret = proof.secret.v3_point()?;
@@ -309,7 +305,9 @@ pub(crate) fn check_received_v3_proof(
 
     match (key_path, script_path) {
         (Ok(reconstruction), _) if reconstruction.key_path_key.is_some() => {
-            check_leaf_policy(&reconstruction.leaves, unix_time(), min_refund_horizon)?;
+            if let Some(horizon) = min_refund_horizon {
+                check_leaf_policy(&reconstruction.leaves, unix_time(), horizon)?;
+            }
             reconstruction
                 .key_path_key
                 .map(V3Spend::KeyPath)
@@ -448,13 +446,7 @@ fn script_path_spend(
     recently_opened.ok_or(Error::V3ProofNotSpendable)
 }
 
-/// Every disclosed leaf against the wallet's acceptance policy
-///
-/// A `commit` leaf adds no spend path. An `after` leaf (eg the sender's
-/// refund) is accepted only if it opens at least `min_refund_horizon`
-/// seconds from now. `threshold` and `hashlock` leaves let their keys spend
-/// at once, so they are refused: the wallet cannot treat such a proof as
-/// received value.
+/// Apply the caller's conservative policy to the leaves of a key-path sweep.
 pub(crate) fn check_leaf_policy(
     leaves: &[Leaf],
     now: u64,
@@ -630,8 +622,8 @@ mod tests {
             let proof = v3_proof(payment.secret, payment.spend_info);
             let held = std::slice::from_ref(&refund);
 
-            assert!(check_received_v3_proof(&proof, held, 3600, None).is_err());
-            match check_received_v3_proof(&proof, held, 3600, Some(&[])).unwrap() {
+            assert!(check_received_v3_proof(&proof, held, None, None).is_err());
+            match check_received_v3_proof(&proof, held, None, Some(&[])).unwrap() {
                 V3Spend::ScriptPath { witness, keys } => {
                     assert_eq!(keys.len(), 1);
                     assert!(witness.leaf.is_some());
@@ -640,12 +632,15 @@ mod tests {
             }
             // A key in no leaf satisfies nothing.
             assert!(
-                check_received_v3_proof(&proof, &[SecretKey::generate()], 3600, Some(&[])).is_err()
+                check_received_v3_proof(&proof, &[SecretKey::generate()], None, Some(&[])).is_err()
             );
-            // The payee still receives by the key path, under the leaf
-            // policy: this refund is already open.
+            let payee_keys = std::slice::from_ref(&payee);
             assert!(matches!(
-                check_received_v3_proof(&proof, std::slice::from_ref(&payee), 3600, Some(&[])),
+                check_received_v3_proof(&proof, payee_keys, None, None),
+                Ok(V3Spend::KeyPath(_))
+            ));
+            assert!(matches!(
+                check_received_v3_proof(&proof, payee_keys, Some(3600), None),
                 Err(Error::V3LeafPolicy)
             ));
         }

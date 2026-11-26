@@ -599,6 +599,72 @@ async fn v3_nutroot_payment_request_flow() {
     assert_eq!(received, Amount::from(16));
 }
 
+#[tokio::test]
+async fn v3_key_path_sweep_with_competing_threshold_leaf() {
+    use cdk::nuts::nut10::nutroot::Leaf;
+    use cdk::nuts::nut18::NutrootOption;
+    use cdk::nuts::SecretKey;
+
+    let mint = create_and_start_v3_test_mint().await.unwrap();
+    let sender = create_test_wallet_for_mint(mint.clone()).await.unwrap();
+    let payee = create_test_wallet_for_mint(mint.clone()).await.unwrap();
+    let leaf_holder = create_test_wallet_for_mint(mint.clone()).await.unwrap();
+    fund_wallet(&sender, 64, None).await.unwrap();
+
+    let payee_key = SecretKey::generate();
+    let leaf_key = SecretKey::generate();
+    let threshold = Leaf::Threshold {
+        n: 1,
+        keys: vec![leaf_key.public_key()],
+    };
+    let token = sender
+        .prepare_send(
+            Amount::from(16),
+            SendOptions {
+                nutroot: Some(NutrootOption {
+                    k: payee_key.public_key(),
+                    l: Some(vec![threshold.to_leaf_bytes().unwrap()]),
+                    b: None,
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .confirm(None)
+        .await
+        .unwrap()
+        .to_string();
+
+    let received = payee
+        .receive(
+            &token,
+            ReceiveOptions {
+                p2pk_signing_keys: vec![payee_key],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(received, Amount::from(16));
+    assert_eq!(payee.total_balance().await.unwrap(), received);
+
+    let err = leaf_holder
+        .receive(
+            &token,
+            ReceiveOptions {
+                p2pk_signing_keys: vec![leaf_key],
+                v3_script_path: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, cdk::Error::TokenAlreadySpent), "{err}");
+    assert_eq!(leaf_holder.total_balance().await.unwrap(), Amount::from(0));
+    mint.stop().await.unwrap();
+}
+
 /// A token locked to a payee with a refund leaf: once the refund has opened,
 /// the refund key's holder claims the token through that leaf, without the
 /// payee's key and without a payment request.

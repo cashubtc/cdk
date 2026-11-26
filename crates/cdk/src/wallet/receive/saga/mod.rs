@@ -140,9 +140,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
             .await?;
 
         let (mut proofs, opts, v3_keys) = super::proof_work(move || {
-            // Receive checks 1 and 2 for v3 proofs: rebuild each secret from its
-            // spend info, require a key the wallet holds and apply the leaf
-            // policy. The keys sign the swap's inputs.
+            // Reconstruct each v3 secret and select a spend path for the swap.
             let mut v3_keys = crate::wallet::nutroot::V3Spends::new();
             for proof in proofs.iter().filter(|proof| {
                 proof.keyset_id.get_version() == cdk_common::nuts::nut02::KeySetVersion::Version02
@@ -157,8 +155,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
                     None => crate::wallet::nutroot::check_received_v3_proof(
                         proof,
                         &opts.p2pk_signing_keys,
-                        opts.v3_min_refund_horizon
-                            .unwrap_or(crate::wallet::nutroot::DEFAULT_MIN_REFUND_HORIZON),
+                        opts.v3_min_refund_horizon,
                         opts.v3_script_path.then_some(opts.preimages.as_slice()),
                     )?,
                 };

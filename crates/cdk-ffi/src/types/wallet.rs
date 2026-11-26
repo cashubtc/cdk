@@ -389,8 +389,10 @@ pub struct ReceiveOptions {
     pub preimages: Vec<String>,
     /// Metadata
     pub metadata: HashMap<String, String>,
-    /// Minimum seconds before a received v3 proof's refund leaf may open
-    /// (default one hour)
+    /// Optional leaf policy for a generic v3 key-path sweep. When set,
+    /// refund leaves must open at least this many seconds from now, and
+    /// threshold and hashlock leaves are refused. By default the wallet
+    /// attempts the swap immediately and credits it on success.
     #[serde(default)]
     pub v3_min_refund_horizon: Option<u64>,
     /// The NUT-18 `nutroot` option these proofs pay, as JSON; when set,
