@@ -1,10 +1,12 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{Operation, Saga, SwapSagaState};
 use cdk_common::nuts::BlindedMessage;
 use cdk_common::{database, Error, Proofs, PublicKey, QuoteId, State};
+use tokio::time::{interval_at, Instant, MissedTickBehavior};
 use tracing::instrument;
 
 use self::compensation::{CompensatingAction, RemoveSwapSetup};
@@ -17,6 +19,9 @@ mod state;
 
 #[cfg(test)]
 mod tests;
+
+pub(in crate::mint) const SWAP_RECOVERY_LEASE: Duration = Duration::from_secs(60);
+pub(in crate::mint) const SWAP_RECOVERY_INTERVAL: Duration = Duration::from_secs(15);
 
 /// Saga pattern implementation for atomic swap operations.
 ///
@@ -41,7 +46,7 @@ mod tests;
 ///   adds output blinded messages, and persists saga state for crash recovery
 /// - **Signing (sign_outputs)**: Non-transactional cryptographic operation
 /// - **TX2 (finalize)**: Atomically adds signatures to outputs, marks inputs as spent,
-///   and deletes saga state (best-effort, will be cleaned up on recovery if this fails)
+///   and deletes saga state
 ///
 /// Saga state persistence is atomic with swap state changes, ensuring consistency
 /// for crash recovery scenarios.
@@ -284,11 +289,7 @@ impl<'a> SwapSaga<'a, SetupComplete> {
     /// - Propagates any errors from the blind signing operation
     #[instrument(skip_all)]
     pub async fn sign_outputs(self) -> Result<SwapSaga<'a, Signed>, Error> {
-        match self
-            .mint
-            .blind_sign(self.state_data.blinded_messages.clone())
-            .await
-        {
+        match self.sign_with_recovery_lease().await {
             Ok(signatures) => {
                 // Transition to Signed state
                 // Note: We don't update saga state here because the "signed" state
@@ -315,6 +316,37 @@ impl<'a> SwapSaga<'a, SetupComplete> {
             }
         }
     }
+
+    async fn sign_with_recovery_lease(&self) -> Result<Vec<cdk_common::BlindSignature>, Error> {
+        let signing = self
+            .mint
+            .blind_sign(self.state_data.blinded_messages.clone());
+        if !self.db.uses_swap_recovery_leases() {
+            return signing.await;
+        }
+
+        tokio::pin!(signing);
+        let mut heartbeat = interval_at(
+            Instant::now() + SWAP_RECOVERY_INTERVAL,
+            SWAP_RECOVERY_INTERVAL,
+        );
+        heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                biased;
+                result = &mut signing => return result,
+                _ = heartbeat.tick() => {
+                    let mut tx = self.db.begin_transaction().await?;
+                    let Some(mut saga) = tx.get_saga_for_update(&self.operation_id).await? else {
+                        return Err(Error::InvalidOperationState);
+                    };
+                    let state = saga.state.clone();
+                    tx.update_acquired_saga(&mut saga, state).await?;
+                    tx.commit().await?;
+                }
+            }
+        }
+    }
 }
 
 impl SwapSaga<'_, Signed> {
@@ -327,7 +359,7 @@ impl SwapSaga<'_, Signed> {
     /// Within a single database transaction:
     /// 1. Adds the blind signatures to the output blinded messages
     /// 2. Updates input proof states from Pending to Spent
-    /// 3. Deletes saga state (best-effort, won't fail swap if this fails)
+    /// 3. Deletes saga state
     /// 4. Publishes proof state changes via pubsub
     /// 5. Clears all registered compensations (swap successfully completed)
     ///
@@ -339,10 +371,7 @@ impl SwapSaga<'_, Signed> {
     ///
     /// # Success
     ///
-    /// On success, compensations are cleared and the swap is complete. The client
-    /// can now use the returned signatures to construct valid proofs. If saga state
-    /// deletion fails, a warning is logged but the swap still succeeds (orphaned
-    /// saga state will be cleaned up on next recovery).
+    /// On success, the client can use the returned signatures to construct proofs.
     ///
     /// # Errors
     ///
@@ -358,6 +387,10 @@ impl SwapSaga<'_, Signed> {
             .collect();
 
         let mut tx = self.db.begin_transaction().await?;
+        if tx.get_saga_for_update(&self.operation_id).await?.is_none() {
+            tx.rollback().await?;
+            return Err(Error::InvalidOperationState);
+        }
 
         // Add blind signatures to outputs
         // TODO: WE should move the should fail to the db so the there is not this extra rollback.
@@ -423,17 +456,11 @@ impl SwapSaga<'_, Signed> {
             return Err(err.into());
         }
 
-        // Delete saga - swap completed successfully (best-effort, atomic with TX2)
-        // Don't fail the swap if saga deletion fails - orphaned saga will be
-        // cleaned up on next recovery
-        if let Err(e) = tx.delete_saga(&self.operation_id).await {
-            tracing::warn!(
-                "Failed to delete saga in finalize (will be cleaned up on recovery): {}",
-                e
-            );
-            // Don't rollback - swap succeeded, orphaned saga is harmless
+        if let Err(err) = tx.delete_saga(&self.operation_id).await {
+            tx.rollback().await?;
+            self.compensate_all().await?;
+            return Err(err.into());
         }
-
         tx.commit().await?;
         // Publish proof state changes
         for pk in &self.state_data.ys {

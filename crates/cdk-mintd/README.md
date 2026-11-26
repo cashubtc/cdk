@@ -372,11 +372,31 @@ construction and keyset operations.
 
 Several mints can share one keys database (see the embedded signatory's periodic
 keyset reload). Set `[info].keyset_refresh_interval_ms` in the persisted
-document so each instance picks up a peer's rotation within one interval instead
-of at the next restart. It is off by default, which is correct for a single mint
-that owns its database. The key applies to the embedded signatory only: with
+document to enable shared keyset refresh. Each instance checks the database
+epoch before serving keyset endpoints or validating wallet transactions and
+reloads cached keys when the epoch changes. It is off by default for a single
+mint that owns its database. The key applies to the embedded signatory only: with
 `[signatory].enabled = true`, startup warns that it has no effect and the
 interval belongs on the signatory process's `--keyset-refresh-interval-ms`.
+
+For replicas sharing a PostgreSQL mint database, set
+`[info].postgres_state_notifications = true` in the persisted configuration
+to deliver quote and proof updates to WebSocket clients on every replica.
+Use a direct PostgreSQL connection or a session-mode pooler so that each mint
+can keep a dedicated `LISTEN` connection. If that connection drops, WebSocket
+clients reconnect and read the current state when they re-subscribe.
+
+With PostgreSQL, mint replicas renew a recovery lease for swaps while the
+signatory is working. A surviving replica periodically recovers abandoned
+swaps after their leases expire. Use the same lease-aware build on every
+replica sharing the database.
+
+Use the same Redis HTTP cache on each replica when clients need to replay a
+cached NUT-19 request through a different replica.
+
+For on-chain payments with BDK, point all mintd replicas at one
+[BDK payment processor](../cdk-payment-processor/README.md#on-chain-bitcoin-bdk)
+with persistent wallet and withdrawal intent storage.
 
 ### Secret References
 

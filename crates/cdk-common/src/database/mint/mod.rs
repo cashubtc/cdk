@@ -2,10 +2,12 @@
 
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
+use std::pin::Pin;
 
 use async_trait::async_trait;
 use cashu::quote_id::QuoteId;
 use cashu::Amount;
+use futures::Stream;
 
 use super::{DbTransactionFinalizer, Error};
 use crate::mint::{
@@ -778,6 +780,22 @@ pub trait Database<Error>:
     + SagaDatabase<Err = Error>
     + CompletedOperationsDatabase<Err = Error>
 {
+    /// Whether swap recovery must coordinate with other running mint instances.
+    ///
+    /// Backends that return true must use the database clock for swap saga
+    /// timestamps and provide transaction-scoped locking of saga rows.
+    fn uses_swap_recovery_leases(&self) -> bool {
+        false
+    }
+
+    /// Subscribe to committed state changes when the backend supports shared notifications.
+    ///
+    /// A connection failure terminates the stream. Consumers must reconnect and
+    /// refresh subscriptions from the database after a gap.
+    async fn subscribe_to_state_changes(&self) -> Result<Option<MintStateChanges>, Error> {
+        Ok(None)
+    }
+
     /// Release database resources after stopping all services that use them.
     ///
     /// The default does nothing. SQL backends permanently close the shared pool,
@@ -789,6 +807,20 @@ pub trait Database<Error>:
     /// Begins a transaction
     async fn begin_transaction(&self) -> Result<Box<dyn Transaction<Error> + Send + Sync>, Error>;
 }
+
+/// Committed state used to construct mint subscription events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MintStateChange {
+    /// State of a proof after applying the transaction.
+    Proof(PublicKey, State),
+    /// Paid and issued totals of a mint quote at the time of the update.
+    MintQuote(QuoteId, Amount, Amount),
+    /// State of a melt quote, with paid sent after change is persisted.
+    MeltQuote(QuoteId, MeltQuoteState),
+}
+
+/// A backend's stream of committed mint state changes.
+pub type MintStateChanges = Pin<Box<dyn Stream<Item = Result<MintStateChange, Error>> + Send>>;
 
 /// Type alias for Mint Database
 pub type DynMintDatabase = std::sync::Arc<dyn Database<Error> + Send + Sync>;

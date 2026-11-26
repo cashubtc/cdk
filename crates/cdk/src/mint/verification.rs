@@ -176,6 +176,7 @@ impl Mint {
     /// Checks that the inputs are all of the same unit
     #[instrument(skip_all)]
     pub async fn verify_inputs_keyset(&self, inputs: &Proofs) -> Result<CurrencyUnit, Error> {
+        self.refresh_shared_keysets().await?;
         let mut keyset_units = HashSet::new();
 
         let inputs_keyset_ids: HashSet<Id> = inputs.iter().map(|p| p.keyset_id).collect();

@@ -1,3 +1,7 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+use cdk_common::database::{self, MintKeysDatabase};
 use cdk_signatory::signatory::RotateKeyArguments;
 use tracing::instrument;
 
@@ -8,7 +12,47 @@ use crate::Error;
 
 mod auth;
 
+pub(super) struct SharedKeysets {
+    database: Arc<dyn MintKeysDatabase<Err = database::Error> + Send + Sync>,
+    loaded_epoch: AtomicU64,
+}
+
+impl SharedKeysets {
+    pub(super) fn new(
+        database: Arc<dyn MintKeysDatabase<Err = database::Error> + Send + Sync>,
+    ) -> Self {
+        Self {
+            database,
+            loaded_epoch: AtomicU64::new(0),
+        }
+    }
+}
+
 impl Mint {
+    /// Check for keyset rotations before serving a request in shared-keystore mode.
+    /// A matching database epoch keeps the in-memory keysets and avoids contacting the signatory.
+    #[instrument(skip_all)]
+    pub async fn refresh_shared_keysets(&self) -> Result<(), Error> {
+        let Some(shared) = &self.shared_keysets else {
+            return Ok(());
+        };
+
+        let epoch = shared.database.keysets_epoch().await?;
+        if shared.loaded_epoch.load(Ordering::Acquire) == epoch {
+            return Ok(());
+        }
+
+        let _store = self.keyset_store_lock.lock().await;
+        // Re-read under the lock so a slow observation cannot replace a newer epoch.
+        let epoch = shared.database.keysets_epoch().await?;
+        if shared.loaded_epoch.load(Ordering::Relaxed) != epoch {
+            let snapshot = self.signatory.keysets().await?;
+            self.keysets.store(snapshot.keysets.into());
+            shared.loaded_epoch.store(epoch, Ordering::Release);
+        }
+        Ok(())
+    }
+
     /// Retrieve the public keys of the active keyset for distribution to wallet
     /// clients
     #[instrument(skip(self))]

@@ -17,6 +17,8 @@ use tokio::time::timeout;
 use tokio_postgres::{Client, Error as PgError, NoTls};
 
 mod db;
+#[cfg(feature = "mint")]
+mod notifications;
 mod tls;
 mod value;
 
@@ -164,6 +166,13 @@ impl DatabasePool for PgConnectionPool {
 
     type Error = PgError;
 
+    #[cfg(feature = "mint")]
+    async fn subscribe_to_mint_state(
+        config: &Self::Config,
+    ) -> Result<Option<cdk_common::database::mint::MintStateChanges>, Error> {
+        notifications::subscribe(config).await.map(Some)
+    }
+
     fn new_resource(
         config: &Self::Config,
         stale: Arc<AtomicBool>,
@@ -192,15 +201,40 @@ impl PostgresConnection {
         let result_clone = result.clone();
         let notify_clone = notify.clone();
 
-        async fn select_schema(conn: &Client, schema: &str) -> Result<(), Error> {
-            conn.batch_execute(&format!(
-                r#"
-                    CREATE SCHEMA IF NOT EXISTS "{schema}";
-                    SET search_path TO "{schema}"
-                    "#
-            ))
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))
+        async fn select_schema(
+            conn: &mut Client,
+            schema: &str,
+        ) -> Result<(), tokio_postgres::Error> {
+            let existing = conn
+                .query_opt(
+                    "SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = $1::text",
+                    &[&schema],
+                )
+                .await?;
+            if existing.is_none() {
+                let tx = conn.transaction().await?;
+                tx.execute(
+                    "SELECT pg_catalog.pg_advisory_xact_lock(\
+                     pg_catalog.hashtextextended('cdk:schema:' || $1::text, 0))",
+                    &[&schema],
+                )
+                .await?;
+                let create: String = tx
+                    .query_one(
+                        "SELECT pg_catalog.format('CREATE SCHEMA IF NOT EXISTS %I', $1::text)",
+                        &[&schema],
+                    )
+                    .await?
+                    .try_get(0)?;
+                tx.batch_execute(&create).await?;
+                tx.commit().await?;
+            }
+            conn.execute(
+                "SELECT pg_catalog.set_config('search_path', pg_catalog.quote_ident($1::text), false)",
+                &[&schema],
+            )
+            .await?;
+            Ok(())
         }
 
         tokio::spawn(async move {
@@ -216,7 +250,7 @@ impl PostgresConnection {
                 };
             match tls {
                 SslMode::NoTls(tls) => {
-                    let (client, connection) = match connection_config.connect(tls).await {
+                    let (mut client, connection) = match connection_config.connect(tls).await {
                         Ok((client, connection)) => (client, connection),
                         Err(err) => {
                             *error_clone.lock().await =
@@ -234,8 +268,8 @@ impl PostgresConnection {
                     });
 
                     if let Some(schema) = config.schema.as_ref() {
-                        if let Err(err) = select_schema(&client, schema).await {
-                            *error_clone.lock().await = Some(err);
+                        if let Err(err) = select_schema(&mut client, schema).await {
+                            *error_clone.lock().await = Some(Error::Database(Box::new(err)));
                             stale.store(true, std::sync::atomic::Ordering::Release);
                             notify_clone.notify_waiters();
                             return;
@@ -246,7 +280,7 @@ impl PostgresConnection {
                     notify_clone.notify_waiters();
                 }
                 SslMode::NativeTls(tls) => {
-                    let (client, connection) = match connection_config.connect(tls).await {
+                    let (mut client, connection) = match connection_config.connect(tls).await {
                         Ok((client, connection)) => (client, connection),
                         Err(err) => {
                             *error_clone.lock().await =
@@ -264,8 +298,8 @@ impl PostgresConnection {
                     });
 
                     if let Some(schema) = config.schema.as_ref() {
-                        if let Err(err) = select_schema(&client, schema).await {
-                            *error_clone.lock().await = Some(err);
+                        if let Err(err) = select_schema(&mut client, schema).await {
+                            *error_clone.lock().await = Some(Error::Database(Box::new(err)));
                             stale.store(true, std::sync::atomic::Ordering::Release);
                             notify_clone.notify_waiters();
                             return;
@@ -383,6 +417,108 @@ mod test {
     }
 
     mint_db_test!(provide_mint_db);
+
+    #[tokio::test]
+    async fn concurrent_auth_database_initialization_shares_one_migration_ledger() {
+        let url = std::env::var("CDK_MINTD_DATABASE_URL")
+            .or_else(|_| std::env::var("PG_DB_URL"))
+            .unwrap_or_else(|_| {
+                "host=localhost user=cdk_user password=cdk_password dbname=cdk_mint port=5432"
+                    .to_owned()
+            });
+        let schema = format!("test_auth_bootstrap_{}", uuid::Uuid::new_v4().simple());
+        let config = format!("{url} schema={schema}");
+        let config = config.as_str();
+        let (first, second, third, fourth) = tokio::join!(
+            MintPgAuthDatabase::new(config),
+            MintPgAuthDatabase::new(config),
+            MintPgAuthDatabase::new(config),
+            MintPgAuthDatabase::new(config),
+        );
+        first.expect("first auth database initialization");
+        second.expect("second auth database initialization");
+        third.expect("third auth database initialization");
+        fourth.expect("fourth auth database initialization");
+    }
+
+    #[tokio::test]
+    async fn mint_state_notifications_follow_committed_quote_changes() {
+        use cdk_common::database::mint::MintStateChange;
+        use cdk_common::database::MintDatabase;
+        use cdk_common::mint::MintQuote;
+        use cdk_common::payment::PaymentIdentifier;
+        use cdk_common::{Amount, CurrencyUnit, PaymentMethod};
+        use futures_util::StreamExt;
+
+        let schema = format!("test_mint_notifications_{}", uuid::Uuid::new_v4().simple());
+        let writer = provide_mint_db(schema.clone()).await;
+        let observer = provide_mint_db(schema).await;
+        let mut changes = observer
+            .subscribe_to_state_changes()
+            .await
+            .unwrap()
+            .unwrap();
+        let id = QuoteId::new();
+        let amount = Amount::new(100, CurrencyUnit::Sat);
+        let quote = MintQuote::new(
+            Some(id.clone()),
+            id.to_string(),
+            CurrencyUnit::Sat,
+            Some(amount.clone()),
+            0,
+            PaymentIdentifier::CustomId(id.to_string()),
+            None,
+            Amount::new(0, CurrencyUnit::Sat),
+            Amount::new(0, CurrencyUnit::Sat),
+            PaymentMethod::BOLT11,
+            0,
+            0,
+            vec![],
+            vec![],
+            None,
+        );
+        let mut tx = MintDatabase::begin_transaction(&writer).await.unwrap();
+        tx.add_mint_quote(quote).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let mut tx = MintDatabase::begin_transaction(&writer).await.unwrap();
+        let mut quote = tx.get_mint_quote(&id).await.unwrap().unwrap();
+        quote
+            .add_payment(
+                Amount::new(50, CurrencyUnit::Sat),
+                "rolled-back".to_owned(),
+                None,
+            )
+            .unwrap();
+        tx.update_mint_quote(&mut quote).await.unwrap();
+        tx.rollback().await.unwrap();
+
+        let mut tx = MintDatabase::begin_transaction(&writer).await.unwrap();
+        let mut quote = tx.get_mint_quote(&id).await.unwrap().unwrap();
+        quote
+            .add_payment(amount.clone(), "paid".to_owned(), None)
+            .unwrap();
+        tx.update_mint_quote(&mut quote).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let mut tx = MintDatabase::begin_transaction(&writer).await.unwrap();
+        let mut quote = tx.get_mint_quote(&id).await.unwrap().unwrap();
+        quote.add_issuance(amount).unwrap();
+        tx.update_mint_quote(&mut quote).await.unwrap();
+        tx.commit().await.unwrap();
+
+        for issued in [Amount::ZERO, Amount::from(100)] {
+            let event = timeout(Duration::from_secs(3), changes.next())
+                .await
+                .expect("timely state notification")
+                .expect("open notification stream")
+                .expect("valid notification");
+            assert_eq!(
+                event,
+                MintStateChange::MintQuote(id.clone(), Amount::from(100), issued)
+            );
+        }
+    }
 
     #[tokio::test]
     async fn mint_pool_accepts_single_connection_configuration() {

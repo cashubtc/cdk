@@ -3,8 +3,10 @@
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use cdk_common::common::PaymentProcessorKey;
+use cdk_common::database::mint::{MintStateChange, MintStateChanges};
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{MeltQuote, MintQuote};
 use cdk_common::nut17::NotificationId;
@@ -18,6 +20,9 @@ use cdk_common::{
     NotificationPayload, ProofState, PublicKey, QuoteId,
 };
 use cdk_signatory::signatory::Signatory;
+use futures::StreamExt;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 
 use super::Mint;
 use crate::event::MintEvent;
@@ -69,18 +74,26 @@ impl MintPubSubSpec {
     async fn get_melt_quote_response(
         &self,
         quote_id: &QuoteId,
+        committed_state: Option<MeltQuoteState>,
     ) -> Result<Option<MeltQuoteResponse<QuoteId>>, String> {
-        let quote = match Mint::load_melt_quote_for_response(&self.db, quote_id)
+        let mut quote = match Mint::load_melt_quote_for_response(&self.db, quote_id)
             .await
             .map_err(|e| e.to_string())?
         {
             Some(quote) => quote,
             None => return Ok(None),
         };
-        let change = if matches!(
-            quote.state,
-            MeltQuoteState::Pending | MeltQuoteState::Unknown
-        ) {
+        if let Some(state) = committed_state {
+            quote.state = state;
+            if state != MeltQuoteState::Paid {
+                quote.payment_proof = None;
+            }
+        }
+        let change = if committed_state.is_some_and(|state| state != MeltQuoteState::Paid)
+            || matches!(
+                quote.state,
+                MeltQuoteState::Pending | MeltQuoteState::Unknown
+            ) {
             None
         } else {
             Mint::load_quote_change_with_dleq(&self.db, &self.signatory, quote_id)
@@ -119,7 +132,7 @@ impl MintPubSubSpec {
                 | NotificationId::MeltQuoteOnchain(uuid)
                 | NotificationId::MeltQuoteCustom(_, uuid) => {
                     // TODO: Check pending payments with the backend, as the HTTP handler does.
-                    if let Some(response) = self.get_melt_quote_response(uuid).await? {
+                    if let Some(response) = self.get_melt_quote_response(uuid, None).await? {
                         let event: MintEvent<QuoteId> = match (idx, response) {
                             (NotificationId::MeltQuoteBolt11(_), MeltQuoteResponse::Bolt11(r)) => {
                                 r.into()
@@ -213,7 +226,13 @@ impl MintPubSubSpec {
                     .map_err(|e| e.to_string())?
                     .into_iter()
                     .enumerate()
-                    .filter_map(|(idx, state)| state.map(|state| (public_keys[idx], state).into()))
+                    .map(|(idx, state)| {
+                        (
+                            public_keys[idx],
+                            state.unwrap_or(cdk_common::State::Unspent),
+                        )
+                            .into()
+                    })
                     .map(|state: ProofState| state.into()),
             );
         }
@@ -259,7 +278,26 @@ impl Spec for MintPubSubSpec {
 
 /// PubsubManager
 #[allow(missing_debug_implementations)]
-pub struct PubSubManager(Pubsub<MintPubSubSpec>);
+pub struct PubSubManager {
+    local: Pubsub<MintPubSubSpec>,
+    spec: Arc<MintPubSubSpec>,
+    database_status: watch::Sender<Option<bool>>,
+}
+
+pub(super) struct DatabaseNotificationTask(JoinHandle<()>);
+
+impl DatabaseNotificationTask {
+    pub(super) async fn stop(mut self) {
+        self.0.abort();
+        let _ = (&mut self.0).await;
+    }
+}
+
+impl Drop for DatabaseNotificationTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 
 impl PubSubManager {
     /// Create a new instance
@@ -271,18 +309,171 @@ impl PubSubManager {
         ),
     ) -> Arc<Self> {
         Arc::new_cyclic(|manager| {
-            Self(Pubsub::new(Arc::new(MintPubSubSpec {
+            let spec = Arc::new(MintPubSubSpec {
                 db: context.0,
                 payment_processors: context.1,
                 signatory: context.2,
                 pubsub_manager: manager.clone(),
-            })))
+            });
+            Self {
+                local: Pubsub::new(spec.clone()),
+                spec,
+                database_status: watch::channel(None).0,
+            }
         })
+    }
+
+    /// Deliver notifications from committed database state in a replicated mint.
+    ///
+    /// Configure this before starting the mint. The database must support
+    /// state subscriptions and use a session-capable connection.
+    pub fn enable_database_notifications(&self) {
+        self.database_status.send_replace(Some(false));
+    }
+
+    /// Monitor availability of database notifications, when enabled.
+    pub fn database_notification_status(&self) -> watch::Receiver<Option<bool>> {
+        self.database_status.subscribe()
+    }
+
+    pub(super) async fn start_database_notifications(
+        self: &Arc<Self>,
+    ) -> Result<Option<DatabaseNotificationTask>, cdk_common::Error> {
+        if self.database_status.borrow().is_none() {
+            return Ok(None);
+        }
+        let changes = self
+            .spec
+            .db
+            .subscribe_to_state_changes()
+            .await?
+            .ok_or(cdk_common::Error::Internal)?;
+        self.database_status.send_replace(Some(true));
+        let manager = Arc::downgrade(self);
+        let db = self.spec.db.clone();
+        let status = self.database_status.clone();
+        Ok(Some(DatabaseNotificationTask(tokio::spawn(async move {
+            let mut changes = changes;
+            loop {
+                if let Err(err) = Self::forward_changes(&manager, &mut changes).await {
+                    tracing::warn!("Mint state notification stream ended: {err}");
+                }
+                status.send_replace(Some(false));
+                loop {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    if manager.strong_count() == 0 {
+                        return;
+                    }
+                    match db.subscribe_to_state_changes().await {
+                        Ok(Some(stream)) => {
+                            changes = stream;
+                            status.send_replace(Some(true));
+                            break;
+                        }
+                        Ok(None) => return,
+                        Err(err) => {
+                            tracing::warn!("Could not reconnect mint state notifications: {err}")
+                        }
+                    }
+                }
+            }
+        }))))
+    }
+
+    async fn forward_changes(
+        manager: &Weak<Self>,
+        changes: &mut MintStateChanges,
+    ) -> Result<(), cdk_common::Error> {
+        while let Some(change) = changes.next().await {
+            let Some(manager) = manager.upgrade() else {
+                break;
+            };
+            if let Some(event) = manager.event_from_change(change?).await? {
+                let _ = manager.local.publish_now(event);
+            }
+        }
+        Ok(())
+    }
+
+    async fn event_from_change(
+        &self,
+        change: MintStateChange,
+    ) -> Result<Option<MintEvent<QuoteId>>, cdk_common::Error> {
+        use cdk_common::nut00::KnownMethod;
+        use cdk_common::PaymentMethod;
+
+        if self.local.active_subscribers() == 0 {
+            return Ok(None);
+        }
+        let event = match change {
+            MintStateChange::Proof(key, state) => MintEvent::from(ProofState::from((key, state))),
+            MintStateChange::MintQuote(id, amount_paid, amount_issued) => {
+                let Some(quote) = self.spec.db.get_mint_quote(&id).await? else {
+                    return Ok(None);
+                };
+                match quote.payment_method.clone() {
+                    PaymentMethod::Known(KnownMethod::Bolt11) => {
+                        let mut response = MintQuoteBolt11Response::from(quote);
+                        response.state = MintQuote::state_from_totals(amount_paid, amount_issued);
+                        response.amount_paid = amount_paid;
+                        response.amount_issued = amount_issued;
+                        response.into()
+                    }
+                    PaymentMethod::Known(KnownMethod::Bolt12) => {
+                        let mut response = MintQuoteBolt12Response::try_from(quote)?;
+                        response.amount_paid = amount_paid;
+                        response.amount_issued = amount_issued;
+                        response.into()
+                    }
+                    PaymentMethod::Known(KnownMethod::Onchain) => {
+                        let mut response = MintQuoteOnchainResponse::try_from(quote)?;
+                        response.amount_paid = amount_paid;
+                        response.amount_issued = amount_issued;
+                        response.into()
+                    }
+                    PaymentMethod::Custom(method) => {
+                        let mut response = MintQuoteCustomResponse::try_from(quote)?;
+                        response.amount_paid = amount_paid;
+                        response.amount_issued = amount_issued;
+                        NotificationPayload::CustomMintQuoteResponse(method, response).into()
+                    }
+                }
+            }
+            MintStateChange::MeltQuote(id, state) => {
+                let Some(response) = self
+                    .spec
+                    .get_melt_quote_response(&id, Some(state))
+                    .await
+                    .map_err(|err| {
+                        cdk_common::Error::Database(cdk_common::database::Error::Internal(err))
+                    })?
+                else {
+                    return Ok(None);
+                };
+                match response {
+                    MeltQuoteResponse::Bolt11(response) => response.into(),
+                    MeltQuoteResponse::Bolt12(response) => response.into(),
+                    MeltQuoteResponse::Onchain(response) => response.into(),
+                    MeltQuoteResponse::Custom((PaymentMethod::Custom(method), response)) => {
+                        NotificationPayload::CustomMeltQuoteResponse(method, response).into()
+                    }
+                    MeltQuoteResponse::Custom(_) => return Ok(None),
+                }
+            }
+        };
+        Ok(Some(event))
+    }
+
+    /// Publish a local change when the mint is using process-local subscriptions.
+    pub fn publish<E: Into<MintEvent<QuoteId>>>(&self, event: E) {
+        if self.database_status.borrow().is_none() {
+            self.local.publish(event);
+        }
     }
 
     /// Helper function to emit a ProofState status
     pub fn proof_state<E: Into<ProofState>>(&self, event: E) {
-        self.publish(event.into());
+        self.publish(MintEvent::from(event.into()));
     }
 
     /// Helper function to publish even of a mint quote being paid
@@ -423,7 +614,7 @@ impl Deref for PubSubManager {
     type Target = Pubsub<MintPubSubSpec>;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.local
     }
 }
 
@@ -631,7 +822,7 @@ mod tests {
             tx.commit().await.unwrap();
 
             let response = spec
-                .get_melt_quote_response(&quote.id)
+                .get_melt_quote_response(&quote.id, None)
                 .await
                 .unwrap()
                 .unwrap();
@@ -643,7 +834,7 @@ mod tests {
             tx.delete_melt_request(&quote.id).await.unwrap();
             tx.commit().await.unwrap();
             let response = spec
-                .get_melt_quote_response(&quote.id)
+                .get_melt_quote_response(&quote.id, None)
                 .await
                 .unwrap()
                 .unwrap();

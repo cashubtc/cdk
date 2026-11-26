@@ -790,6 +790,7 @@ impl Mint {
             let quote_ids = input.quote_ids();
 
             // Verify outputs (keyset, unique blinded secrets, etc.)
+            self.refresh_shared_keysets().await?;
             let outputs_amount = self
                 .verify_outputs(input.outputs())
                 .inspect_err(|_| {

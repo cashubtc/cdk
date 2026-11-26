@@ -272,6 +272,27 @@ mod tests {
     };
 
     #[tokio::test]
+    async fn auth_only_storage_still_loads_coin_keysets() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        db.add_mint(mint_url.clone(), None).await.unwrap();
+        let auth = KeySetInfo {
+            id: make_inactive_keyset().id,
+            unit: CurrencyUnit::Auth,
+            active: true,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        };
+        db.add_mint_keysets(mint_url, vec![auth]).await.unwrap();
+
+        let wallet = create_test_wallet_with_mock(db, Arc::new(MockMintConnector::new())).await;
+        let keysets = wallet.keysets(Default::default()).await.unwrap();
+        assert_eq!(keysets.len(), 1);
+        assert_eq!(keysets[0].id, test_keyset().id);
+        assert_eq!(keysets[0].unit, CurrencyUnit::Sat);
+    }
+
+    #[tokio::test]
     async fn token_proofs_decodes_inactive_keyset_proofs() {
         let active_ks = test_keyset();
         let active_id = active_ks.id;

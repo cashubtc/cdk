@@ -379,10 +379,14 @@ impl MintMetadataCache {
             }
         }
 
-        // Only mark as populated if we actually loaded keysets.
+        // Blind auth can populate the database before the first coin request.
+        // Coin keysets then still need to be fetched from the mint.
         // Don't update `updated_at` — the TTL should reflect when we last
         // fetched from the mint, not when we read from the local DB.
-        new_metadata.status.is_populated = !new_metadata.keysets.is_empty();
+        new_metadata.status.is_populated = new_metadata
+            .keysets
+            .values()
+            .any(|keyset| keyset.unit != CurrencyUnit::Auth);
         new_metadata.status.version += 1;
 
         tracing::info!(

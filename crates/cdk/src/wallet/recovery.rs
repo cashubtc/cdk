@@ -1592,7 +1592,7 @@ mod tests {
 
         // Mock: quote payment is in progress (Pending state)
         let mock_client = Arc::new(MockMintConnector::new());
-        mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+        let pending_response = MeltQuoteBolt11Response {
             quote: quote_id.clone(),
             amount: Amount::from(100),
             fee_reserve: Amount::from(10),
@@ -1603,9 +1603,10 @@ mod tests {
             request: None,
             unit: None,
             method: PaymentMethod::BOLT11,
-        }));
+        };
+        mock_client.set_melt_quote_status_response(Ok(pending_response.clone()));
 
-        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client.clone()).await;
         let report = wallet.recover_incomplete_sagas().await.unwrap();
 
         // Should skip (payment still in progress)
@@ -1619,6 +1620,15 @@ mod tests {
 
         // Saga should still exist
         assert!(db.get_saga(&saga_id).await.unwrap().is_some());
+        mock_client.set_melt_quote_status_response(Ok(pending_response));
+        assert_eq!(
+            wallet
+                .check_melt_quote_status(&quote_id)
+                .await
+                .unwrap()
+                .state,
+            MeltQuoteState::Pending
+        );
     }
 
     #[tokio::test]

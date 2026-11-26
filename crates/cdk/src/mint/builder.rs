@@ -14,6 +14,7 @@ use cdk_common::payment::DynMintPayment;
 use cdk_common::{nut21, nut22};
 use cdk_signatory::signatory::{RotateKeyArguments, Signatory};
 
+use super::keysets::SharedKeysets;
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};
 use super::verification::validate_custom_payment_method;
@@ -629,9 +630,16 @@ impl MintBuilder {
 
     /// Build the mint with the provided signatory
     pub async fn build_with_signatory(
-        #[allow(unused_mut)] mut self,
+        self,
         signatory: Arc<dyn Signatory + Send + Sync>,
     ) -> Result<Arc<Mint>, Error> {
+        self.build(signatory).await.map(Arc::new)
+    }
+
+    async fn build(
+        #[allow(unused_mut)] mut self,
+        signatory: Arc<dyn Signatory + Send + Sync>,
+    ) -> Result<Mint, Error> {
         // Check active keysets and rotate if necessary
         let active_keysets = signatory.keysets().await?;
 
@@ -750,8 +758,7 @@ impl MintBuilder {
                 self.max_inputs,
                 self.max_outputs,
             )
-            .await
-            .map(Arc::new);
+            .await;
         }
         Mint::new(
             self.mint_info,
@@ -762,7 +769,6 @@ impl MintBuilder {
             self.max_outputs,
         )
         .await
-        .map(Arc::new)
     }
 
     /// Units configured so far, with their input fee and denominations
@@ -777,6 +783,10 @@ impl MintBuilder {
         keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
         seed: &[u8],
     ) -> Result<Arc<Mint>, Error> {
+        let shared_keysets = self
+            .keyset_refresh_interval
+            .filter(|interval| interval.as_millis() > 0)
+            .map(|_| SharedKeysets::new(keystore.clone()));
         let in_memory_signatory = Arc::new(
             cdk_signatory::db_signatory::DbSignatory::new(
                 keystore,
@@ -795,7 +805,9 @@ impl MintBuilder {
 
         let signatory = Arc::new(cdk_signatory::embedded::Service::new(in_memory_signatory));
 
-        self.build_with_signatory(signatory).await
+        let mut mint = self.build(signatory).await?;
+        mint.shared_keysets = shared_keysets;
+        Ok(Arc::new(mint))
     }
 }
 

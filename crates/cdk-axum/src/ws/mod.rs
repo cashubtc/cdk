@@ -162,6 +162,7 @@ impl Drop for WsContext {
 /// For simplicity sake this function will spawn tasks for each subscription and
 /// keep them in a hashmap, and will have a single subscriber for all of them.
 pub async fn main_websocket(mut socket: WebSocket, state: MintState) {
+    let mut database_status = state.mint.pubsub_manager().database_notification_status();
     let (publisher, mut subscriber) = mpsc::channel(100);
     let mut context = WsContext {
         state,
@@ -169,8 +170,16 @@ pub async fn main_websocket(mut socket: WebSocket, state: MintState) {
         publisher,
     };
 
-    loop {
+    while *database_status.borrow() != Some(false) {
         tokio::select! {
+            Ok(()) = database_status.changed() => {
+                // Re-subscribe from the current database state after a listener gap.
+                let _ = socket.send(Message::Close(Some(CloseFrame {
+                    code: axum::extract::ws::close_code::RESTART,
+                    reason: "mint state subscription restarted".into(),
+                }))).await;
+                break;
+            }
             Some((sub_id, payload)) = subscriber.recv() => {
                 if !context.subscriptions.contains_key(&sub_id) {
                     // It may be possible an incoming message has come from a dropped Subscriptions that has not yet been

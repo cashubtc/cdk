@@ -26,11 +26,6 @@ impl MintRPCServer {
         method_name: Option<String>,
     ) -> Result<MintMethodSettings, Status> {
         self.ensure_mutation_allowed().await?;
-        let mut info = self
-            .mint
-            .mint_info()
-            .await
-            .map_err(|err| Status::internal(err.to_string()))?;
 
         let unit = CurrencyUnit::from_str(unit)
             .map_err(|_| Status::invalid_argument("Invalid unit".to_string()))?;
@@ -42,40 +37,37 @@ impl MintRPCServer {
             .get_payment_processor(unit.clone(), payment_method.clone())
             .map_err(|_| Status::invalid_argument("Unit payment method pair is not supported"))?;
 
-        let current_nut04_settings = info.nuts.nut04.remove_settings(&unit, &payment_method);
+        self.update_mint_info_with(|info| {
+            let current_nut04_settings = info.nuts.nut04.remove_settings(&unit, &payment_method);
 
-        let updated_method_settings = MintMethodSettings {
-            method: payment_method,
-            unit,
-            method_name: method_name.or_else(|| {
-                current_nut04_settings
-                    .as_ref()
-                    .and_then(|s| s.method_name.clone())
-            }),
-            min_amount: min_amount
-                .map(Amount::from)
-                .or_else(|| current_nut04_settings.as_ref().and_then(|s| s.min_amount)),
-            max_amount: max_amount
-                .map(Amount::from)
-                .or_else(|| current_nut04_settings.as_ref().and_then(|s| s.max_amount)),
-            options: options.or_else(|| {
-                current_nut04_settings
-                    .as_ref()
-                    .and_then(|s| s.options.clone())
-            }),
-        };
+            let updated_method_settings = MintMethodSettings {
+                method: payment_method.clone(),
+                unit: unit.clone(),
+                method_name: method_name.clone().or_else(|| {
+                    current_nut04_settings
+                        .as_ref()
+                        .and_then(|s| s.method_name.clone())
+                }),
+                min_amount: min_amount
+                    .map(Amount::from)
+                    .or_else(|| current_nut04_settings.as_ref().and_then(|s| s.min_amount)),
+                max_amount: max_amount
+                    .map(Amount::from)
+                    .or_else(|| current_nut04_settings.as_ref().and_then(|s| s.max_amount)),
+                options: options.clone().or_else(|| {
+                    current_nut04_settings
+                        .as_ref()
+                        .and_then(|s| s.options.clone())
+                }),
+            };
 
-        info.nuts
-            .nut04
-            .methods
-            .push(updated_method_settings.clone());
-
-        self.mint
-            .set_mint_info(info)
-            .await
-            .map_err(|err| Status::internal(err.to_string()))?;
-
-        Ok(updated_method_settings)
+            info.nuts
+                .nut04
+                .methods
+                .push(updated_method_settings.clone());
+            updated_method_settings
+        })
+        .await
     }
 
     /// Enables or disables minting and melting for the whole mint, keeping
@@ -89,32 +81,25 @@ impl MintRPCServer {
         melt_disabled: Option<bool>,
     ) -> Result<(bool, bool), Status> {
         self.ensure_mutation_allowed().await?;
-        let mut info = self
-            .mint
-            .mint_info()
-            .await
-            .map_err(|err| Status::internal(err.to_string()))?;
-
         if mint_disabled.is_none() && melt_disabled.is_none() {
+            let info = self
+                .mint
+                .mint_info()
+                .await
+                .map_err(|err| Status::internal(err.to_string()))?;
             return Ok((info.nuts.nut04.disabled, info.nuts.nut05.disabled));
         }
 
-        if let Some(disabled) = mint_disabled {
-            info.nuts.nut04.disabled = disabled;
-        }
-
-        if let Some(disabled) = melt_disabled {
-            info.nuts.nut05.disabled = disabled;
-        }
-
-        let flags = (info.nuts.nut04.disabled, info.nuts.nut05.disabled);
-
-        self.mint
-            .set_mint_info(info)
-            .await
-            .map_err(|err| Status::internal(err.to_string()))?;
-
-        Ok(flags)
+        self.update_mint_info_with(|info| {
+            if let Some(disabled) = mint_disabled {
+                info.nuts.nut04.disabled = disabled;
+            }
+            if let Some(disabled) = melt_disabled {
+                info.nuts.nut05.disabled = disabled;
+            }
+            (info.nuts.nut04.disabled, info.nuts.nut05.disabled)
+        })
+        .await
     }
 
     /// Updates the settings of one melt (NUT-05) payment method, keeping the
@@ -131,11 +116,6 @@ impl MintRPCServer {
         method_name: Option<String>,
     ) -> Result<MeltMethodSettings, Status> {
         self.ensure_mutation_allowed().await?;
-        let mut info = self
-            .mint
-            .mint_info()
-            .await
-            .map_err(|err| Status::internal(err.to_string()))?;
 
         let unit = CurrencyUnit::from_str(unit)
             .map_err(|_| Status::invalid_argument("Invalid unit".to_string()))?;
@@ -147,40 +127,37 @@ impl MintRPCServer {
             .get_payment_processor(unit.clone(), payment_method.clone())
             .map_err(|_| Status::invalid_argument("Unit payment method pair is not supported"))?;
 
-        let current_nut05_settings = info.nuts.nut05.remove_settings(&unit, &payment_method);
+        self.update_mint_info_with(|info| {
+            let current_nut05_settings = info.nuts.nut05.remove_settings(&unit, &payment_method);
 
-        let updated_method_settings = MeltMethodSettings {
-            method: payment_method,
-            unit,
-            method_name: method_name.or_else(|| {
-                current_nut05_settings
-                    .as_ref()
-                    .and_then(|s| s.method_name.clone())
-            }),
-            min_amount: min_amount
-                .map(Amount::from)
-                .or_else(|| current_nut05_settings.as_ref().and_then(|s| s.min_amount)),
-            max_amount: max_amount
-                .map(Amount::from)
-                .or_else(|| current_nut05_settings.as_ref().and_then(|s| s.max_amount)),
-            options: options.or_else(|| {
-                current_nut05_settings
-                    .as_ref()
-                    .and_then(|s| s.options.clone())
-            }),
-        };
+            let updated_method_settings = MeltMethodSettings {
+                method: payment_method.clone(),
+                unit: unit.clone(),
+                method_name: method_name.clone().or_else(|| {
+                    current_nut05_settings
+                        .as_ref()
+                        .and_then(|s| s.method_name.clone())
+                }),
+                min_amount: min_amount
+                    .map(Amount::from)
+                    .or_else(|| current_nut05_settings.as_ref().and_then(|s| s.min_amount)),
+                max_amount: max_amount
+                    .map(Amount::from)
+                    .or_else(|| current_nut05_settings.as_ref().and_then(|s| s.max_amount)),
+                options: options.clone().or_else(|| {
+                    current_nut05_settings
+                        .as_ref()
+                        .and_then(|s| s.options.clone())
+                }),
+            };
 
-        info.nuts
-            .nut05
-            .methods
-            .push(updated_method_settings.clone());
-
-        self.mint
-            .set_mint_info(info)
-            .await
-            .map_err(|err| Status::internal(err.to_string()))?;
-
-        Ok(updated_method_settings)
+            info.nuts
+                .nut05
+                .methods
+                .push(updated_method_settings.clone());
+            updated_method_settings
+        })
+        .await
     }
 }
 

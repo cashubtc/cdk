@@ -1,15 +1,15 @@
 //! Main Signatory implementation
 //!
-//! It is named db_signatory because it uses a database to persist state. The
-//! database is a persistence layer only: it is read once on boot to hydrate the
-//! in-memory keysets and written only when rotating keys. Every other operation
-//! is served from and mutates in-memory state.
+//! The database persists rotations. Signing and proof verification use the
+//! in-memory keysets. In shared-keystore mode, the signatory reloads those keys
+//! periodically and when a caller requests the current keysets.
 //!
 //! Boot is strict: `new` attempts the initial keyset load from the database
 //! once and bubbles up any error, so a failed load fails construction rather
 //! than leaving a signatory without keys. On success the returned signatory is
 //! loaded and serving.
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -62,6 +62,7 @@ pub struct DbSignatory {
     /// coordination point (advisory lock and epoch token); this only mirrors
     /// it.
     keysets: ArcSwap<KeysetSnapshot>,
+    refresh_keysets_on_read: AtomicBool,
     /// Serializes local keyset rotations. The standalone signatory gRPC server
     /// calls rotate_keyset directly (no embedded single-runner), so two
     /// concurrent local rotations of the same unit could otherwise open nested
@@ -107,6 +108,7 @@ impl DbSignatory {
 
         let signatory = Self {
             keysets: ArcSwap::from_pointee(KeysetSnapshot::default()),
+            refresh_keysets_on_read: AtomicBool::new(false),
             rotation_lock: Default::default(),
             localstore,
             custom_paths,
@@ -145,6 +147,7 @@ impl DbSignatory {
             Some(ms) if ms > 0 => ms,
             _ => return,
         };
+        self.refresh_keysets_on_read.store(true, Ordering::Relaxed);
 
         let weak = Arc::downgrade(self);
 
@@ -243,14 +246,9 @@ impl DbSignatory {
     /// derived in the current snapshot (a memory copy, no crypto); only a
     /// genuinely new keyset needs derivation.
     ///
-    /// Publishing is conditional on the database epoch rather than a process
-    /// lock. `keysets_epoch` is a counter bumped in every keyset-writing
-    /// transaction, so it only ever increases and totally orders changes. Two
-    /// reloads can race here (a periodic refresh against a rotation's
-    /// post-commit reload, or an under-lock reload against the following
-    /// post-commit reload); the compare-and-swap lets the newer database view
-    /// win regardless of arrival order, so an older snapshot can never overwrite
-    /// a newer one. Signing only reads the pointer, so it stays lock-free.
+    /// The watch channel's write lock publishes the signing keys and the public
+    /// snapshot together. The database epoch prevents a slower reload from
+    /// replacing a newer snapshot. Signing still reads the pointer lock-free.
     fn publish_snapshot(
         &self,
         epoch: u64,
@@ -279,36 +277,22 @@ impl DbSignatory {
             epoch: Some(epoch),
         });
 
-        loop {
+        self.keyset_updates.send_if_modified(|public| {
             let current = self.keysets.load();
             if current.epoch.is_some_and(|cur| epoch <= cur) {
-                // A concurrent reload already published an equal-or-newer view.
-                return Ok(());
+                return false;
             }
-            let prev = self.keysets.compare_and_swap(&current, snapshot.clone());
-            if Arc::ptr_eq(&prev, &current) {
-                break;
-            }
-            // Lost the swap: another reload replaced the pointer between our load
-            // and CAS. Retry to re-check its epoch against ours.
-        }
-        self.publish_latest();
-        Ok(())
-    }
 
-    /// Publish the latest stored keyset snapshot to watch subscribers.
-    ///
-    /// Reads the current `ArcSwap` snapshot inside the watch send closure, which
-    /// holds the channel's send lock, so concurrent reloads publish in the
-    /// pointer's epoch order and the subscriber view never regresses. This
-    /// mirrors the compare-and-swap that orders the stored snapshot; without it
-    /// two swap winners could still send stale-then-fresh out of order.
-    fn publish_latest(&self) {
-        self.keyset_updates.send_modify(|out| {
-            let latest = self.keysets.load();
-            out.pubkey = self.xpub;
-            out.keysets = latest.by_id.values().map(|k| k.into()).collect();
+            public.pubkey = self.xpub;
+            public.keysets = snapshot
+                .by_id
+                .values()
+                .map(|keyset| keyset.into())
+                .collect();
+            self.keysets.store(snapshot);
+            true
         });
+        Ok(())
     }
 
     fn generate_keyset(&self, keyset_info: &MintKeySetInfo) -> Result<MintKeySet, Error> {
@@ -391,7 +375,10 @@ impl Signatory for DbSignatory {
 
     #[tracing::instrument(skip_all)]
     async fn keysets(&self) -> Result<SignatoryKeysets, Error> {
-        Ok(self.keysets_snapshot())
+        if self.refresh_keysets_on_read.load(Ordering::Relaxed) {
+            self.load_keys_from_db().await?;
+        }
+        Ok(self.keyset_updates.borrow().clone())
     }
 
     #[tracing::instrument(skip_all)]
@@ -938,6 +925,7 @@ mod test {
         // Only B reloads from the database; A drives the rotation. A short
         // interval keeps the test quick.
         instance_b.spawn_keyset_refresh(Some(Duration::from_millis(500)));
+        let mut updates = instance_b.subscribe_keysets().await.expect("keysets");
 
         let rotated = instance_a
             .rotate_keyset(RotateKeyArguments {
@@ -951,22 +939,16 @@ mod test {
             .expect("rotate_keyset");
 
         // B learns about it on its next periodic reload from the database.
-        let mut seen = false;
-        for _ in 0..40 {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            let keysets = instance_b.keysets().await.expect("keysets");
-            if keysets
+        tokio::time::timeout(Duration::from_secs(5), updates.changed())
+            .await
+            .expect("periodic reload")
+            .expect("keyset update");
+        assert!(
+            updates
+                .borrow()
                 .keysets
                 .iter()
-                .any(|k| k.id == rotated.id && k.active)
-            {
-                seen = true;
-                break;
-            }
-        }
-
-        assert!(
-            seen,
+                .any(|k| k.id == rotated.id && k.active),
             "instance B should reconcile the peer rotation without a restart"
         );
     }

@@ -3,13 +3,14 @@
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use cdk_common::database::mint::{Acquired, SagaDatabase, SagaTransaction};
+use cdk_common::database::mint::{Acquired, QuotesTransaction, SagaDatabase, SagaTransaction};
 use cdk_common::database::Error;
 use cdk_common::mint;
 use cdk_common::util::unix_time;
 use serde_json;
 
 use super::{SQLMintDatabase, SQLTransaction};
+use crate::database::DatabaseExecutor;
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
 use crate::{column_as_number, column_as_string, unpack_into};
@@ -74,6 +75,19 @@ fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
     })
 }
 
+impl<RM> SQLTransaction<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    async fn saga_write_time(&mut self, kind: mint::OperationKind) -> Result<u64, Error> {
+        if kind == mint::OperationKind::Swap && RM::Connection::name() == "postgres" {
+            self.melt_lease_time().await
+        } else {
+            Ok(unix_time())
+        }
+    }
+}
+
 #[async_trait]
 impl<RM> SagaTransaction for SQLTransaction<RM>
 where
@@ -117,7 +131,7 @@ where
     }
 
     async fn add_saga(&mut self, saga: &mint::Saga) -> Result<(), Self::Err> {
-        let current_time = unix_time();
+        let current_time = self.saga_write_time(saga.operation_kind).await?;
 
         query(
             r#"
@@ -152,7 +166,7 @@ where
         saga: &mut Acquired<mint::Saga>,
         new_state: mint::SagaStateEnum,
     ) -> Result<(), Self::Err> {
-        let current_time = unix_time();
+        let current_time = self.saga_write_time(saga.operation_kind).await?;
 
         let affected = query(
             r#"

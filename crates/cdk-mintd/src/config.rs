@@ -98,6 +98,8 @@ pub struct Info {
     /// the database. Unset or `0` disables it; set an interval only when several
     /// mints or signatories share one database.
     pub keyset_refresh_interval_ms: Option<u64>,
+    /// Deliver WebSocket state updates through a session connection to PostgreSQL.
+    pub postgres_state_notifications: bool,
 
     pub http_cache: cache::Config,
 
@@ -130,6 +132,7 @@ impl Default for Info {
             use_keyset_v2: None,
             keyset_version: None,
             keyset_refresh_interval_ms: None,
+            postgres_state_notifications: false,
             http_cache: cache::Config::default(),
             enable_info_page: Some(true),
             logging: LoggingConfig::default(),
