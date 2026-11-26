@@ -7,6 +7,22 @@
 
 ## [Unreleased]
 
+## [0.18.4](https://github.com/cashubtc/cdk/releases/tag/v0.18.4)
+
+### Summary
+
+Version 0.18.4 fixes HTLC refund spending, rejects duplicate spending condition tags and ambiguous short keyset IDs, and corrects wallet handling of melt change after a keyset rotation and of repeated proofs on receive. It also fixes `cdk-mintd` builds that enable BDK without CLN or LND.
+
+### Fixed
+
+- cashu: Short keyset IDs resolve only when they match a single full V2 keyset ID, as required by NUT-00; ambiguous matches return `AmbiguousShortKeysetId` instead of the first match. Full IDs and repeated metadata for the same keyset still resolve (#2861) ([thesimplekid]).
+- cashu: Spending conditions that repeat a `locktime`, `pubkeys`, `refund`, `sigflag`, `n_sigs`, or `n_sigs_refund` tag are rejected with `DuplicateTag` instead of using the first occurrence (#2888) ([robwoodgate]).
+- cashu: Expired HTLCs can be refunded with a signature-only witness that carries no preimage (#2641) ([Arthur031221]).
+- cashu: HTLC verification falls back to the refund path when the receiver path fails, so an expired HTLC can be spent with refund signatures, or as anyone-can-spend, even when the witness also carries a valid preimage (#2894) ([amartya1523]).
+- cdk: Melt change is unblinded with the keyset the blank outputs were created for rather than the keyset active at finalization, so change remains usable when the keyset rotates during a melt (#2753) ([robwoodgate]).
+- cdk: `receive_proofs` rejects repeated proofs before the receive saga starts, so nothing is reserved or recorded for a request the mint would reject (#2867) ([lorenzolfm]).
+- cdk-mintd: Builds with the `bdk` feature but without `cln` or `lnd` compile again; the shared fee defaults are available to the BDK backend (#2846, #3020) ([thesimplekid]).
+
 ## [0.18.3](https://github.com/cashubtc/cdk/releases/tag/v0.18.3)
 
 ### Summary
@@ -1193,3 +1209,6 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [orangeshyguy21]: https://github.com/orangeshyguy21
 [j-kon]: https://github.com/j-kon
 [kcres001]: https://github.com/kcres001
+[Arthur031221]: https://github.com/Arthur031221
+[amartya1523]: https://github.com/amartya1523
+[lorenzolfm]: https://github.com/lorenzolfm
