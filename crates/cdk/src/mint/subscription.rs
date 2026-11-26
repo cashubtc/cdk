@@ -34,7 +34,9 @@ pub struct MintPubSubSpec {
 }
 
 impl MintPubSubSpec {
-    /// Call Mint::check_mint_quote_payments to update quotes by pinging the payment backend
+    /// Call Mint::check_mint_quote_payments to update quotes by pinging the payment backend.
+    ///
+    /// A quote whose check fails is returned as stored.
     async fn get_mint_quotes(
         &self,
         quote_ids: &[QuoteId],
@@ -52,13 +54,22 @@ impl MintPubSubSpec {
             .into_iter()
             .flatten()
         {
-            Mint::check_mint_quote_payments(
+            // A failed backend check leaves the quote as stored, so send that
+            // state rather than failing the backfill for every other filter.
+            if let Err(err) = Mint::check_mint_quote_payments(
                 self.db.clone(),
                 self.payment_processors.clone(),
                 self.pubsub_manager.upgrade(),
                 &mut quote,
             )
-            .await?;
+            .await
+            {
+                tracing::warn!(
+                    quote_id = %quote.id,
+                    error = %err,
+                    "Could not check mint quote payment for subscription, sending stored state",
+                );
+            }
 
             quotes.insert(quote.id.clone(), quote);
         }
@@ -517,6 +528,56 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(quote_ids, vec![first_quote_id, second_quote_id]);
+    }
+
+    #[tokio::test]
+    async fn get_events_from_db_keeps_quotes_whose_payment_check_fails() {
+        let db: DynMintDatabase = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory mint database"),
+        );
+        let paid_quote_id = QuoteId::new();
+        let unpaid_quote_id = QuoteId::new();
+        add_mint_quote(&db, bolt11_quote(paid_quote_id.clone(), 21)).await;
+        // Unpaid, so the backfill asks the payment backend about it. There is
+        // no backend for it here, so that check fails.
+        let mut tx = db.begin_transaction().await.expect("begin transaction");
+        tx.add_mint_quote(bolt11_quote(unpaid_quote_id.clone(), 34))
+            .await
+            .expect("add mint quote");
+        tx.commit().await.expect("commit transaction");
+
+        let snaps = rotated_snapshots(1).await;
+        let signatory = MockSignatory::new(snaps[0].clone());
+
+        let spec =
+            MintPubSubSpec::new_instance((db, Arc::new(HashMap::new()), Arc::new(signatory)));
+        let events = spec
+            .get_events_from_db(&[
+                NotificationId::MintQuoteBolt11(paid_quote_id.clone()),
+                NotificationId::MintQuoteBolt11(unpaid_quote_id.clone()),
+            ])
+            .await
+            .expect("get events");
+
+        let states = events
+            .into_iter()
+            .map(|event| match event.into_inner() {
+                NotificationPayload::MintQuoteBolt11Response(response) => {
+                    (response.quote, response.state)
+                }
+                payload => panic!("unexpected payload: {payload:?}"),
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            states,
+            vec![
+                (paid_quote_id, MintQuoteState::Paid),
+                (unpaid_quote_id, MintQuoteState::Unpaid),
+            ]
+        );
     }
 
     fn melt_quote(method: cdk_common::PaymentMethod, state: MeltQuoteState) -> MeltQuote {
