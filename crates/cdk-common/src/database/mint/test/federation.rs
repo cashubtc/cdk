@@ -5,7 +5,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use crate::database::mint::{
-    Database, FederationAlephBftBackupMetadata, FederationJournalDatabase,
+    Database, FederationAlephBftBackupMetadata, FederationCheckpointSelector, FederationDkgRecord,
+    FederationFrostDkgRecord, FederationIndexRange, FederationJournalDatabase,
+    FederationJournalEntryKey, FederationPaymentObservationSelection, FederationSignatureShareKey,
 };
 use crate::error::{Error, ErrorResponse};
 use crate::federation::{
@@ -27,13 +29,15 @@ use crate::federation::{
     FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
     FederationFrostSealedStorageMetadata, FederationId, FederationJournalAppendOutcome,
     FederationJournalConsensusEvidence, FederationJournalEntry, FederationMaterializedStateDigest,
-    FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
-    FederationOnchainConfirmationPolicy, FederationOperation, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
-    FederationPaymentObservationContext, FederationPaymentObservationRecord,
-    FederationPaymentObservationReport, FederationPaymentObservationReportStatus,
-    FederationSignatureShareRecord, InMemoryFederationJournal, MemberConfigPrivate,
-    MemberConfigPublic, MemberId, ThresholdParams, FEDERATION_CHECKPOINT_VERSION,
+    FederationMaterializedStateKey, FederationMaterializedStateKeyRecord,
+    FederationMaterializedStateKind, FederationMintQuoteOperation,
+    FederationMintQuotePaymentObservation, FederationOnchainConfirmationPolicy,
+    FederationOperation, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationPaymentObservationRecord, FederationPaymentObservationReport,
+    FederationPaymentObservationReportStatus, FederationSignatureShareRecord,
+    InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams,
+    FEDERATION_CHECKPOINT_VERSION,
 };
 use crate::mint::{MeltPaymentRequest, MeltQuote, Operation, OperationKind};
 use crate::mint_url::MintUrl;
@@ -423,7 +427,7 @@ where
     tx.commit().await.expect("commit");
 
     let entries = db
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal entries");
     assert_eq!(entries.len(), 2);
@@ -448,7 +452,10 @@ where
     assert_eq!(tip.status, FederationOperationStatus::Rejected);
 
     let first_by_operation_id = db
-        .get_federation_journal_entry_by_operation_id(first.operation_id)
+        .get_federation_journal_entry(
+            FederationJournalEntryKey::Operation(first.operation_id),
+            None,
+        )
         .await
         .expect("first entry by operation id")
         .expect("first entry");
@@ -463,7 +470,10 @@ where
     );
     for conflict_key in &first.conflict_keys {
         let first_by_conflict_key = db
-            .get_federation_journal_entry_by_conflict_key(conflict_key)
+            .get_federation_journal_entry(
+                FederationJournalEntryKey::ConflictKey(conflict_key),
+                None,
+            )
             .await
             .expect("first entry by conflict key")
             .expect("first conflict owner");
@@ -471,7 +481,10 @@ where
     }
 
     let second_by_operation_id = db
-        .get_federation_journal_entry_by_operation_id(second.operation_id)
+        .get_federation_journal_entry(
+            FederationJournalEntryKey::Operation(second.operation_id),
+            None,
+        )
         .await
         .expect("second entry by operation id")
         .expect("second entry");
@@ -483,7 +496,10 @@ where
     assert_eq!(second_by_operation_id.rejection(), Some(&rejection));
 
     let missing_by_operation_id = db
-        .get_federation_journal_entry_by_operation_id(FederationOperationId::from_bytes([99; 32]))
+        .get_federation_journal_entry(
+            FederationJournalEntryKey::Operation(FederationOperationId::from_bytes([99; 32])),
+            None,
+        )
         .await
         .expect("missing entry by operation id");
     assert!(missing_by_operation_id.is_none());
@@ -493,26 +509,29 @@ where
         .pop()
         .expect("missing conflict key");
     assert!(db
-        .get_federation_journal_entry_by_conflict_key(&missing_conflict_key)
+        .get_federation_journal_entry(
+            FederationJournalEntryKey::ConflictKey(&missing_conflict_key),
+            None
+        )
         .await
         .expect("missing entry by conflict key")
         .is_none());
 
     let catch_up_entries = db
-        .get_federation_journal_entries_from(1)
+        .get_federation_journal_entries(FederationIndexRange::starting_at(1))
         .await
         .expect("catch-up entries");
     assert_eq!(catch_up_entries.len(), 1);
     assert_eq!(catch_up_entries[0].operation_id, second.operation_id);
     assert_eq!(catch_up_entries[0].rejection(), Some(&rejection));
     let bounded_entries = db
-        .get_federation_journal_entries_range(0, 2, 1)
+        .get_federation_journal_entries(FederationIndexRange::page(0, 2, 1))
         .await
         .expect("bounded catch-up entries");
     assert_eq!(bounded_entries.len(), 1);
     assert_eq!(bounded_entries[0].operation_id, first.operation_id);
     assert!(db
-        .get_federation_journal_entries_range(1, 1, 10)
+        .get_federation_journal_entries(FederationIndexRange::page(1, 1, 10))
         .await
         .expect("empty bounded catch-up entries")
         .is_empty());
@@ -582,7 +601,7 @@ where
     tx.commit().await.expect("commit application states");
 
     let persisted = db
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("load application states");
     let persisted_states = persisted
@@ -651,13 +670,13 @@ where
     tx.add_federation_aleph_bft_finalized_items(&finalized_items)
         .await
         .expect("persist finalized items");
-    tx.add_federation_aleph_bft_finalized_item(&finalized_items[0])
+    tx.add_federation_aleph_bft_finalized_items(std::slice::from_ref(&finalized_items[0]))
         .await
         .expect("idempotent finalized item replay");
     tx.commit().await.expect("commit finalized items");
 
     let persisted = db
-        .get_federation_aleph_bft_finalized_items()
+        .get_federation_aleph_bft_finalized_items(FederationIndexRange::ALL)
         .await
         .expect("persisted AlephBFT finalized items");
     assert_eq!(persisted.len(), finalized_items.len());
@@ -669,19 +688,19 @@ where
     assert_eq!(persisted_json, finalized_json);
 
     let ranged = db
-        .get_federation_aleph_bft_finalized_items_from(1)
+        .get_federation_aleph_bft_finalized_items(FederationIndexRange::starting_at(1))
         .await
         .expect("ranged AlephBFT finalized items");
     assert_eq!(ranged.len(), 1);
     assert_eq!(ranged[0].accepted_item_index, 1);
     let bounded = db
-        .get_federation_aleph_bft_finalized_items_range(0, 2, 1)
+        .get_federation_aleph_bft_finalized_items(FederationIndexRange::page(0, 2, 1))
         .await
         .expect("bounded AlephBFT finalized items");
     assert_eq!(bounded.len(), 1);
     assert_eq!(bounded[0].accepted_item_index, 0);
     assert!(db
-        .get_federation_aleph_bft_finalized_items_range(1, 1, 10)
+        .get_federation_aleph_bft_finalized_items(FederationIndexRange::page(1, 1, 10))
         .await
         .expect("empty bounded AlephBFT finalized items")
         .is_empty());
@@ -705,7 +724,7 @@ where
         .await
         .expect("begin conflicting finalized item");
     assert!(tx
-        .add_federation_aleph_bft_finalized_item(&conflicting)
+        .add_federation_aleph_bft_finalized_items(std::slice::from_ref(&conflicting))
         .await
         .is_err());
     tx.rollback()
@@ -810,7 +829,7 @@ where
         0
     );
     assert!(db
-        .get_federation_materialized_state_keys()
+        .get_federation_materialized_state_keys(FederationMaterializedStateKind::MintQuote)
         .await
         .expect("materialized keys after application rollback")
         .is_empty());
@@ -851,7 +870,7 @@ where
     assert_eq!(frontier.application_next_index, 2);
     assert_eq!(frontier.application_digest, expected_application_digest);
     let materialized_keys = db
-        .get_federation_materialized_state_keys()
+        .get_federation_materialized_state_keys(FederationMaterializedStateKind::MintQuote)
         .await
         .expect("direct materialized-state keys");
     assert_eq!(materialized_keys.len(), 1);
@@ -941,7 +960,7 @@ where
         .expect("persist rolled-back checkpoint quorum");
     tx.rollback().await.expect("rollback checkpoint retention");
     assert_eq!(
-        db.get_federation_checkpoint(pre_scheduled_recovery_id)
+        db.get_federation_checkpoint(FederationCheckpointSelector::Id(pre_scheduled_recovery_id))
             .await
             .expect("recovery candidate after retention rollback"),
         Some(pre_scheduled_recovery)
@@ -953,7 +972,7 @@ where
         vec![pre_scheduled_recovery_signature]
     );
     assert!(db
-        .get_federation_checkpoint(checkpoint_id)
+        .get_federation_checkpoint(FederationCheckpointSelector::Id(checkpoint_id))
         .await
         .expect("scheduled checkpoint after retention rollback")
         .is_none());
@@ -982,7 +1001,7 @@ where
     tx.commit().await.expect("commit checkpoint candidate");
 
     assert!(db
-        .get_federation_checkpoint(pre_scheduled_recovery_id)
+        .get_federation_checkpoint(FederationCheckpointSelector::Id(pre_scheduled_recovery_id))
         .await
         .expect("superseded recovery candidate lookup")
         .is_none());
@@ -993,26 +1012,28 @@ where
         .is_empty());
 
     assert_eq!(
-        db.get_federation_checkpoint(checkpoint_id)
+        db.get_federation_checkpoint(FederationCheckpointSelector::Id(checkpoint_id))
             .await
             .expect("stored checkpoint"),
         Some(checkpoint.clone())
     );
     assert_eq!(
-        db.get_latest_federation_checkpoint(FederationCheckpointKind::Scheduled)
-            .await
-            .expect("latest scheduled candidate"),
+        db.get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            FederationCheckpointKind::Scheduled
+        ))
+        .await
+        .expect("latest scheduled candidate"),
         Some(checkpoint.clone())
     );
     assert_eq!(
-        db.get_next_federation_scheduled_checkpoint(0)
+        db.get_federation_checkpoint(FederationCheckpointSelector::NextScheduled(0))
             .await
             .expect("first scheduled candidate"),
         Some(checkpoint.clone())
     );
     for sequence in [1, u64::MAX] {
         assert!(db
-            .get_next_federation_scheduled_checkpoint(sequence)
+            .get_federation_checkpoint(FederationCheckpointSelector::NextScheduled(sequence))
             .await
             .expect("no later scheduled candidate")
             .is_none());
@@ -1024,31 +1045,33 @@ where
         quorum.signatures
     );
     assert_eq!(
-        db.get_federation_checkpoint_quorum(checkpoint_id)
+        db.get_federation_checkpoint_quorum(FederationCheckpointSelector::Id(checkpoint_id))
             .await
             .expect("stored checkpoint quorum"),
         Some(quorum.clone())
     );
     assert_eq!(
-        db.get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Scheduled)
-            .await
-            .expect("latest scheduled quorum"),
+        db.get_federation_checkpoint_quorum(FederationCheckpointSelector::Latest(
+            FederationCheckpointKind::Scheduled
+        ))
+        .await
+        .expect("latest scheduled quorum"),
         Some(quorum.clone())
     );
     assert_eq!(
-        db.get_next_federation_scheduled_checkpoint_quorum(0)
+        db.get_federation_checkpoint_quorum(FederationCheckpointSelector::NextScheduled(0))
             .await
             .expect("first scheduled quorum"),
         Some(quorum.clone())
     );
     assert_eq!(
-        db.get_next_federation_scheduled_checkpoint_quorum(1)
+        db.get_federation_checkpoint_quorum(FederationCheckpointSelector::NextScheduled(1))
             .await
             .expect("no later scheduled quorum"),
         None
     );
     assert_eq!(
-        db.get_trusted_federation_checkpoint_quorum()
+        db.get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
             .await
             .expect("trusted checkpoint quorum"),
         Some(quorum.clone())
@@ -1110,16 +1133,26 @@ where
         .expect("promote recovery checkpoint");
     tx.commit().await.expect("commit recovery checkpoint");
     assert_eq!(
-        db.get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Recovery)
-            .await
-            .expect("latest recovery quorum"),
+        db.get_federation_checkpoint_quorum(FederationCheckpointSelector::Latest(
+            FederationCheckpointKind::Recovery
+        ))
+        .await
+        .expect("latest recovery quorum"),
         Some(recovery_quorum.clone())
     );
     assert_eq!(
-        db.get_federation_checkpoints_after(1)
+        db.get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            FederationCheckpointKind::Recovery
+        ))
+        .await
+        .expect("latest recovery checkpoint"),
+        Some(recovery.clone())
+    );
+    assert_eq!(
+        db.get_federation_checkpoint(FederationCheckpointSelector::Trusted)
             .await
-            .expect("ordered checkpoints after cursor"),
-        vec![checkpoint.clone(), recovery.clone()]
+            .expect("trusted checkpoint"),
+        Some(recovery.clone())
     );
     assert_eq!(
         db.get_federation_checkpoint_frontier()
@@ -1177,7 +1210,7 @@ where
         .expect("persist covering scheduled quorum");
     tx.commit().await.expect("commit covering scheduled quorum");
     assert_eq!(
-        db.get_federation_checkpoint(recovery_id)
+        db.get_federation_checkpoint(FederationCheckpointSelector::Id(recovery_id))
             .await
             .expect("trusted recovery retained before promotion"),
         Some(recovery.clone())
@@ -1193,12 +1226,12 @@ where
         .await
         .expect("commit covering scheduled promotion");
     assert!(db
-        .get_federation_checkpoint(recovery_id)
+        .get_federation_checkpoint(FederationCheckpointSelector::Id(recovery_id))
         .await
         .expect("covered recovery checkpoint lookup")
         .is_none());
     assert!(db
-        .get_federation_checkpoint_quorum(recovery_id)
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Id(recovery_id))
         .await
         .expect("covered recovery quorum lookup")
         .is_none());
@@ -1208,25 +1241,25 @@ where
         .expect("covered recovery signatures")
         .is_empty());
     assert_eq!(
-        db.get_federation_checkpoint(checkpoint_id)
+        db.get_federation_checkpoint(FederationCheckpointSelector::Id(checkpoint_id))
             .await
             .expect("first scheduled checkpoint retained"),
         Some(checkpoint)
     );
     assert_eq!(
-        db.get_federation_checkpoint_quorum(checkpoint_id)
+        db.get_federation_checkpoint_quorum(FederationCheckpointSelector::Id(checkpoint_id))
             .await
             .expect("first scheduled quorum retained"),
         Some(quorum)
     );
     assert_eq!(
-        db.get_trusted_federation_checkpoint_quorum()
+        db.get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
             .await
             .expect("covering scheduled checkpoint trusted"),
         Some(second_scheduled_quorum)
     );
     let retained_entries = db
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal bodies retained from recovery floor");
     assert_eq!(retained_entries.len(), entries.len());
@@ -1236,7 +1269,7 @@ where
         .all(|(retained, expected)| retained.index == expected.index
             && retained.operation_id == expected.operation_id));
     assert_eq!(
-        db.get_federation_aleph_bft_finalized_items()
+        db.get_federation_aleph_bft_finalized_items(FederationIndexRange::ALL)
             .await
             .expect("finalized bodies retained from recovery floor")
             .len(),
@@ -1284,10 +1317,11 @@ where
     DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
 {
     assert_eq!(
-        db.get_federation_aleph_bft_backup_bytes(7)
+        db.get_federation_aleph_bft_backup_chunks(7, FederationIndexRange::ALL)
             .await
-            .expect("missing backup session"),
-        None
+            .expect("missing backup session")
+            .concat(),
+        Vec::<u8>::new()
     );
     assert_eq!(
         db.get_federation_aleph_bft_backup_metadata(7)
@@ -1302,10 +1336,11 @@ where
         .expect("empty backup append");
     tx.commit().await.expect("commit empty append");
     assert_eq!(
-        db.get_federation_aleph_bft_backup_bytes(7)
+        db.get_federation_aleph_bft_backup_chunks(7, FederationIndexRange::ALL)
             .await
-            .expect("empty append should not create row"),
-        None
+            .expect("empty append should not create row")
+            .concat(),
+        Vec::<u8>::new()
     );
 
     let mut tx = Database::begin_transaction(&db).await.expect("begin first");
@@ -1334,10 +1369,11 @@ where
     tx.commit().await.expect("commit second bytes");
 
     assert_eq!(
-        db.get_federation_aleph_bft_backup_bytes(7)
+        db.get_federation_aleph_bft_backup_chunks(7, FederationIndexRange::ALL)
             .await
-            .expect("session 7 backup bytes"),
-        Some(b"first-second".to_vec())
+            .expect("session 7 backup bytes")
+            .concat(),
+        b"first-second".to_vec()
     );
     assert_eq!(
         db.get_federation_aleph_bft_backup_metadata(7)
@@ -1349,19 +1385,20 @@ where
         }
     );
     assert_eq!(
-        db.get_federation_aleph_bft_backup_bytes(8)
+        db.get_federation_aleph_bft_backup_chunks(8, FederationIndexRange::ALL)
             .await
-            .expect("session 8 backup bytes"),
-        Some(b"other-session".to_vec())
+            .expect("session 8 backup bytes")
+            .concat(),
+        b"other-session".to_vec()
     );
     assert_eq!(
-        db.get_federation_aleph_bft_backup_chunks_from(7, 1, 1)
+        db.get_federation_aleph_bft_backup_chunks(7, FederationIndexRange::limited(1, 1))
             .await
             .expect("bounded session 7 backup chunks"),
         vec![b"-second".to_vec()]
     );
     assert!(db
-        .get_federation_aleph_bft_backup_chunks_from(7, 2, 1)
+        .get_federation_aleph_bft_backup_chunks(7, FederationIndexRange::limited(2, 1))
         .await
         .expect("backup range past end")
         .is_empty());
@@ -1374,10 +1411,11 @@ where
         .expect("replace backup before rollback");
     tx.rollback().await.expect("rollback backup replacement");
     assert_eq!(
-        db.get_federation_aleph_bft_backup_bytes(7)
+        db.get_federation_aleph_bft_backup_chunks(7, FederationIndexRange::ALL)
             .await
-            .expect("backup after rolled-back replacement"),
-        Some(b"first-second".to_vec())
+            .expect("backup after rolled-back replacement")
+            .concat(),
+        b"first-second".to_vec()
     );
 
     let replacement = vec![b"replacement".to_vec(), b"-tail".to_vec()];
@@ -1389,16 +1427,18 @@ where
         .expect("replace backup chunks");
     tx.commit().await.expect("commit backup replacement");
     assert_eq!(
-        db.get_federation_aleph_bft_backup_bytes(7)
+        db.get_federation_aleph_bft_backup_chunks(7, FederationIndexRange::ALL)
             .await
-            .expect("replacement backup bytes"),
-        Some(b"replacement-tail".to_vec())
+            .expect("replacement backup bytes")
+            .concat(),
+        b"replacement-tail".to_vec()
     );
     assert_eq!(
-        db.get_federation_aleph_bft_backup_bytes(8)
+        db.get_federation_aleph_bft_backup_chunks(8, FederationIndexRange::ALL)
             .await
-            .expect("other session after replacement"),
-        Some(b"other-session".to_vec())
+            .expect("other session after replacement")
+            .concat(),
+        b"other-session".to_vec()
     );
 
     let mut tx = Database::begin_transaction(&db)
@@ -1408,11 +1448,12 @@ where
         .await
         .expect("prune before rollback");
     tx.rollback().await.expect("rollback backup prune");
-    assert!(db
-        .get_federation_aleph_bft_backup_bytes(7)
+    assert!(!db
+        .get_federation_aleph_bft_backup_chunks(7, FederationIndexRange::ALL)
         .await
         .expect("session 7 after rolled-back prune")
-        .is_some());
+        .concat()
+        .is_empty());
 
     let mut tx = Database::begin_transaction(&db).await.expect("begin prune");
     tx.prune_federation_aleph_bft_backups_before(8)
@@ -1420,15 +1461,17 @@ where
         .expect("prune old backup");
     tx.commit().await.expect("commit backup prune");
     assert!(db
-        .get_federation_aleph_bft_backup_bytes(7)
+        .get_federation_aleph_bft_backup_chunks(7, FederationIndexRange::ALL)
         .await
         .expect("pruned session 7")
-        .is_none());
+        .concat()
+        .is_empty());
     assert_eq!(
-        db.get_federation_aleph_bft_backup_bytes(8)
+        db.get_federation_aleph_bft_backup_chunks(8, FederationIndexRange::ALL)
             .await
-            .expect("retained session 8"),
-        Some(b"other-session".to_vec())
+            .expect("retained session 8")
+            .concat(),
+        b"other-session".to_vec()
     );
     let mut tx = Database::begin_transaction(&db)
         .await
@@ -1441,10 +1484,11 @@ where
         .expect("prune beyond active backup");
     tx.commit().await.expect("commit active backup retention");
     assert_eq!(
-        db.get_federation_aleph_bft_backup_bytes(8)
+        db.get_federation_aleph_bft_backup_chunks(8, FederationIndexRange::ALL)
             .await
-            .expect("active session backup retained"),
-        Some(b"other-session".to_vec())
+            .expect("active session backup retained")
+            .concat(),
+        b"other-session".to_vec()
     );
 }
 
@@ -1810,73 +1854,6 @@ where
     tx.rollback().await.expect("rollback conflicting config");
 }
 
-/// Assert projection quote-state reads preserve input order and missing rows.
-pub async fn federation_mint_quote_state_projection<DB>(db: DB)
-where
-    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
-{
-    let first_id = crate::quote_id::QuoteId::new();
-    let second_id = crate::quote_id::QuoteId::new();
-    let missing_id = crate::quote_id::QuoteId::new();
-    let quote = |id: crate::quote_id::QuoteId| {
-        crate::mint::MintQuote::new(
-            Some(id.clone()),
-            format!("invoice-{id}"),
-            CurrencyUnit::Sat,
-            Some(Amount::from(5).with_unit(CurrencyUnit::Sat)),
-            10_000,
-            crate::payment::PaymentIdentifier::QuoteId(id),
-            None,
-            Amount::ZERO.with_unit(CurrencyUnit::Sat),
-            Amount::ZERO.with_unit(CurrencyUnit::Sat),
-            PaymentMethod::Known(KnownMethod::Bolt11),
-            1,
-            1,
-            Vec::new(),
-            Vec::new(),
-            None,
-        )
-    };
-
-    let mut tx = Database::begin_transaction(&db).await.expect("begin");
-    tx.add_mint_quote(quote(first_id.clone()))
-        .await
-        .expect("add first quote");
-    let mut second_quote = tx
-        .add_mint_quote(quote(second_id.clone()))
-        .await
-        .expect("add second quote");
-    second_quote
-        .add_payment(
-            Amount::from(5).with_unit(CurrencyUnit::Sat),
-            "second-payment".to_owned(),
-            None,
-        )
-        .expect("mark second quote paid");
-    second_quote
-        .add_issuance(Amount::from(2).with_unit(CurrencyUnit::Sat))
-        .expect("partially issue second quote");
-    tx.update_mint_quote(&mut second_quote)
-        .await
-        .expect("persist second quote state");
-    tx.commit().await.expect("commit quotes");
-
-    let states = db
-        .get_federation_mint_quote_states(&[second_id.clone(), missing_id, first_id.clone()])
-        .await
-        .expect("load projection quote states");
-    assert_eq!(states.len(), 3);
-    let second = states[0].as_ref().expect("second quote state");
-    assert_eq!(second.id, second_id);
-    assert_eq!(second.amount_paid.value(), 5);
-    assert_eq!(second.amount_issued.value(), 2);
-    assert_eq!(second.state, MintQuoteState::Paid);
-    assert!(states[1].is_none());
-    let first = states[2].as_ref().expect("first quote state");
-    assert_eq!(first.id, first_id);
-    assert_eq!(first.state, MintQuoteState::Unpaid);
-}
-
 /// Assert projection reads stay keyed when unrelated materialized history is large.
 pub async fn federation_materialized_projection_keyed_reads<DB>(db: DB)
 where
@@ -1944,13 +1921,192 @@ where
         .expect("load keyed melt quotes");
     assert_eq!(melt_quotes.len(), 1);
     assert_eq!(melt_quotes[0].id, selected_quote_id);
+}
 
-    let completed_operations = db
-        .get_federation_completed_operations(&[selected_operation_id, uuid::Uuid::now_v7()])
-        .await
-        .expect("load keyed completed operations");
-    assert_eq!(completed_operations.len(), 1);
-    assert_eq!(*completed_operations[0].id(), selected_operation_id);
+/// Rows the hot keyed and ranged federation reads return.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HotReadRows {
+    live_quote_observations: usize,
+    all_live_observations: usize,
+    registry_kind: usize,
+    journal_page: usize,
+    journal_entry: usize,
+}
+
+/// Grow retained history with finished quotes and show that the hot reads
+/// return the same rows at every size, while the history they skip grows.
+///
+/// Each finished quote adds a journal entry, a retired payment observation and
+/// a proof-state row of the materialized-state key registry; the live state
+/// (two observations of one open quote and one mint-quote registry row) stays
+/// the same. The SQLite plan test shows the same reads use indexed searches,
+/// so the rows they examine do not grow either.
+pub async fn federation_hot_reads_stay_bounded_as_history_grows<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    let mut journal = InMemoryFederationJournal::new();
+    let live = (1..=2)
+        .map(|member| {
+            appended(
+                journal
+                    .append(payment_observation_envelope_for_member(
+                        "live-quote",
+                        member,
+                        21,
+                        "settled",
+                    ))
+                    .expect("append live observation"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut tx = Database::begin_transaction(&db).await.expect("begin live");
+    for entry in &live {
+        tx.add_federation_journal_entry(entry)
+            .await
+            .expect("persist live entry");
+        let record = FederationPaymentObservationRecord::from_journal_entry(entry)
+            .expect("live observation record");
+        tx.add_federation_payment_observation(&record, None)
+            .await
+            .expect("persist live observation");
+    }
+    tx.add_federation_materialized_state_keys(&[FederationMaterializedStateKeyRecord {
+        operation_index: live[0].index,
+        operation_id: live[0].operation_id,
+        key: FederationMaterializedStateKey::MintQuote {
+            quote: "live-quote".to_string(),
+        },
+    }])
+    .await
+    .expect("persist live registry row");
+    tx.commit().await.expect("commit live state");
+
+    let mut finished = 0_u64;
+    let mut measured = Vec::new();
+    for history in [64_u64, 256] {
+        let mut tx = Database::begin_transaction(&db)
+            .await
+            .expect("begin history");
+        while finished < history {
+            let entry = appended(
+                journal
+                    .append(payment_observation_envelope_for_member(
+                        &format!("finished-{finished}"),
+                        1,
+                        21,
+                        "settled",
+                    ))
+                    .expect("append finished observation"),
+            );
+            tx.add_federation_journal_entry(&entry)
+                .await
+                .expect("persist finished entry");
+            let record = FederationPaymentObservationRecord::from_journal_entry(&entry)
+                .expect("finished observation record");
+            tx.add_federation_payment_observation(&record, Some(entry.index))
+                .await
+                .expect("persist retired observation");
+            let mut y = [0_u8; 32];
+            y[24..].copy_from_slice(&(finished + 1).to_be_bytes());
+            tx.add_federation_materialized_state_keys(&[FederationMaterializedStateKeyRecord {
+                operation_index: entry.index,
+                operation_id: entry.operation_id,
+                key: FederationMaterializedStateKey::ProofState {
+                    y: SecretKey::from_slice(&y)
+                        .expect("proof secret")
+                        .public_key(),
+                },
+            }])
+            .await
+            .expect("persist finished registry row");
+            finished += 1;
+        }
+        tx.commit().await.expect("commit history");
+
+        let tip = db
+            .get_federation_journal_tip()
+            .await
+            .expect("journal tip")
+            .expect("journal holds entries")
+            .index;
+        let rows = HotReadRows {
+            live_quote_observations: db
+                .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+                    context: FederationPaymentObservationContext::MintQuote,
+                    quote: "live-quote",
+                })
+                .await
+                .expect("live observations of one quote")
+                .len(),
+            all_live_observations: db
+                .get_federation_payment_observations(FederationPaymentObservationSelection::AllLive)
+                .await
+                .expect("all live observations")
+                .len(),
+            registry_kind: db
+                .get_federation_materialized_state_keys(FederationMaterializedStateKind::MintQuote)
+                .await
+                .expect("registry rows of one kind")
+                .len(),
+            journal_page: db
+                .get_federation_journal_entries(FederationIndexRange::page(
+                    tip.saturating_sub(15),
+                    tip + 1,
+                    8,
+                ))
+                .await
+                .expect("journal page")
+                .len(),
+            journal_entry: usize::from(
+                db.get_federation_journal_entry(
+                    FederationJournalEntryKey::Operation(live[1].operation_id),
+                    None,
+                )
+                .await
+                .expect("journal entry by operation")
+                .is_some(),
+            ),
+        };
+        measured.push(rows);
+
+        // The history the hot reads skip did grow.
+        assert_eq!(
+            db.get_federation_journal_entries(FederationIndexRange::ALL)
+                .await
+                .expect("whole journal")
+                .len(),
+            usize::try_from(history + 2).expect("history fits usize")
+        );
+        assert_eq!(
+            db.get_federation_materialized_state_keys(FederationMaterializedStateKind::ProofState)
+                .await
+                .expect("grown registry kind")
+                .len(),
+            usize::try_from(history).expect("history fits usize")
+        );
+        assert_eq!(
+            db.get_federation_payment_observations(
+                FederationPaymentObservationSelection::History {
+                    context: FederationPaymentObservationContext::MintQuote,
+                    quote: "finished-0",
+                }
+            )
+            .await
+            .expect("retired observation history")[0]
+                .terminal_operation_index,
+            Some(2)
+        );
+    }
+
+    let expected = HotReadRows {
+        live_quote_observations: 2,
+        all_live_observations: 2,
+        registry_kind: 1,
+        journal_page: 8,
+        journal_entry: 1,
+    };
+    assert_eq!(measured, vec![expected, expected]);
 }
 
 /// Assert payment observations persist as durable per-member quorum evidence.
@@ -2015,22 +2171,25 @@ where
             .expect("persist journal entry");
     }
     for record in &records {
-        tx.add_federation_payment_observation(record)
+        tx.add_federation_payment_observation(record, None)
             .await
             .expect("persist payment observation");
     }
-    tx.add_federation_payment_observation(&records[0])
+    tx.add_federation_payment_observation(&records[0], None)
         .await
         .expect("idempotent payment observation persistence");
     tx.commit().await.expect("commit");
 
     let persisted = db
-        .get_federation_payment_observations(
-            FederationPaymentObservationContext::MintQuote,
-            "quote-1",
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+            context: FederationPaymentObservationContext::MintQuote,
+            quote: "quote-1",
+        })
         .await
-        .expect("payment observations");
+        .expect("payment observations")
+        .into_iter()
+        .map(|observation| observation.record)
+        .collect::<Vec<_>>();
     assert_eq!(persisted.len(), 3);
     assert_eq!(persisted[0].operation_id, first.operation_id);
     assert_eq!(persisted[0].operation_index, first.index);
@@ -2086,30 +2245,39 @@ where
     assert!(report.has_conflicts());
 
     let unrelated_persisted = db
-        .get_federation_payment_observations(
-            FederationPaymentObservationContext::MintQuote,
-            "quote-2",
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+            context: FederationPaymentObservationContext::MintQuote,
+            quote: "quote-2",
+        })
         .await
-        .expect("unrelated payment observations");
+        .expect("unrelated payment observations")
+        .into_iter()
+        .map(|observation| observation.record)
+        .collect::<Vec<_>>();
     assert_eq!(unrelated_persisted.len(), 1);
     assert_eq!(unrelated_persisted[0].operation_id, unrelated.operation_id);
 
     let all_observations = db
-        .get_all_federation_payment_observations()
+        .get_federation_payment_observations(FederationPaymentObservationSelection::AllLive)
         .await
-        .expect("all payment observations");
+        .expect("all payment observations")
+        .into_iter()
+        .map(|observation| observation.record)
+        .collect::<Vec<_>>();
     assert_eq!(all_observations.len(), 4);
     assert_eq!(all_observations[0].operation_id, first.operation_id);
     assert_eq!(all_observations[3].operation_id, unrelated.operation_id);
 
     let wrong_context = db
-        .get_federation_payment_observations(
-            FederationPaymentObservationContext::MeltQuote,
-            "quote-1",
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+            context: FederationPaymentObservationContext::MeltQuote,
+            quote: "quote-1",
+        })
         .await
-        .expect("wrong-context payment observations");
+        .expect("wrong-context payment observations")
+        .into_iter()
+        .map(|observation| observation.record)
+        .collect::<Vec<_>>();
     assert!(wrong_context.is_empty());
 }
 
@@ -2144,13 +2312,13 @@ where
     );
 
     let mut tx = Database::begin_transaction(&db).await.expect("begin");
-    tx.add_federation_signature_share(&first)
+    tx.add_federation_signature_shares(std::slice::from_ref(&first))
         .await
         .expect("persist first share");
-    tx.add_federation_signature_share(&second)
+    tx.add_federation_signature_shares(std::slice::from_ref(&second))
         .await
         .expect("persist second share");
-    tx.add_federation_signature_share(&first)
+    tx.add_federation_signature_shares(std::slice::from_ref(&first))
         .await
         .expect("idempotent first share replay");
     tx.commit().await.expect("commit");
@@ -2159,25 +2327,33 @@ where
         .await
         .expect("begin conflicting share");
     assert!(tx
-        .add_federation_signature_share(&conflicting_first)
+        .add_federation_signature_shares(std::slice::from_ref(&conflicting_first))
         .await
         .is_err());
     tx.rollback().await.expect("rollback conflicting share");
 
     let output_shares = db
-        .get_federation_signature_shares_for_output(operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id,
+            output_index: 0,
+        })
         .await
         .expect("shares by output");
     assert_eq!(output_shares, vec![first.clone(), second.clone()]);
 
     let blinded_message_shares = db
-        .get_federation_signature_shares_for_blinded_message(first.blinded_secret)
+        .get_federation_signature_shares(FederationSignatureShareKey::BlindedMessage(
+            first.blinded_secret,
+        ))
         .await
         .expect("shares by blinded message");
     assert_eq!(blinded_message_shares, vec![first, second]);
 
     let other_output_shares = db
-        .get_federation_signature_shares_for_output(operation_id, 1)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id,
+            output_index: 1,
+        })
         .await
         .expect("shares for other output");
     assert!(other_output_shares.is_empty());
@@ -2201,19 +2377,19 @@ where
             .expect("conflicting first commitment");
 
     let mut tx = Database::begin_transaction(&db).await.expect("begin");
-    tx.add_federation_dkg_commitment(&first_commitment)
+    tx.add_federation_dkg_record(FederationDkgRecord::Commitment(&first_commitment))
         .await
         .expect("persist first commitment");
-    tx.add_federation_dkg_commitment(&first_commitment)
+    tx.add_federation_dkg_record(FederationDkgRecord::Commitment(&first_commitment))
         .await
         .expect("idempotent duplicate commitment replay");
-    tx.add_federation_dkg_commitment(&second_commitment)
+    tx.add_federation_dkg_record(FederationDkgRecord::Commitment(&second_commitment))
         .await
         .expect("persist second commitment");
-    tx.add_federation_dkg_reveal(&first_reveal)
+    tx.add_federation_dkg_record(FederationDkgRecord::Reveal(&first_reveal))
         .await
         .expect("persist first reveal");
-    tx.add_federation_dkg_reveal(&first_reveal)
+    tx.add_federation_dkg_record(FederationDkgRecord::Reveal(&first_reveal))
         .await
         .expect("idempotent duplicate reveal replay");
     tx.commit().await.expect("commit");
@@ -2222,7 +2398,9 @@ where
         .await
         .expect("begin conflicting commitment");
     assert!(tx
-        .add_federation_dkg_commitment(&conflicting_first_commitment)
+        .add_federation_dkg_record(FederationDkgRecord::Commitment(
+            &conflicting_first_commitment
+        ))
         .await
         .is_err());
     tx.rollback()
@@ -2233,7 +2411,7 @@ where
         .await
         .expect("begin conflicting reveal");
     assert!(tx
-        .add_federation_dkg_reveal(&conflicting_first_reveal)
+        .add_federation_dkg_record(FederationDkgRecord::Reveal(&conflicting_first_reveal))
         .await
         .is_err());
     tx.rollback().await.expect("rollback conflicting reveal");
@@ -2255,7 +2433,7 @@ where
     let mut tx = Database::begin_transaction(&db)
         .await
         .expect("begin second");
-    tx.add_federation_dkg_reveal(&second_reveal)
+    tx.add_federation_dkg_record(FederationDkgRecord::Reveal(&second_reveal))
         .await
         .expect("persist second reveal");
     tx.commit().await.expect("commit second");
@@ -2283,10 +2461,10 @@ where
     let mut tx = Database::begin_transaction(&db)
         .await
         .expect("begin replacement ceremony");
-    tx.add_federation_dkg_commitment(&replacement_commitment)
+    tx.add_federation_dkg_record(FederationDkgRecord::Commitment(&replacement_commitment))
         .await
         .expect("persist replacement commitment at same member coordinate");
-    tx.add_federation_dkg_reveal(&replacement_reveal)
+    tx.add_federation_dkg_record(FederationDkgRecord::Reveal(&replacement_reveal))
         .await
         .expect("persist replacement reveal at same member coordinate");
     tx.commit().await.expect("commit replacement ceremony");
@@ -2326,10 +2504,10 @@ where
     let first = dkg_participant_state(&public_config, dkg_ceremony_id());
 
     let mut tx = Database::begin_transaction(&db).await.expect("begin");
-    tx.add_federation_dkg_participant_state(&first)
+    tx.add_federation_dkg_record(FederationDkgRecord::ParticipantState(&first))
         .await
         .expect("persist participant state");
-    tx.add_federation_dkg_participant_state(&first)
+    tx.add_federation_dkg_record(FederationDkgRecord::ParticipantState(&first))
         .await
         .expect("idempotent participant-state replay");
     tx.commit().await.expect("commit");
@@ -2346,7 +2524,7 @@ where
         .await
         .expect("begin conflicting state");
     assert!(tx
-        .add_federation_dkg_participant_state(&conflicting)
+        .add_federation_dkg_record(FederationDkgRecord::ParticipantState(&conflicting))
         .await
         .is_err());
     tx.rollback().await.expect("rollback conflicting state");
@@ -2356,7 +2534,7 @@ where
     let mut tx = Database::begin_transaction(&db)
         .await
         .expect("begin second ceremony");
-    tx.add_federation_dkg_participant_state(&second)
+    tx.add_federation_dkg_record(FederationDkgRecord::ParticipantState(&second))
         .await
         .expect("persist second ceremony");
     tx.commit().await.expect("commit second ceremony");
@@ -2464,15 +2642,21 @@ where
         dkg_secret_share_request(&public_config, member_id(1), member_id(2), 27);
 
     let mut tx = Database::begin_transaction(&db).await.expect("begin");
-    tx.add_federation_dkg_secret_share_contribution(&first_contribution)
-        .await
-        .expect("persist first secret-share contribution");
-    tx.add_federation_dkg_secret_share_contribution(&first_contribution)
-        .await
-        .expect("idempotent duplicate secret-share contribution replay");
-    tx.add_federation_dkg_secret_share_contribution(&second_contribution)
-        .await
-        .expect("persist second secret-share contribution");
+    tx.add_federation_dkg_record(FederationDkgRecord::SecretShareContribution(
+        &first_contribution,
+    ))
+    .await
+    .expect("persist first secret-share contribution");
+    tx.add_federation_dkg_record(FederationDkgRecord::SecretShareContribution(
+        &first_contribution,
+    ))
+    .await
+    .expect("idempotent duplicate secret-share contribution replay");
+    tx.add_federation_dkg_record(FederationDkgRecord::SecretShareContribution(
+        &second_contribution,
+    ))
+    .await
+    .expect("persist second secret-share contribution");
     tx.commit().await.expect("commit");
 
     let contributions = db
@@ -2488,7 +2672,9 @@ where
         .await
         .expect("begin conflicting secret-share contribution");
     assert!(tx
-        .add_federation_dkg_secret_share_contribution(&conflicting_contribution)
+        .add_federation_dkg_record(FederationDkgRecord::SecretShareContribution(
+            &conflicting_contribution
+        ))
         .await
         .is_err());
     tx.rollback()
@@ -2509,9 +2695,11 @@ where
     let mut tx = Database::begin_transaction(&db)
         .await
         .expect("begin replacement contribution");
-    tx.add_federation_dkg_secret_share_contribution(&replacement_contribution)
-        .await
-        .expect("persist replacement contribution at same member coordinate");
+    tx.add_federation_dkg_record(FederationDkgRecord::SecretShareContribution(
+        &replacement_contribution,
+    ))
+    .await
+    .expect("persist replacement contribution at same member coordinate");
     tx.commit().await.expect("commit replacement contribution");
     let contributions = db
         .get_federation_dkg_secret_share_contributions()
@@ -2531,10 +2719,10 @@ where
     conflicting_share.federation_id = FederationId::from_bytes([99; 32]);
 
     let mut tx = Database::begin_transaction(&db).await.expect("begin");
-    tx.add_federation_dkg_member_keyset_share(&share)
+    tx.add_federation_dkg_record(FederationDkgRecord::MemberKeysetShare(&share))
         .await
         .expect("persist member keyset share");
-    tx.add_federation_dkg_member_keyset_share(&share)
+    tx.add_federation_dkg_record(FederationDkgRecord::MemberKeysetShare(&share))
         .await
         .expect("idempotent duplicate member keyset share replay");
     tx.commit().await.expect("commit");
@@ -2549,7 +2737,7 @@ where
         .await
         .expect("begin conflicting share");
     assert!(tx
-        .add_federation_dkg_member_keyset_share(&conflicting_share)
+        .add_federation_dkg_record(FederationDkgRecord::MemberKeysetShare(&conflicting_share))
         .await
         .is_err());
     tx.rollback().await.expect("rollback conflicting share");
@@ -2584,13 +2772,13 @@ where
     conflicting_signature.federation_id = FederationId::from_bytes([99; 32]);
 
     let mut tx = Database::begin_transaction(&db).await.expect("begin");
-    tx.add_federation_dkg_transcript_signature(&first_signature)
+    tx.add_federation_dkg_record(FederationDkgRecord::TranscriptSignature(&first_signature))
         .await
         .expect("persist first transcript signature");
-    tx.add_federation_dkg_transcript_signature(&first_signature)
+    tx.add_federation_dkg_record(FederationDkgRecord::TranscriptSignature(&first_signature))
         .await
         .expect("idempotent duplicate transcript signature replay");
-    tx.add_federation_dkg_transcript_signature(&second_signature)
+    tx.add_federation_dkg_record(FederationDkgRecord::TranscriptSignature(&second_signature))
         .await
         .expect("persist second transcript signature");
     tx.commit().await.expect("commit");
@@ -2621,7 +2809,9 @@ where
         .await
         .expect("begin conflicting transcript signature");
     assert!(tx
-        .add_federation_dkg_transcript_signature(&conflicting_signature)
+        .add_federation_dkg_record(FederationDkgRecord::TranscriptSignature(
+            &conflicting_signature
+        ))
         .await
         .is_err());
     tx.rollback()
@@ -2652,13 +2842,13 @@ where
     conflicting_activation.final_config_digest = FederationConfigDigest::from_bytes([99; 32]);
 
     let mut tx = Database::begin_transaction(&db).await.expect("begin");
-    tx.add_federation_dkg_activation(&first_activation)
+    tx.add_federation_dkg_record(FederationDkgRecord::Activation(&first_activation))
         .await
         .expect("persist first activation");
-    tx.add_federation_dkg_activation(&first_activation)
+    tx.add_federation_dkg_record(FederationDkgRecord::Activation(&first_activation))
         .await
         .expect("idempotent first activation replay");
-    tx.add_federation_dkg_activation(&second_activation)
+    tx.add_federation_dkg_record(FederationDkgRecord::Activation(&second_activation))
         .await
         .expect("persist second activation");
     tx.commit().await.expect("commit activations");
@@ -2673,7 +2863,7 @@ where
         .await
         .expect("begin conflicting activation");
     assert!(tx
-        .add_federation_dkg_activation(&conflicting_activation)
+        .add_federation_dkg_record(FederationDkgRecord::Activation(&conflicting_activation))
         .await
         .is_err());
     tx.rollback()
@@ -2737,57 +2927,76 @@ where
     };
 
     let mut tx = Database::begin_transaction(&db).await.expect("begin");
-    tx.add_federation_frost_dkg_round1(&round1)
-        .await
-        .expect("persist round one");
-    tx.add_federation_frost_dkg_round1(&round1)
-        .await
-        .expect("idempotent round-one replay");
-    tx.add_federation_frost_dkg_round2(&round2)
-        .await
-        .expect("persist round two");
-    tx.set_federation_frost_dkg_local_state(&local_round1)
-        .await
-        .expect("persist sealed round-one state");
-    tx.set_federation_frost_dkg_local_state(&local_round2)
-        .await
-        .expect("persist sealed round-two state");
-    tx.add_federation_frost_root_record(&root)
-        .await
-        .expect("persist sealed root");
-    tx.add_federation_frost_dkg_confirmation(&confirmation)
-        .await
-        .expect("persist root confirmation");
+    tx.add_federation_dkg_record(FederationDkgRecord::Frost(
+        FederationFrostDkgRecord::Round1(&round1),
+    ))
+    .await
+    .expect("persist round one");
+    tx.add_federation_dkg_record(FederationDkgRecord::Frost(
+        FederationFrostDkgRecord::Round1(&round1),
+    ))
+    .await
+    .expect("idempotent round-one replay");
+    tx.add_federation_dkg_record(FederationDkgRecord::Frost(
+        FederationFrostDkgRecord::Round2(&round2),
+    ))
+    .await
+    .expect("persist round two");
+    tx.add_federation_dkg_record(FederationDkgRecord::Frost(
+        FederationFrostDkgRecord::LocalState(&local_round1),
+    ))
+    .await
+    .expect("persist sealed round-one state");
+    tx.add_federation_dkg_record(FederationDkgRecord::Frost(
+        FederationFrostDkgRecord::LocalState(&local_round2),
+    ))
+    .await
+    .expect("persist sealed round-two state");
+    tx.add_federation_dkg_record(FederationDkgRecord::Frost(FederationFrostDkgRecord::Root(
+        &root,
+    )))
+    .await
+    .expect("persist sealed root");
+    tx.add_federation_dkg_record(FederationDkgRecord::Frost(
+        FederationFrostDkgRecord::Confirmation(&confirmation),
+    ))
+    .await
+    .expect("persist root confirmation");
     tx.commit().await.expect("commit FROST DKG records");
 
     assert_eq!(
-        db.get_federation_frost_dkg_round1()
+        db.get_federation_frost_dkg_records()
             .await
-            .expect("round-one records"),
+            .expect("round-one records")
+            .round1,
         vec![round1.clone()]
     );
     assert_eq!(
-        db.get_federation_frost_dkg_round2()
+        db.get_federation_frost_dkg_records()
             .await
-            .expect("round-two records"),
+            .expect("round-two records")
+            .round2,
         vec![round2.clone()]
     );
     assert_eq!(
-        db.get_federation_frost_dkg_local_states()
+        db.get_federation_frost_dkg_records()
             .await
-            .expect("sealed local states"),
+            .expect("sealed local states")
+            .local_states,
         vec![local_round1, local_round2]
     );
     assert_eq!(
-        db.get_federation_frost_root_records()
+        db.get_federation_frost_dkg_records()
             .await
-            .expect("root records"),
+            .expect("root records")
+            .roots,
         vec![root]
     );
     assert_eq!(
-        db.get_federation_frost_dkg_confirmations()
+        db.get_federation_frost_dkg_records()
             .await
-            .expect("confirmations"),
+            .expect("confirmations")
+            .confirmations,
         vec![confirmation]
     );
 
@@ -2795,7 +3004,9 @@ where
         .await
         .expect("begin conflicting FROST records");
     assert!(tx
-        .add_federation_frost_dkg_round1(&conflicting_round1)
+        .add_federation_dkg_record(FederationDkgRecord::Frost(
+            FederationFrostDkgRecord::Round1(&conflicting_round1)
+        ))
         .await
         .is_err());
     tx.rollback().await.expect("rollback round-one conflict");
@@ -2804,7 +3015,9 @@ where
         .await
         .expect("begin round-two conflict");
     assert!(tx
-        .add_federation_frost_dkg_round2(&conflicting_round2)
+        .add_federation_dkg_record(FederationDkgRecord::Frost(
+            FederationFrostDkgRecord::Round2(&conflicting_round2)
+        ))
         .await
         .is_err());
     tx.rollback().await.expect("rollback round-two conflict");
@@ -2970,7 +3183,7 @@ where
 
     let persisted = db
         .as_ref()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("concurrent journal entries");
     assert_eq!(persisted.len(), entries.len());
@@ -2989,7 +3202,7 @@ where
     let catch_up_from = ENTRY_COUNT / 2;
     let catch_up_entries = db
         .as_ref()
-        .get_federation_journal_entries_from(catch_up_from)
+        .get_federation_journal_entries(FederationIndexRange::starting_at(catch_up_from))
         .await
         .expect("concurrent catch-up entries");
     assert_eq!(

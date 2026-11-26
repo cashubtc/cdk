@@ -1,5 +1,7 @@
 //! Multi-member live AlephBFT sessions and apply helpers.
 
+use cdk_common::database::mint::FederationIndexRange;
+
 use super::*;
 
 pub(super) struct TwoMemberAlephBftLiveSession {
@@ -204,7 +206,7 @@ pub(super) async fn assert_multi_member_journal_and_state_converged(
     let expected_entries = session.states[0]
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("expected converged journal");
     assert_eq!(
@@ -222,7 +224,7 @@ pub(super) async fn assert_multi_member_journal_and_state_converged(
         let entries = state
             .mint
             .localstore()
-            .get_federation_journal_entries()
+            .get_federation_journal_entries(FederationIndexRange::ALL)
             .await
             .expect("converged journal");
         assert_eq!(

@@ -1008,3 +1008,58 @@ Verification: `cargo fmt`; the verify script (clippy with `-D warnings` on the e
 - **Also fixed.** The `cdk-mintd` DKG-status tests imported the Bark helpers whenever `federation-bark` was on, but only a test gated on both `federation-bdk` and `federation-bark` uses them, so test-target clippy on `sqlite,federation-test-utils,federation-bark` failed after the previous commit; the import now has the test's gate.
 
 Verification: `cargo fmt`; the verify script (clippy, the 15 production builds, and the suites: `cdk-common` 497, `cdk-federation-bark` 40, `cdk-bark` 36, `cdk-sqlite` 196, `cdk` 1,085, `cdk-federation` 118, `cdk-axum` 478 of 480 with the five- and seven-member latency probes failing under load and passing on their own reruns, `cdk-mintd` with `federation-test-utils,federation-bark` 293, `cdk-cli` 24 and 40, `cdk-ffi` 110 and 111, `cdk-fed-tui` 24); `cdk-mintd` with default features (203) and with `sqlite,federation-test-utils,federation-bark,federation-bdk,iroh` (347); test-target clippy on `cdk-mintd` `sqlite,federation-test-utils,federation-bark` and on the production feature set.
+
+### 2026-11-26: package 6, storage trait surface
+
+The ten federation database traits (`crates/cdk-common/src/database/mint/federation.rs`) go from 141 methods (131 without a default body) to 91 (89). Each family of getters that differed only by filter, key or range is now one keyed or ranged operation; methods that only tests called are gone; write families of immutable records take one record enum. The SQL creation migrations are unchanged and behaviour is the same.
+
+| Trait | Before | After |
+|---|---|---|
+| `FederationJournalTransaction` | 25 | 23 |
+| `FederationApplicationTransaction` | 11 | 9 |
+| `FederationDkgTransaction` | 14 | 3 |
+| `FederationFrostWalletTransaction` | 3 | 3 |
+| `FederationSetupTransaction` | 18 | 8 |
+| `FederationJournalDatabase` | 35 | 19 |
+| `FederationApplicationDatabase` | 10 | 5 |
+| `FederationDkgDatabase` | 13 | 9 |
+| `FederationFrostWalletDatabase` | 3 | 3 |
+| `FederationSetupDatabase` | 9 | 9 |
+| Total | 141 | 91 |
+
+- **Ranged reads.** `get_federation_journal_entries(FederationIndexRange)` replaces the whole-journal, `_from` and `_range` reads; `get_federation_aleph_bft_finalized_items(range)` likewise; `get_federation_aleph_bft_backup_chunks(session, range)` replaces the chunk, chunk-page and whole-session byte reads (the byte read was used only by tests, which now join the chunks). `FederationIndexRange` has `ALL`, `starting_at`, `page` and `limited`; the SQL backends bind one statement with saturated bounds.
+- **Keyed reads.**
+  - `get_federation_journal_entry(FederationJournalEntryKey, before)` replaces the four lookups by operation id or conflict key, with and without an upper bound, on the connection; the transaction read takes the same key.
+  - `get_federation_checkpoint(FederationCheckpointSelector)` and `get_federation_checkpoint_quorum(selector)` replace the lookups by id, latest of a kind, next scheduled after a sequence, trusted, and state-transfer base (eight methods). `Trusted` for a checkpoint and `StateTransferBase` for a quorum are new combinations of the same queries.
+  - `get_federation_signature_shares(FederationSignatureShareKey)` replaces the reads by output and by blinded message.
+  - `get_federation_payment_observations(FederationPaymentObservationSelection)` replaces the live read per quote, the audit history read and the whole-table live read, on the connection and in the transaction; every selection returns stored observations with their retirement index. Callers that need records map them.
+- **One write per record family.** `add_federation_payment_observation(record, terminal_operation_index)` also installs a transferred observation (the separate install method is gone). `add_federation_signature_shares` and `add_federation_aleph_bft_finalized_items` are the only share and item writes. `add_federation_dkg_record(FederationDkgRecord)` replaces the seven BLS and five FROST DKG record writes; `get_federation_frost_dkg_records()` reads the one FROST record table once and returns it by kind (`FederationFrostDkgRecords`), replacing five reads that each filtered it. `add_federation_setup_record(FederationSetupRecord)` replaces six immutable setup record writes.
+- **Setup rules out of the storage trait.** The six default methods that stored a setup record and advanced the local session (enroll, publish, review, fence, certify, activate) are one default method, `advance_federation_setup_session(expected, updated, FederationSetupStep)`. Which record may accompany which transition is decided by `FederationSetupStep::validate_transition` in `cdk-common`'s setup module, with the same checks and error reasons; invitation consumption validates through `validate_federation_setup_invitation_consumption`.
+- **Private in the SQL crate.** `prune_federation_checkpoints` had only callers inside the SQL crate's own promotion and capture paths; it is the private `prune_federation_checkpoint_retention`.
+- **Deleted, test-only callers.** `get_federation_checkpoints_after`, `get_federation_mint_quote_states` and `get_federation_completed_operations`. Their conformance tests are removed or now assert the trusted and latest checkpoint selectors instead; the SQL quote and completed-operation helpers stay, used by the materialized-state source.
+- **Kept apart on purpose.** The BLS DKG reads stay one per table (each caller reads one table, and a combined read would query seven); connection and transaction twins of the payment-observation, journal-entry and materialized-state-source reads stay because both callers exist, and now share one SQL helper each.
+
+Verification: `cargo fmt`; clippy with `-D warnings` in the eleven configurations of the verification script (`cdk-common`, `cdk`, `cdk-federation`, `cdk-axum` in three feature sets, `cdk-cli` and `cdk-ffi` with and without federation, `cdk-fed-tui`); the 15 production builds; `cdk-common` with `federation,test` (497, plus 23 in its integration targets), `cdk-federation-bark` (40), `cdk-bark` (36), `cdk-sqlite` with `federation-bark` (195), `cdk` with federation and Bark (1,085), `cdk` wallet Iroh (2), `cdk-federation` (115), `cdk-axum` with `federation-bdk,federation-bark,iroh` (481), `cdk-mintd` with `federation-test-utils,federation-bark` (300), `cdk-cli` (24 and 40), `cdk-ffi` (110 and 111), `cdk-fed-tui` (24). The Postgres conformance tests compile but were not run (no server).
+
+### 2026-11-26: package 6, bounded snapshot reads
+
+Every reader that loaded a whole store was checked against retained history after stage 3 (live rows plus at most one checkpoint interval of retired rows). The storage contract has the full table ("Readers and retained history"). Changed here:
+
+- **Effective config rebuild.** `rebuild_effective_federation_config` (startup, keyset rotation apply, state install) read the whole materialized-state key registry, one row for every quote, proof, blind signature and completed operation ever applied, to find the keyset rotations. `get_federation_materialized_state_keys` now takes a `FederationMaterializedStateKind` (new, with `FederationMaterializedStateKey::kind`) and reads one kind through the registry's primary-key prefix, so the rebuild reads only rotations. The two tests that read the whole registry read one kind or the materialized-state source.
+- **Bark frontier.** `FederationBarkStore::bark_projection_frontier` returns `FederationBarkProjectionSnapshot::frontier` of the whole projection with one `MAX` per Bark table. The operator Bark reconcile route used the whole snapshot only for that number and now uses it. Indexes on `federation_bark_vtxos.latest_operation_index`, `federation_bark_derivation_allocations.operation_index` and `.locator_index` and `federation_bark_reservations.operation_index` (creation migrations, both dialects) let each `MAX` read one index entry; the `locator_index` one also bounds `bark_max_locator_index` on the apply path, which scanned every allocation.
+- **Bark custody signing wait.** `wait_for_bark_custody_projection` polled the whole snapshot until the action's attempt was current and its inputs reserved. It now reads the action and the plan's input VTXOs by key and accepts only if the action head is unchanged after the input read, the guarantee one snapshot gave. `bark_custody_inputs_are_authorized` takes the input records.
+- **Payment-observation report.** The operator status report read every live observation to find the quotes and then each quote's observations again. It reads the live observations once and groups them by quote in the same order.
+
+Left as they are, each for a stated reason in the storage contract ("Why the remaining readers are not bounded"):
+
+- the chain-observation and address-allocation projections, loaded whole on the apply path: spent-output tombstones and allocations are permanent, and reading only the touched rows needs keyed access inside the projection validation (the 2026-11-24 decision to load rows whole);
+- the Bark drivers and recovery driver: the snapshot is passed into about twenty runtime functions that select over every VTXO and allocation and find actions by quote across final phases; bounding them needs a store-backed projection view;
+- Bark operator status: its report counts VTXOs by state, spent ones included, and receive intents over all retained transitions;
+- Bark recovery authorization: needs the chain-observation projection whole;
+- checkpoint materialization: the digest covers tables that are never deleted (quotes, proofs, blind signatures, completed operations, signature shares, allocations). Streaming it would need every table produced in the digest's Rust string order rather than SQL collation order, and scheduled capture stores every row as the frozen snapshot anyway, so it stays one in-memory build per capture, audit or requested status digest. Golden digests are unchanged: nothing that builds digest rows changed.
+
+Package 6's done criterion is therefore not met for these readers.
+
+**Boundedness test.** `federation_hot_reads_stay_bounded_as_history_grows` (storage conformance, registered for SQLite and Postgres) grows retained history from 64 to 256 finished quotes, each adding a journal entry, a retired payment observation and a registry row, while the live state stays two observations of one open quote and one registry row. The live observations of a quote, all live observations, the registry read by kind, a journal page and a journal entry by operation return the same rows at both sizes, and the whole journal, the grown registry kind and the retired history are checked to have grown. The SQLite plan test (`federation_journal_hot_path_indexes_are_used`) shows the same reads, the Bark frontier and the locator `MAX` use indexed searches with no table scan, so the rows they examine do not grow either. `federation_bark_action_reads` checks the frontier read against the snapshot at 1, 64 and 256 actions.
+
+Verification: the same script as the previous entry. `cdk-sqlite` with `federation-bark` now 196 (the new conformance test), `cdk-axum` 479 of 481: `aleph_bft_live_session_latency_probe_records_five_member_bft_operation` and `..._seven_member_bft_operation` failed on their wall-clock bounds in the full run; rerun as the six latency probes together the five-member one passed and the seven-member one failed again, and the seven-member one passed twice alone (12 s each). Neither touches the changed readers. All other counts as in the previous entry. The Postgres conformance tests, including the new one, compile but were not run.

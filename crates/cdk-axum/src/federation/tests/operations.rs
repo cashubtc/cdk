@@ -1,3 +1,7 @@
+#[cfg(feature = "federation-bdk")]
+use cdk_common::database::mint::FederationJournalEntryKey;
+use cdk_common::database::mint::{FederationCheckpointSelector, FederationIndexRange};
+
 use super::*;
 
 #[tokio::test]
@@ -1005,7 +1009,7 @@ async fn quorum_reconciliation_replaces_stale_live_session() {
     assert!(state
         .mint
         .localstore()
-        .get_federation_aleph_bft_backup_chunks(1)
+        .get_federation_aleph_bft_backup_chunks(1, FederationIndexRange::ALL)
         .await
         .expect("next-session backup lookup")
         .is_empty());
@@ -1061,14 +1065,14 @@ async fn aleph_bft_restart_after_unfinalized_local_unit_requires_retry_without_s
     assert!(state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal before restart")
         .is_empty());
     assert!(state
         .mint
         .localstore()
-        .get_federation_aleph_bft_finalized_items()
+        .get_federation_aleph_bft_finalized_items(FederationIndexRange::ALL)
         .await
         .expect("finalized items before restart")
         .is_empty());
@@ -1098,14 +1102,14 @@ async fn aleph_bft_restart_after_unfinalized_local_unit_requires_retry_without_s
     assert!(restarted_state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal after restart")
         .is_empty());
     assert!(restarted_state
         .mint
         .localstore()
-        .get_federation_aleph_bft_finalized_items()
+        .get_federation_aleph_bft_finalized_items(FederationIndexRange::ALL)
         .await
         .expect("finalized items after restart")
         .is_empty());
@@ -1569,14 +1573,14 @@ async fn aleph_bft_finalization_persistence_failure_leaves_runtime_unchanged() {
     assert!(state
         .mint
         .localstore()
-        .get_federation_aleph_bft_finalized_items()
+        .get_federation_aleph_bft_finalized_items(FederationIndexRange::ALL)
         .await
         .expect("finalized items after failed persistence")
         .is_empty());
     assert!(state
         .mint
         .localstore()
-        .get_federation_journal_entries_from(0)
+        .get_federation_journal_entries(FederationIndexRange::starting_at(0))
         .await
         .expect("journal entries after failed persistence")
         .is_empty());
@@ -1644,7 +1648,10 @@ async fn onchain_reconciliation_failure_does_not_halt_finalized_application() {
                 .second_state
                 .mint
                 .localstore()
-                .get_federation_journal_entry_by_operation_id(operation_id)
+                .get_federation_journal_entry(
+                    FederationJournalEntryKey::Operation(operation_id),
+                    None,
+                )
                 .await
                 .expect("journal lookup")
             {
@@ -1858,7 +1865,7 @@ async fn recovery_candidate_fetch_falls_back_from_withholding_first_source() {
         recovering_state
             .mint
             .localstore()
-            .get_federation_checkpoint(checkpoint_id)
+            .get_federation_checkpoint(FederationCheckpointSelector::Id(checkpoint_id))
             .await
             .expect("recovery candidate lookup")
             .is_some(),
@@ -2301,7 +2308,7 @@ async fn aleph_bft_duplicate_after_sqlite_restart_returns_journal_duplicate_afte
     let applied_entries = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal after no-waiter apply");
     let applied_digest = materialized_state_digest(&state, &applied_entries)
@@ -2383,7 +2390,7 @@ async fn aleph_bft_duplicate_after_sqlite_restart_returns_journal_duplicate_afte
     let restarted_entries = restarted_state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal after applied-without-response restart");
     assert_eq!(
@@ -2463,7 +2470,7 @@ async fn aleph_bft_duplicate_after_admission_race_returns_journal_duplicate() {
     let entries = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal entries");
     assert_eq!(entries.len(), 1);
@@ -2563,7 +2570,7 @@ async fn aleph_bft_submit_envelope_rejects_when_pending_mempool_is_full() {
     let stored_finalized_items = state
         .mint
         .localstore()
-        .get_federation_aleph_bft_finalized_items()
+        .get_federation_aleph_bft_finalized_items(FederationIndexRange::ALL)
         .await
         .expect("stored finalized items");
     assert_eq!(stored_finalized_items.len(), 1);
@@ -2710,7 +2717,7 @@ async fn startup_replays_accepted_but_unapplied_journal_entry_to_same_state_dige
     let replayed_entries = restarted_state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("replayed journal entries");
     assert_eq!(replayed_entries.len(), 1);
@@ -2829,7 +2836,7 @@ async fn router_startup_replays_accepted_journal_before_serving_local_status() {
     let replayed_entries = restarted_state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("replayed journal entries");
     assert_eq!(

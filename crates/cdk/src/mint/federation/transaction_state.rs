@@ -5,6 +5,7 @@ use std::str::FromStr;
 use cdk_common::bitcoin::address::NetworkUnchecked;
 use cdk_common::bitcoin::Address;
 use cdk_common::database;
+use cdk_common::database::mint::FederationJournalEntryKey;
 use cdk_common::error::Error;
 use cdk_common::federation::{
     read_federation_state, FederationAcceptedTransaction, FederationAcceptedTransactionState,
@@ -154,7 +155,10 @@ impl Mint {
             })?;
         let entry = self
             .localstore()
-            .get_federation_journal_entry_by_operation_id(accepted.accepted_operation_id)
+            .get_federation_journal_entry(
+                FederationJournalEntryKey::Operation(accepted.accepted_operation_id),
+                None,
+            )
             .await?
             .ok_or_else(|| invalid("accepted transaction has no local journal entry"))?;
         if entry.status() != FederationOperationStatus::Applied {

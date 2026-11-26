@@ -284,19 +284,61 @@ pub enum FederationMaterializedStateKey {
     },
 }
 
-impl FederationMaterializedStateKey {
+/// Storage kind of a materialized-state key, the registry's leading key
+/// column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FederationMaterializedStateKind {
+    /// Mint quotes.
+    MintQuote,
+    /// Melt quotes.
+    MeltQuote,
+    /// Completed value operations.
+    CompletedOperation,
+    /// Proof states.
+    ProofState,
+    /// Aggregate blind signatures.
+    BlindSignature,
+    /// Applied keyset rotations.
+    KeysetRotation,
+    /// Application-owned rows.
+    Application,
+}
+
+impl FederationMaterializedStateKind {
     /// Stable storage kind label.
     #[must_use]
-    pub fn kind_label(&self) -> &str {
+    pub const fn label(self) -> &'static str {
         match self {
-            Self::MintQuote { .. } => "mint_quote",
-            Self::MeltQuote { .. } => "melt_quote",
+            Self::MintQuote => "mint_quote",
+            Self::MeltQuote => "melt_quote",
             Self::CompletedOperation => "completed_operation",
-            Self::ProofState { .. } => "proof_state",
-            Self::BlindSignature { .. } => "blind_signature",
-            Self::KeysetRotation { .. } => "keyset_rotation",
-            Self::Application { .. } => "application",
+            Self::ProofState => "proof_state",
+            Self::BlindSignature => "blind_signature",
+            Self::KeysetRotation => "keyset_rotation",
+            Self::Application => "application",
         }
+    }
+}
+
+impl FederationMaterializedStateKey {
+    /// Storage kind of this key.
+    #[must_use]
+    pub const fn kind(&self) -> FederationMaterializedStateKind {
+        match self {
+            Self::MintQuote { .. } => FederationMaterializedStateKind::MintQuote,
+            Self::MeltQuote { .. } => FederationMaterializedStateKind::MeltQuote,
+            Self::CompletedOperation => FederationMaterializedStateKind::CompletedOperation,
+            Self::ProofState { .. } => FederationMaterializedStateKind::ProofState,
+            Self::BlindSignature { .. } => FederationMaterializedStateKind::BlindSignature,
+            Self::KeysetRotation { .. } => FederationMaterializedStateKind::KeysetRotation,
+            Self::Application { .. } => FederationMaterializedStateKind::Application,
+        }
+    }
+
+    /// Stable storage kind label.
+    #[must_use]
+    pub const fn kind_label(&self) -> &'static str {
+        self.kind().label()
     }
 
     /// Stable logical row key within this storage kind.

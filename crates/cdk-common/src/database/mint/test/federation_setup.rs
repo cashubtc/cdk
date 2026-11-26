@@ -13,9 +13,9 @@ use crate::federation::{
     FederationSetupInvitation, FederationSetupInvitationCapability, FederationSetupInvitationId,
     FederationSetupInvitationRecord, FederationSetupLocalRole, FederationSetupManifest,
     FederationSetupParticipantPhase, FederationSetupProposal, FederationSetupProposalBody,
-    FederationSetupProtocolVersions, FederationSetupSession, FederationSetupUrlPolicy, MemberId,
-    ThresholdParams, FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
-    FEDERATION_SETUP_PROTOCOL_VERSION,
+    FederationSetupProtocolVersions, FederationSetupRecord, FederationSetupSession,
+    FederationSetupStep, FederationSetupUrlPolicy, MemberId, ThresholdParams,
+    FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS, FEDERATION_SETUP_PROTOCOL_VERSION,
 };
 use crate::mint_url::MintUrl;
 use crate::nuts::nut01::SecretKey;
@@ -109,8 +109,10 @@ where
     let conflicting_enrollment = signed_enrollment(31, 1, 1);
     assert_conflicting_write(&db, |tx| {
         Box::pin(async move {
-            tx.add_federation_setup_enrollment(&conflicting_enrollment)
-                .await
+            tx.add_federation_setup_record(FederationSetupRecord::Enrollment(
+                &conflicting_enrollment,
+            ))
+            .await
         })
     })
     .await;
@@ -129,12 +131,20 @@ where
     let mut tx = Database::begin_transaction(&db)
         .await
         .expect("proposal transaction");
-    tx.publish_federation_setup_proposal(&enrolled, &proposal_published, &fixture.proposal)
-        .await
-        .expect("publish proposal");
-    tx.publish_federation_setup_proposal(&enrolled, &proposal_published, &fixture.proposal)
-        .await
-        .expect("exact proposal replay");
+    tx.advance_federation_setup_session(
+        &enrolled,
+        &proposal_published,
+        FederationSetupStep::PublishProposal(&fixture.proposal),
+    )
+    .await
+    .expect("publish proposal");
+    tx.advance_federation_setup_session(
+        &enrolled,
+        &proposal_published,
+        FederationSetupStep::PublishProposal(&fixture.proposal),
+    )
+    .await
+    .expect("exact proposal replay");
     tx.commit().await.expect("commit proposal");
 
     let reviewed = proposal_published
@@ -154,17 +164,31 @@ where
     let mut tx = Database::begin_transaction(&db)
         .await
         .expect("approval transaction");
-    tx.fence_federation_setup_approval(&reviewed, &approved, &fixture.proposal, local_approval)
-        .await
-        .expect("persist approval fence");
-    tx.fence_federation_setup_approval(&reviewed, &approved, &fixture.proposal, local_approval)
-        .await
-        .expect("exact approval fence replay");
+    tx.advance_federation_setup_session(
+        &reviewed,
+        &approved,
+        FederationSetupStep::FenceApproval {
+            proposal: &fixture.proposal,
+            approval: local_approval,
+        },
+    )
+    .await
+    .expect("persist approval fence");
+    tx.advance_federation_setup_session(
+        &reviewed,
+        &approved,
+        FederationSetupStep::FenceApproval {
+            proposal: &fixture.proposal,
+            approval: local_approval,
+        },
+    )
+    .await
+    .expect("exact approval fence replay");
     for approval in fixture.approvals.values() {
-        tx.add_federation_setup_approval(approval)
+        tx.add_federation_setup_record(FederationSetupRecord::Approval(approval))
             .await
             .expect("persist received approval");
-        tx.add_federation_setup_approval(approval)
+        tx.add_federation_setup_record(FederationSetupRecord::Approval(approval))
             .await
             .expect("exact received approval replay");
     }
@@ -176,12 +200,20 @@ where
     let mut tx = Database::begin_transaction(&db)
         .await
         .expect("manifest transaction");
-    tx.store_federation_setup_manifest(&approved, &coordinator_certified, &fixture.manifest)
-        .await
-        .expect("store certified manifest");
-    tx.store_federation_setup_manifest(&approved, &coordinator_certified, &fixture.manifest)
-        .await
-        .expect("exact manifest replay");
+    tx.advance_federation_setup_session(
+        &approved,
+        &coordinator_certified,
+        FederationSetupStep::Certify(&fixture.manifest),
+    )
+    .await
+    .expect("store certified manifest");
+    tx.advance_federation_setup_session(
+        &approved,
+        &coordinator_certified,
+        FederationSetupStep::Certify(&fixture.manifest),
+    )
+    .await
+    .expect("exact manifest replay");
     tx.commit().await.expect("commit manifest");
 
     let participant_certified = coordinator_certified
@@ -190,10 +222,10 @@ where
     let mut tx = Database::begin_transaction(&db)
         .await
         .expect("manifest receipt transaction");
-    tx.store_federation_setup_manifest(
+    tx.advance_federation_setup_session(
         &coordinator_certified,
         &participant_certified,
-        &fixture.manifest,
+        FederationSetupStep::Certify(&fixture.manifest),
     )
     .await
     .expect("record manifest receipt");
@@ -216,12 +248,20 @@ where
     let mut tx = Database::begin_transaction(&db)
         .await
         .expect("activation transaction");
-    tx.activate_federation_setup(&ready, &activated, &fixture.activation)
-        .await
-        .expect("activate setup");
-    tx.activate_federation_setup(&ready, &activated, &fixture.activation)
-        .await
-        .expect("exact activation replay");
+    tx.advance_federation_setup_session(
+        &ready,
+        &activated,
+        FederationSetupStep::Activate(&fixture.activation),
+    )
+    .await
+    .expect("activate setup");
+    tx.advance_federation_setup_session(
+        &ready,
+        &activated,
+        FederationSetupStep::Activate(&fixture.activation),
+    )
+    .await
+    .expect("exact activation replay");
     tx.commit().await.expect("commit activation");
 
     assert_eq!(
@@ -269,7 +309,10 @@ where
 
     let alternate = setup_fixture(31, 1);
     assert_conflicting_write(&db, |tx| {
-        Box::pin(async move { tx.add_federation_setup_proposal(&alternate.proposal).await })
+        Box::pin(async move {
+            tx.add_federation_setup_record(FederationSetupRecord::Proposal(&alternate.proposal))
+                .await
+        })
     })
     .await;
     let alternate_approval = alternate
@@ -279,8 +322,10 @@ where
         .clone();
     assert_conflicting_write(&db, |tx| {
         Box::pin(async move {
-            tx.add_federation_setup_approval_fence(&alternate_approval)
-                .await
+            tx.add_federation_setup_record(FederationSetupRecord::ApprovalFence(
+                &alternate_approval,
+            ))
+            .await
         })
     })
     .await;
@@ -291,13 +336,18 @@ where
         .clone();
     assert_conflicting_write(&db, |tx| {
         Box::pin(async move {
-            tx.add_federation_setup_approval(&alternate_received_approval)
-                .await
+            tx.add_federation_setup_record(FederationSetupRecord::Approval(
+                &alternate_received_approval,
+            ))
+            .await
         })
     })
     .await;
     assert_conflicting_write(&db, |tx| {
-        Box::pin(async move { tx.add_federation_setup_manifest(&alternate.manifest).await })
+        Box::pin(async move {
+            tx.add_federation_setup_record(FederationSetupRecord::Manifest(&alternate.manifest))
+                .await
+        })
     })
     .await;
     let mut alternate_activation = fixture.activation;
@@ -305,7 +355,7 @@ where
         crate::federation::FederationConfigDigest::from_bytes([99; 32]);
     assert_conflicting_write(&db, |tx| {
         Box::pin(async move {
-            tx.add_federation_setup_activation(&alternate_activation)
+            tx.add_federation_setup_record(FederationSetupRecord::Activation(&alternate_activation))
                 .await
         })
     })
@@ -522,7 +572,11 @@ where
         .await
         .expect("failing proposal transaction");
     let result = tx
-        .publish_federation_setup_proposal(&enrolled, &published, &fixture.proposal)
+        .advance_federation_setup_session(
+            &enrolled,
+            &published,
+            FederationSetupStep::PublishProposal(&fixture.proposal),
+        )
         .await;
     assert_setup_conflict(result.expect_err("stale session CAS must fail"));
     tx.rollback().await.expect("rollback proposal insert");
@@ -553,7 +607,14 @@ where
         .await
         .expect("failing fence transaction");
     let result = tx
-        .fence_federation_setup_approval(&reviewed, &approved, &fixture.proposal, approval)
+        .advance_federation_setup_session(
+            &reviewed,
+            &approved,
+            FederationSetupStep::FenceApproval {
+                proposal: &fixture.proposal,
+                approval,
+            },
+        )
         .await;
     assert_setup_conflict(result.expect_err("stale approval CAS must fail"));
     tx.rollback().await.expect("rollback approval fence");
@@ -588,7 +649,11 @@ where
         .await
         .expect("failing manifest transaction");
     let result = tx
-        .store_federation_setup_manifest(&published, &certified, &fixture.manifest)
+        .advance_federation_setup_session(
+            &published,
+            &certified,
+            FederationSetupStep::Certify(&fixture.manifest),
+        )
         .await;
     assert_setup_conflict(result.expect_err("stale manifest CAS must fail"));
     tx.rollback().await.expect("rollback manifest insert");
@@ -639,7 +704,11 @@ where
         .await
         .expect("failing activation transaction");
     let result = tx
-        .activate_federation_setup(&ready, &activated, &fixture.activation)
+        .advance_federation_setup_session(
+            &ready,
+            &activated,
+            FederationSetupStep::Activate(&fixture.activation),
+        )
         .await;
     assert_setup_conflict(result.expect_err("stale activation CAS must fail"));
     tx.rollback().await.expect("rollback activation insert");
@@ -755,7 +824,14 @@ where
         .await
         .expect("fence race transaction");
     match tx
-        .fence_federation_setup_approval(&reviewed, &approved, &proposal, &approval)
+        .advance_federation_setup_session(
+            &reviewed,
+            &approved,
+            FederationSetupStep::FenceApproval {
+                proposal: &proposal,
+                approval: &approval,
+            },
+        )
         .await
     {
         Ok(()) => tx.commit().await.is_ok(),

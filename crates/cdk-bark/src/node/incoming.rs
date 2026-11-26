@@ -18,6 +18,7 @@ use cdk::federation::{
 use cdk::mint::{MintQuoteRequest, MintQuoteResponse, QuoteId};
 use cdk::nuts::CurrencyUnit;
 use cdk::Amount;
+use cdk_common::database::mint::FederationJournalEntryKey;
 use cdk_frost::rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 
@@ -112,7 +113,7 @@ async fn receive_transition_entry(
     state
         .mint()
         .localstore()
-        .get_federation_journal_entry_by_operation_id(operation_id)
+        .get_federation_journal_entry(FederationJournalEntryKey::Operation(operation_id), None)
         .await?
         .ok_or(cdk::Error::Internal)
 }
@@ -447,7 +448,10 @@ async fn advance_federated_bark_mint_quote_inner(
             let plan_entry = state
                 .mint()
                 .localstore()
-                .get_federation_journal_entry_by_operation_id(plan_operation_id)
+                .get_federation_journal_entry(
+                    FederationJournalEntryKey::Operation(plan_operation_id),
+                    None,
+                )
                 .await?
                 .ok_or(cdk::Error::Internal)?;
             let FederationBarkOperation::ActionPlan(plan) =

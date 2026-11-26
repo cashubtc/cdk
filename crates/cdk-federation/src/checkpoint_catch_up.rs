@@ -19,6 +19,7 @@ use cdk::federation::{
     FederationJournalEntry, FederationJournalFrontier, FederationSuffixVerifier,
     VerifiedFederationCheckpointQuorum,
 };
+use cdk_common::database::mint::FederationCheckpointSelector;
 
 use super::node_runtime::{runtime_unavailable, FederationNodeRuntime};
 
@@ -65,7 +66,9 @@ impl FederationNodeRuntime {
         response.validate_checkpoint_binding(checkpoint)?;
         let db = mint.localstore();
         let frontier = db.get_federation_checkpoint_frontier().await?;
-        let current = db.get_trusted_federation_checkpoint_quorum().await?;
+        let current = db
+            .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
+            .await?;
         let current_verified = match current.as_ref() {
             Some(current) => Some(super::verify_checkpoint_quorum_with_metrics(
                 current,

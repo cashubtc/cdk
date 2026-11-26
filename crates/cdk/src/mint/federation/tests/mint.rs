@@ -1,3 +1,5 @@
+use cdk_common::database::mint::{FederationIndexRange, FederationSignatureShareKey};
+
 use super::*;
 
 async fn persist_paid_mint_quote_projection_without_quote_journal(
@@ -58,7 +60,7 @@ async fn persist_paid_mint_payment_projection(
     tx.update_mint_quote(&mut stored_quote)
         .await
         .expect("persist materialized mint quote payment");
-    tx.add_federation_payment_observation(&observation_record)
+    tx.add_federation_payment_observation(&observation_record, None)
         .await
         .expect("persist materialized payment observation");
     tx.commit()
@@ -141,7 +143,10 @@ async fn apply_federation_mint_uses_rotated_keyset_for_signing() {
     assert_eq!(signature.amount, Amount::from(1));
 
     let share_records = localstore
-        .get_federation_signature_shares_for_output(mint_entry.operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id: mint_entry.operation_id,
+            output_index: 0,
+        })
         .await
         .expect("stored federation signature shares");
     assert_eq!(share_records.len(), 1);
@@ -161,7 +166,9 @@ async fn apply_federation_mint_uses_rotated_keyset_for_signing() {
     );
 
     let blinded_message_share_records = localstore
-        .get_federation_signature_shares_for_blinded_message(output.blinded_secret)
+        .get_federation_signature_shares(FederationSignatureShareKey::BlindedMessage(
+            output.blinded_secret,
+        ))
         .await
         .expect("stored federation signature shares by blinded message");
     assert_eq!(blinded_message_share_records, share_records);
@@ -227,7 +234,10 @@ async fn restore_returns_persisted_accepted_mint_shares_by_original_output_index
         let restored_output = &restored.outputs[restored_position];
         let restored_signature = &restored.signatures[restored_position];
         let share_records = localstore
-            .get_federation_signature_shares_for_output(mint_entry.operation_id, original_index)
+            .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                operation_id: mint_entry.operation_id,
+                output_index: original_index,
+            })
             .await
             .expect("stored federation signature share by original output index");
         assert_eq!(share_records.len(), 1);
@@ -254,7 +264,9 @@ async fn restore_returns_persisted_accepted_mint_shares_by_original_output_index
         );
 
         let blinded_message_share_records = localstore
-            .get_federation_signature_shares_for_blinded_message(restored_output.blinded_secret)
+            .get_federation_signature_shares(FederationSignatureShareKey::BlindedMessage(
+                restored_output.blinded_secret,
+            ))
             .await
             .expect("stored federation signature share by blinded message");
         assert_eq!(blinded_message_share_records, share_records);
@@ -298,7 +310,9 @@ async fn restore_ignores_orphan_blind_signature_without_federation_share() {
     assert_eq!(compatibility_signatures, vec![Some(orphan_signature)]);
     assert!(
         localstore
-            .get_federation_signature_shares_for_blinded_message(output.blinded_secret)
+            .get_federation_signature_shares(FederationSignatureShareKey::BlindedMessage(
+                output.blinded_secret
+            ))
             .await
             .expect("orphan federation share lookup")
             .is_empty(),
@@ -367,7 +381,10 @@ async fn apply_federation_mint_rejects_unpaid_quote_before_signing() {
     );
 
     let share_records = localstore
-        .get_federation_signature_shares_for_output(mint_entry.operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id: mint_entry.operation_id,
+            output_index: 0,
+        })
         .await
         .expect("unpaid mint share lookup");
     assert!(
@@ -376,7 +393,9 @@ async fn apply_federation_mint_rejects_unpaid_quote_before_signing() {
     );
 
     let blinded_message_share_records = localstore
-        .get_federation_signature_shares_for_blinded_message(output.blinded_secret)
+        .get_federation_signature_shares(FederationSignatureShareKey::BlindedMessage(
+            output.blinded_secret,
+        ))
         .await
         .expect("unpaid blinded-message share lookup");
     assert!(
@@ -392,7 +411,7 @@ async fn apply_federation_mint_rejects_unpaid_quote_before_signing() {
     assert_eq!(stored_quote.state(), MintQuoteState::Unpaid);
 
     let stored_entries = localstore
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     let stored_mint_entry = stored_entries
@@ -465,7 +484,10 @@ async fn apply_federation_mint_rejects_locally_paid_quote_without_consensus_obse
         vec![None]
     );
     assert!(localstore
-        .get_federation_signature_shares_for_output(mint_entry.operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id: mint_entry.operation_id,
+            output_index: 0
+        })
         .await
         .expect("share lookup")
         .is_empty());
@@ -775,7 +797,10 @@ async fn apply_federation_mint_rejects_duplicate_outputs_before_signing() {
     );
     for output_index in [0, 1] {
         let share_records = localstore
-            .get_federation_signature_shares_for_output(mint_entry.operation_id, output_index)
+            .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                operation_id: mint_entry.operation_id,
+                output_index,
+            })
             .await
             .expect("duplicate-output mint share lookup");
         assert!(
@@ -784,7 +809,9 @@ async fn apply_federation_mint_rejects_duplicate_outputs_before_signing() {
         );
     }
     let blinded_message_share_records = localstore
-        .get_federation_signature_shares_for_blinded_message(output.blinded_secret)
+        .get_federation_signature_shares(FederationSignatureShareKey::BlindedMessage(
+            output.blinded_secret,
+        ))
         .await
         .expect("duplicate-output blinded-message share lookup");
     assert!(
@@ -869,7 +896,10 @@ async fn apply_federation_batch_mint_rejects_quote_amount_mismatch_before_signin
         "amount mismatch must fail before blind signature storage"
     );
     let share_records = localstore
-        .get_federation_signature_shares_for_output(mint_entry.operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id: mint_entry.operation_id,
+            output_index: 0,
+        })
         .await
         .expect("amount-mismatch mint share lookup");
     assert!(
@@ -877,7 +907,9 @@ async fn apply_federation_batch_mint_rejects_quote_amount_mismatch_before_signin
         "amount mismatch must fail before federation share storage"
     );
     let blinded_message_share_records = localstore
-        .get_federation_signature_shares_for_blinded_message(output.blinded_secret)
+        .get_federation_signature_shares(FederationSignatureShareKey::BlindedMessage(
+            output.blinded_secret,
+        ))
         .await
         .expect("amount-mismatch blinded-message share lookup");
     assert!(
@@ -990,7 +1022,10 @@ async fn apply_federation_mint_persists_accepted_materialization_rows() {
     assert_eq!(signature.keyset_id, output.keyset_id);
 
     let share_records = localstore
-        .get_federation_signature_shares_for_output(mint_entry.operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id: mint_entry.operation_id,
+            output_index: 0,
+        })
         .await
         .expect("stored federation signature share");
     assert_eq!(share_records.len(), 1);
@@ -1010,7 +1045,7 @@ async fn apply_federation_mint_persists_accepted_materialization_rows() {
     );
 
     let stored_entries = localstore
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     let stored_mint_entry = stored_entries
@@ -1092,7 +1127,7 @@ async fn catch_up_replay_applies_ordered_mint_history_and_is_idempotent() {
         .expect("catch-up quote");
     assert_eq!(stored_quote.state(), MintQuoteState::Issued);
     assert!(localstore
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("catch-up journal lookup")
         .iter()
@@ -1171,7 +1206,10 @@ async fn apply_federation_mint_rolls_back_late_failure_and_replays() {
         vec![None]
     );
     assert!(localstore
-        .get_federation_signature_shares_for_output(mint_entry.operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id: mint_entry.operation_id,
+            output_index: 0
+        })
         .await
         .expect("share lookup after rollback")
         .is_empty());
@@ -1187,7 +1225,7 @@ async fn apply_federation_mint_rolls_back_late_failure_and_replays() {
         .expect("blinded-message lookup after rollback")
         .is_empty());
     let stored_entries = localstore
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup after rollback");
     assert_eq!(
@@ -1222,7 +1260,10 @@ async fn apply_federation_mint_rolls_back_late_failure_and_replays() {
         .is_some());
     assert_eq!(
         localstore
-            .get_federation_signature_shares_for_output(mint_entry.operation_id, 0)
+            .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                operation_id: mint_entry.operation_id,
+                output_index: 0
+            })
             .await
             .expect("share lookup after replay")
             .len(),

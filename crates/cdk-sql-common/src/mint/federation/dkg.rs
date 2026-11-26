@@ -39,30 +39,13 @@ where
     Ok(())
 }
 
-async fn fetch_frost_records<C, T>(connection: &C, record_kind: &str) -> Result<Vec<T>, Error>
+fn decode_frost_record<T>(payload_json: &str) -> Result<T, Error>
 where
-    C: DatabaseExecutor,
     T: DeserializeOwned,
 {
-    query(
-        r#"
-        SELECT payload_json
-        FROM federation_frost_dkg_records
-        WHERE record_kind = :record_kind
-        ORDER BY ceremony_id ASC, sender_id ASC, receiver_id ASC
-        "#,
-    )?
-    .bind("record_kind", record_kind.to_string())
-    .fetch_all(connection)
-    .await?
-    .into_iter()
-    .map(|row| {
-        unpack_into!(let (payload_json) = row);
-        serde_json::from_str(&column_as_string!(&payload_json)).map_err(|error| {
-            Error::Internal(format!("Invalid federation FROST DKG record JSON: {error}"))
-        })
+    serde_json::from_str(payload_json).map_err(|error| {
+        Error::Internal(format!("Invalid federation FROST DKG record JSON: {error}"))
     })
-    .collect()
 }
 
 /// Read one DKG ceremony record, locking its row for the rest of the transaction.
@@ -168,10 +151,59 @@ where
         Ok(())
     }
 
-    async fn add_federation_dkg_commitment(
+    async fn add_federation_dkg_record(
+        &mut self,
+        record: FederationDkgRecord<'_>,
+    ) -> Result<(), Self::Err> {
+        match record {
+            FederationDkgRecord::Commitment(commitment) => {
+                self.insert_dkg_commitment(commitment).await
+            }
+            FederationDkgRecord::Reveal(reveal) => self.insert_dkg_reveal(reveal).await,
+            FederationDkgRecord::SecretShareContribution(contribution) => {
+                self.insert_dkg_secret_share_contribution(contribution)
+                    .await
+            }
+            FederationDkgRecord::ParticipantState(state) => {
+                self.insert_dkg_participant_state(state).await
+            }
+            FederationDkgRecord::MemberKeysetShare(share) => {
+                self.insert_dkg_member_keyset_share(share).await
+            }
+            FederationDkgRecord::TranscriptSignature(signature) => {
+                self.insert_dkg_transcript_signature(signature).await
+            }
+            FederationDkgRecord::Activation(activation) => {
+                self.insert_dkg_activation(activation).await
+            }
+            FederationDkgRecord::Frost(FederationFrostDkgRecord::Round1(request)) => {
+                self.insert_frost_dkg_round1(request).await
+            }
+            FederationDkgRecord::Frost(FederationFrostDkgRecord::Round2(record)) => {
+                self.insert_frost_dkg_round2(record).await
+            }
+            FederationDkgRecord::Frost(FederationFrostDkgRecord::LocalState(state)) => {
+                self.insert_frost_dkg_local_state(state).await
+            }
+            FederationDkgRecord::Frost(FederationFrostDkgRecord::Root(record)) => {
+                self.insert_frost_root_record(record).await
+            }
+            FederationDkgRecord::Frost(FederationFrostDkgRecord::Confirmation(confirmation)) => {
+                self.insert_frost_dkg_confirmation(confirmation).await
+            }
+        }
+    }
+}
+
+/// Immutable DKG records, stored through [`FederationDkgTransaction::add_federation_dkg_record`].
+impl<RM> SQLTransaction<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    async fn insert_dkg_commitment(
         &mut self,
         commitment: &FederationDkgParticipantCommitment,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), Error> {
         let rows_affected = query(
             r#"
             INSERT INTO federation_dkg_setup_messages
@@ -199,10 +231,10 @@ where
         Ok(())
     }
 
-    async fn add_federation_dkg_reveal(
+    async fn insert_dkg_reveal(
         &mut self,
         reveal: &FederationDkgParticipantCommitmentReveal,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), Error> {
         let rows_affected = query(
             r#"
             INSERT INTO federation_dkg_setup_messages
@@ -230,10 +262,10 @@ where
         Ok(())
     }
 
-    async fn add_federation_dkg_secret_share_contribution(
+    async fn insert_dkg_secret_share_contribution(
         &mut self,
         contribution: &FederationDkgSecretShareRequest,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), Error> {
         let rows_affected = query(
             r#"
             INSERT INTO federation_dkg_secret_share_contributions
@@ -258,10 +290,10 @@ where
         Ok(())
     }
 
-    async fn add_federation_dkg_participant_state(
+    async fn insert_dkg_participant_state(
         &mut self,
         state: &FederationDkgParticipantState,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), Error> {
         let rows_affected = query(
             r#"
             INSERT INTO federation_dkg_participant_states
@@ -288,10 +320,10 @@ where
         Ok(())
     }
 
-    async fn add_federation_dkg_member_keyset_share(
+    async fn insert_dkg_member_keyset_share(
         &mut self,
         share: &FederationDkgMemberKeysetShare,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), Error> {
         let rows_affected = query(
             r#"
             INSERT INTO federation_dkg_member_keyset_shares
@@ -318,10 +350,10 @@ where
         Ok(())
     }
 
-    async fn add_federation_dkg_transcript_signature(
+    async fn insert_dkg_transcript_signature(
         &mut self,
         signature: &FederationDkgTranscriptSignatureRequest,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), Error> {
         let rows_affected = query(
             r#"
             INSERT INTO federation_dkg_transcript_signatures
@@ -347,10 +379,10 @@ where
         Ok(())
     }
 
-    async fn add_federation_dkg_activation(
+    async fn insert_dkg_activation(
         &mut self,
         activation: &FederationDkgActivationRequest,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), Error> {
         let rows_affected = query(
             r#"
             INSERT INTO federation_dkg_activations
@@ -374,10 +406,10 @@ where
         Ok(())
     }
 
-    async fn add_federation_frost_dkg_round1(
+    async fn insert_frost_dkg_round1(
         &mut self,
         request: &FederationFrostDkgRound1Request,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), Error> {
         insert_frost_record(
             &self.inner,
             request.context.ceremony_id,
@@ -389,10 +421,10 @@ where
         .await
     }
 
-    async fn add_federation_frost_dkg_round2(
+    async fn insert_frost_dkg_round2(
         &mut self,
         record: &FederationFrostDkgRound2Record,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), Error> {
         insert_frost_record(
             &self.inner,
             record.context.ceremony_id,
@@ -404,10 +436,10 @@ where
         .await
     }
 
-    async fn set_federation_frost_dkg_local_state(
+    async fn insert_frost_dkg_local_state(
         &mut self,
         state: &FederationFrostDkgLocalState,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), Error> {
         let record_kind = match state.phase {
             cdk_common::federation::FederationFrostDkgLocalPhase::Round1 => {
                 FEDERATION_FROST_DKG_LOCAL_ROUND1_RECORD
@@ -427,10 +459,10 @@ where
         .await
     }
 
-    async fn add_federation_frost_root_record(
+    async fn insert_frost_root_record(
         &mut self,
         record: &FederationFrostRootRecord,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), Error> {
         insert_frost_record(
             &self.inner,
             record.context.ceremony_id,
@@ -442,10 +474,10 @@ where
         .await
     }
 
-    async fn add_federation_frost_dkg_confirmation(
+    async fn insert_frost_dkg_confirmation(
         &mut self,
         confirmation: &FederationFrostDkgConfirmationRequest,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), Error> {
         insert_frost_record(
             &self.inner,
             confirmation.context.ceremony_id,
@@ -645,61 +677,60 @@ where
         .collect()
     }
 
-    async fn get_federation_frost_dkg_round1(
+    async fn get_federation_frost_dkg_records(
         &self,
-    ) -> Result<Vec<FederationFrostDkgRound1Request>, Self::Err> {
+    ) -> Result<FederationFrostDkgRecords, Self::Err> {
         let conn = self
             .pool
             .get()
             .await
             .map_err(|error| Error::Database(Box::new(error)))?;
-        fetch_frost_records(&*conn, FEDERATION_FROST_DKG_ROUND1_RECORD).await
-    }
-
-    async fn get_federation_frost_dkg_round2(
-        &self,
-    ) -> Result<Vec<FederationFrostDkgRound2Record>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|error| Error::Database(Box::new(error)))?;
-        fetch_frost_records(&*conn, FEDERATION_FROST_DKG_ROUND2_RECORD).await
-    }
-
-    async fn get_federation_frost_dkg_local_states(
-        &self,
-    ) -> Result<Vec<FederationFrostDkgLocalState>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|error| Error::Database(Box::new(error)))?;
-        let mut states =
-            fetch_frost_records(&*conn, FEDERATION_FROST_DKG_LOCAL_ROUND1_RECORD).await?;
-        states.extend(fetch_frost_records(&*conn, FEDERATION_FROST_DKG_LOCAL_ROUND2_RECORD).await?);
-        Ok(states)
-    }
-
-    async fn get_federation_frost_root_records(
-        &self,
-    ) -> Result<Vec<FederationFrostRootRecord>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|error| Error::Database(Box::new(error)))?;
-        fetch_frost_records(&*conn, FEDERATION_FROST_DKG_ROOT_RECORD).await
-    }
-
-    async fn get_federation_frost_dkg_confirmations(
-        &self,
-    ) -> Result<Vec<FederationFrostDkgConfirmationRequest>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|error| Error::Database(Box::new(error)))?;
-        fetch_frost_records(&*conn, FEDERATION_FROST_DKG_CONFIRMATION_RECORD).await
+        let rows = query(
+            r#"
+            SELECT record_kind, payload_json
+            FROM federation_frost_dkg_records
+            ORDER BY ceremony_id ASC, sender_id ASC, receiver_id ASC
+            "#,
+        )?
+        .fetch_all(&*conn)
+        .await?;
+        let mut records = FederationFrostDkgRecords::default();
+        let mut local_round2 = Vec::new();
+        for row in rows {
+            unpack_into!(let (record_kind, payload_json) = row);
+            let record_kind = column_as_string!(&record_kind);
+            let payload_json = column_as_string!(&payload_json);
+            match record_kind.as_str() {
+                FEDERATION_FROST_DKG_ROUND1_RECORD => {
+                    records.round1.push(decode_frost_record(&payload_json)?);
+                }
+                FEDERATION_FROST_DKG_ROUND2_RECORD => {
+                    records.round2.push(decode_frost_record(&payload_json)?);
+                }
+                FEDERATION_FROST_DKG_LOCAL_ROUND1_RECORD => {
+                    records
+                        .local_states
+                        .push(decode_frost_record(&payload_json)?);
+                }
+                FEDERATION_FROST_DKG_LOCAL_ROUND2_RECORD => {
+                    local_round2.push(decode_frost_record(&payload_json)?);
+                }
+                FEDERATION_FROST_DKG_ROOT_RECORD => {
+                    records.roots.push(decode_frost_record(&payload_json)?);
+                }
+                FEDERATION_FROST_DKG_CONFIRMATION_RECORD => {
+                    records
+                        .confirmations
+                        .push(decode_frost_record(&payload_json)?);
+                }
+                _ => {
+                    return Err(Error::Internal(
+                        "Unknown federation FROST DKG record kind".to_string(),
+                    ))
+                }
+            }
+        }
+        records.local_states.extend(local_round2);
+        Ok(records)
     }
 }

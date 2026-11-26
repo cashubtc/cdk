@@ -7,6 +7,8 @@
 //! The functions here ensure consistency between these two code paths.
 
 use cdk_common::database::mint::Acquired;
+#[cfg(feature = "federation")]
+use cdk_common::database::mint::FederationJournalEntryKey;
 use cdk_common::database::{self, DynMintDatabase, DynMintTransaction};
 #[cfg(feature = "federation")]
 use cdk_common::federation::{
@@ -718,7 +720,10 @@ async fn federation_signature_share_provenance_for_operation(
     federation_operation_id: FederationOperationId,
 ) -> Result<FederationSignatureShareProvenance, Error> {
     let entry = db
-        .get_federation_journal_entry_by_operation_id(federation_operation_id)
+        .get_federation_journal_entry(
+            FederationJournalEntryKey::Operation(federation_operation_id),
+            None,
+        )
         .await?
         .ok_or_else(|| {
             Error::Custom(
@@ -736,7 +741,10 @@ async fn federation_signature_share_provenance_in_transaction(
     federation_operation_id: FederationOperationId,
 ) -> Result<FederationSignatureShareProvenance, Error> {
     let entry = tx
-        .get_federation_journal_entry_by_operation_id(federation_operation_id)
+        .get_federation_journal_entry(
+            FederationJournalEntryKey::Operation(federation_operation_id),
+            None,
+        )
         .await?
         .ok_or_else(|| {
             Error::Custom(

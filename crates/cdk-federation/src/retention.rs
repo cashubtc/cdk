@@ -12,6 +12,7 @@ use cdk::federation::{
     FederationJournalCatchUpRequest, FederationSuffixVerifier, MemberConfigPublic,
     FEDERATION_RETENTION_PRUNE_BATCH_ROWS,
 };
+use cdk_common::database::mint::FederationCheckpointSelector;
 use cdk_http_client::Transport;
 
 use super::node_runtime::{runtime_unavailable, FederationNodeRuntime};
@@ -183,7 +184,9 @@ where
     let Some(known) = state
         .mint
         .localstore()
-        .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Scheduled)
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Latest(
+            FederationCheckpointKind::Scheduled,
+        ))
         .await?
     else {
         return Ok(());

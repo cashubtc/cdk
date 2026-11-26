@@ -306,6 +306,10 @@ where
         .await
         .expect("absent action read")
         .is_none());
+    assert_eq!(
+        db.bark_projection_frontier().await.expect("empty frontier"),
+        None
+    );
     let mut journal = InMemoryFederationJournal::new();
     for index in 1_u64..=256 {
         let mut intent = receive_intent();
@@ -391,6 +395,10 @@ where
                 .expect("present action");
             action_elapsed += started.elapsed();
             assert_eq!(snapshot.actions.len(), index as usize);
+            assert_eq!(
+                db.bark_projection_frontier().await.expect("frontier"),
+                snapshot.frontier()
+            );
             assert_eq!(
                 Some(&action),
                 snapshot.actions.iter().find(|a| a.action_id == selected_id)

@@ -22,6 +22,8 @@ mod test {
     use std::sync::Arc;
     use std::time::Duration;
 
+    #[cfg(feature = "federation")]
+    use cdk_common::database::mint::{FederationDkgRecord, FederationIndexRange};
     use cdk_common::database::{self, MintAuthDatabase};
     use cdk_common::secret::Secret;
     use cdk_common::{mint_db_test, AuthProof, Id, SecretKey, State};
@@ -569,9 +571,9 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
-    async fn federation_mint_quote_state_projection() {
-        cdk_common::database::mint::test::federation_mint_quote_state_projection(
-            provide_db("federation_mint_quote_state_projection".to_string()).await,
+    async fn federation_hot_reads_stay_bounded_as_history_grows() {
+        cdk_common::database::mint::test::federation_hot_reads_stay_bounded_as_history_grows(
+            provide_db("federation_hot_reads_stay_bounded_as_history_grows".to_string()).await,
         )
         .await;
     }
@@ -765,7 +767,7 @@ mod test {
         let mut tx = Database::begin_transaction(&db)
             .await
             .expect("begin failing DKG transaction");
-        tx.add_federation_dkg_commitment(&commitment)
+        tx.add_federation_dkg_record(FederationDkgRecord::Commitment(&commitment))
             .await
             .expect("first DKG write succeeds before injected failure");
         assert!(tx
@@ -794,7 +796,7 @@ mod test {
         let mut tx = Database::begin_transaction(&db)
             .await
             .expect("begin recovered DKG transaction");
-        tx.add_federation_dkg_commitment(&commitment)
+        tx.add_federation_dkg_record(FederationDkgRecord::Commitment(&commitment))
             .await
             .expect("retry DKG commitment");
         tx.set_federation_dkg_member_sequence(commitment.member_id, 1)
@@ -890,10 +892,11 @@ mod test {
             tx.commit().await.expect("commit backup chunk");
         }
         assert_eq!(
-            db.get_federation_aleph_bft_backup_bytes(7)
+            db.get_federation_aleph_bft_backup_chunks(7, FederationIndexRange::ALL)
                 .await
-                .expect("backup bytes"),
-            Some(b"first-second-third".to_vec())
+                .expect("backup bytes")
+                .concat(),
+            b"first-second-third".to_vec()
         );
         drop(db);
 
@@ -1576,6 +1579,110 @@ mod test {
             .expect("blind-signature quote-id query plan"),
         );
         assert_uses_indexed_search(&blind_signature_quote_id_plan, "blind_signature");
+
+        // Reads that stay bounded as retired history grows.
+        let live_observations_plan = explain_details(
+            query(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT operation_id, operation_index, observation_json, terminal_operation_index
+                FROM federation_payment_observations
+                WHERE terminal_operation_index IS NULL
+                ORDER BY operation_index ASC, observer_member_id ASC
+                "#,
+            )
+            .expect("live-observation plan query")
+            .fetch_all(&*conn)
+            .await
+            .expect("live-observation query plan"),
+        );
+        assert_uses_indexed_search(&live_observations_plan, "federation_payment_observations");
+
+        let registry_kind_plan = explain_details(
+            query(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT state_kind, state_key, operation_index, operation_id, record_json
+                FROM federation_materialized_state_keys
+                WHERE state_kind = 'keyset_rotation'
+                ORDER BY state_key ASC
+                "#,
+            )
+            .expect("registry-kind plan query")
+            .fetch_all(&*conn)
+            .await
+            .expect("registry-kind query plan"),
+        );
+        assert_uses_indexed_search(&registry_kind_plan, "federation_materialized_state_keys");
+
+        let journal_page_plan = explain_details(
+            query(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT operation_index, operation_id
+                FROM federation_journal_entries
+                WHERE operation_index >= 1
+                  AND operation_index < 9
+                ORDER BY operation_index ASC
+                LIMIT 8
+                "#,
+            )
+            .expect("journal page plan query")
+            .fetch_all(&*conn)
+            .await
+            .expect("journal page query plan"),
+        );
+        assert_uses_indexed_search(&journal_page_plan, "federation_journal_entries");
+
+        let bark_frontier_plan = explain_details(
+            query(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT MAX(frontier)
+                FROM (
+                    SELECT MAX(latest_operation_index) AS frontier FROM federation_bark_actions
+                    UNION ALL
+                    SELECT MAX(latest_operation_index) AS frontier FROM federation_bark_vtxos
+                    UNION ALL
+                    SELECT MAX(operation_index) AS frontier FROM federation_bark_derivation_allocations
+                    UNION ALL
+                    SELECT MAX(operation_index) AS frontier FROM federation_bark_reservations
+                    UNION ALL
+                    SELECT MAX(operation_index) AS frontier FROM federation_bark_transitions
+                    UNION ALL
+                    SELECT MAX(operation_index) AS frontier FROM federation_bark_observations
+                ) AS frontiers
+                "#,
+            )
+            .expect("Bark frontier plan query")
+            .fetch_all(&*conn)
+            .await
+            .expect("Bark frontier query plan"),
+        );
+        for table in [
+            "federation_bark_actions",
+            "federation_bark_vtxos",
+            "federation_bark_derivation_allocations",
+            "federation_bark_reservations",
+            "federation_bark_transitions",
+            "federation_bark_observations",
+        ] {
+            assert_uses_indexed_search(&bark_frontier_plan, table);
+        }
+
+        let bark_locator_plan = explain_details(
+            query(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT MAX(locator_index) FROM federation_bark_derivation_allocations
+                "#,
+            )
+            .expect("Bark locator plan query")
+            .fetch_all(&*conn)
+            .await
+            .expect("Bark locator query plan"),
+        );
+        assert_uses_indexed_search(&bark_locator_plan, "federation_bark_derivation_allocations");
 
         drop(conn);
         drop(pool);

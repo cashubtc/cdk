@@ -8,6 +8,9 @@ use std::sync::Arc;
 #[cfg(feature = "federation-bdk")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(feature = "federation-bark")]
+use cdk_common::database::mint::FederationJournalEntryKey;
+
 #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 use super::signer_fan_out::{
     concurrency_limit, fan_out, known_signer_members, signer_members, LocalFrostSigner,
@@ -141,7 +144,7 @@ mod bark_custody_authorization_tests {
         assert!(bark_custody_inputs_are_authorized(
             &plan,
             cdk::federation::FederationBarkSemanticPhase::ReceivePreimageDisclosed,
-            &projection,
+            &projection.vtxos,
         ));
     }
 
@@ -164,7 +167,7 @@ mod bark_custody_authorization_tests {
             assert!(!bark_custody_inputs_are_authorized(
                 &plan,
                 phase,
-                &projection
+                &projection.vtxos
             ));
         }
     }
@@ -201,7 +204,7 @@ mod bark_custody_authorization_tests {
             assert!(!bark_custody_inputs_are_authorized(
                 &plan,
                 Phase::ReceivePreimageDisclosed,
-                &projection,
+                &projection.vtxos,
             ));
         }
     }
@@ -218,7 +221,7 @@ mod bark_custody_authorization_tests {
         assert!(bark_custody_inputs_are_authorized(
             &plan,
             Phase::ClaimPlanned,
-            &projection
+            &projection.vtxos
         ));
         for state in [
             State::Observed,
@@ -231,7 +234,7 @@ mod bark_custody_authorization_tests {
             assert!(!bark_custody_inputs_are_authorized(
                 &plan,
                 Phase::ReceivePreimageDisclosed,
-                &projection
+                &projection.vtxos
             ));
         }
         plan.kind = Kind::EmergencyExit;
@@ -239,7 +242,7 @@ mod bark_custody_authorization_tests {
         assert!(bark_custody_inputs_are_authorized(
             &plan,
             Phase::ExitRegistered,
-            &projection
+            &projection.vtxos
         ));
     }
 
@@ -1300,7 +1303,10 @@ impl FederationFrostSigningRuntime {
         let typed = FederationBarkRecoveryFrostAuthorization::from_bytes(authorization.payload())?;
         let entry = mint
             .localstore()
-            .get_federation_journal_entry_by_operation_id(typed.registered_operation_id)
+            .get_federation_journal_entry(
+                FederationJournalEntryKey::Operation(typed.registered_operation_id),
+                None,
+            )
             .await?
             .ok_or_else(|| frost_invalid("accepted Bark recovery registration is unavailable"))?;
         let projection = mint.federation_bark_projection_snapshot().await?;
@@ -1406,7 +1412,10 @@ async fn validate_bark_authorization(
     let typed = FederationBarkFrostAuthorization::from_bytes(authorization.payload())?;
     let entry = mint
         .localstore()
-        .get_federation_journal_entry_by_operation_id(typed.reference.accepted_operation_id)
+        .get_federation_journal_entry(
+            FederationJournalEntryKey::Operation(typed.reference.accepted_operation_id),
+            None,
+        )
         .await?
         .ok_or_else(|| frost_invalid("accepted Bark operation is unavailable"))?;
     let runtime = mint
@@ -1424,7 +1433,10 @@ async fn validate_bark_authorization(
         {
             (
                 mint.localstore()
-                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .get_federation_journal_entry(
+                        FederationJournalEntryKey::Operation(transition.plan_operation_id),
+                        None,
+                    )
                     .await?
                     .ok_or_else(|| frost_invalid("accepted Bark action plan is unavailable"))?,
                 transition.attempt,
@@ -1592,20 +1604,35 @@ async fn wait_for_bark_custody_projection(
     authorization_attempt: u32,
 ) -> Result<(), cdk::Error> {
     let deadline = tokio::time::Instant::now() + BARK_CUSTODY_PROJECTION_WAIT_TIMEOUT;
+    let input_ids = plan
+        .inputs
+        .iter()
+        .map(|input| input.vtxo_id)
+        .collect::<Vec<_>>();
     loop {
-        let projection = mint.federation_bark_projection_snapshot().await?;
-        let authorization_is_current = projection.actions.iter().any(|action| {
-            if action.action_id != plan.action_id {
-                return false;
+        let authorization_is_current = match mint.federation_bark_action(plan.action_id).await? {
+            Some(action)
+                if cdk::federation::federation_bark_custody_attempt_is_current(
+                    plan.kind,
+                    action.phase,
+                    action.signing_retry_phase,
+                    action.attempt,
+                    authorization_attempt,
+                ) =>
+            {
+                // The inputs are read apart from the action head; an unchanged
+                // head afterwards means no Bark operation on this action moved
+                // them in between, as one snapshot read guaranteed.
+                let inputs = mint.federation_bark_store()?.bark_vtxos(&input_ids).await?;
+                let head_unchanged = mint
+                    .federation_bark_action(plan.action_id)
+                    .await?
+                    .is_some_and(|after| after.latest_operation_id == action.latest_operation_id);
+                head_unchanged
+                    && bark_custody_inputs_are_authorized(plan, action.effective_phase(), &inputs)
             }
-            cdk::federation::federation_bark_custody_attempt_is_current(
-                plan.kind,
-                action.phase,
-                action.signing_retry_phase,
-                action.attempt,
-                authorization_attempt,
-            ) && bark_custody_inputs_are_authorized(plan, action.effective_phase(), &projection)
-        });
+            _ => false,
+        };
         if authorization_is_current {
             return Ok(());
         }
@@ -1622,10 +1649,10 @@ async fn wait_for_bark_custody_projection(
 fn bark_custody_inputs_are_authorized(
     plan: &cdk::federation::FederationBarkActionPlan,
     phase: FederationBarkSemanticPhase,
-    projection: &cdk::federation::FederationBarkProjectionSnapshot,
+    vtxos: &[cdk::federation::FederationBarkVtxoRecord],
 ) -> bool {
     plan.inputs.iter().all(|input| {
-        projection.vtxos.iter().any(|record| {
+        vtxos.iter().any(|record| {
             record.vtxo_id == input.vtxo_id
                 && record.locator == input.locator
                 && record.amount == input.amount

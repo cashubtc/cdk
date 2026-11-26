@@ -3,7 +3,7 @@
 //! The mint database writes the projection while it applies accepted
 //! operations. Validation on the apply path reads it through these keyed
 //! queries, so no apply-path read grows with retained history. The whole
-//! snapshot remains for workers, operator status and checkpoints.
+//! snapshot remains for the Bark drivers, operator status and checkpoints.
 
 use std::fmt;
 use std::sync::Arc;
@@ -59,7 +59,12 @@ pub trait FederationBarkStore: fmt::Debug + Send + Sync {
     /// Highest allocated custody locator index, if any locator was allocated.
     async fn bark_max_locator_index(&self) -> Result<Option<u32>, Error>;
 
-    /// The whole projection, for workers, operator status and checkpoints.
+    /// Highest accepted operation index of any stored Bark row, which is the
+    /// [`FederationBarkProjectionSnapshot::frontier`] of the whole projection,
+    /// read without loading it.
+    async fn bark_projection_frontier(&self) -> Result<Option<u64>, Error>;
+
+    /// The whole projection, for the drivers, operator status and checkpoints.
     async fn bark_projection_snapshot(&self) -> Result<FederationBarkProjectionSnapshot, Error>;
 }
 

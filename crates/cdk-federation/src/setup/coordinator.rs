@@ -14,9 +14,10 @@ use cdk_common::federation::{
     FederationSetupCorrelationNonce, FederationSetupEnrollment,
     FederationSetupEnrollmentAcknowledgement, FederationSetupId, FederationSetupInvitation,
     FederationSetupInvitationId, FederationSetupInvitationRecord, FederationSetupInvitationState,
-    FederationSetupManifest, FederationSetupProposal, FederationSetupResponseBody,
-    FederationSetupResponseRouteKind, FederationSetupSession, FederationSetupSignedResponse,
-    FederationSetupStatus, FederationSetupUrlPolicy, FEDERATION_MAX_SETUP_INVITATION_BYTES,
+    FederationSetupManifest, FederationSetupProposal, FederationSetupRecord,
+    FederationSetupResponseBody, FederationSetupResponseRouteKind, FederationSetupSession,
+    FederationSetupSignedResponse, FederationSetupStatus, FederationSetupStep,
+    FederationSetupUrlPolicy, FEDERATION_MAX_SETUP_INVITATION_BYTES,
     FEDERATION_SETUP_PROTOCOL_VERSION,
 };
 use cdk_common::SecretKey;
@@ -690,12 +691,16 @@ impl FederationSetupCoordinatorService {
             .await
             .map_err(|_| FederationSetupHttpError::storage())?;
         transaction
-            .add_federation_setup_approval(&approval)
+            .add_federation_setup_record(FederationSetupRecord::Approval(&approval))
             .await
             .map_err(|_| FederationSetupHttpError::storage())?;
         if let Some((manifest, session, certified)) = certification {
             transaction
-                .store_federation_setup_manifest(&session, &certified, &manifest)
+                .advance_federation_setup_session(
+                    &session,
+                    &certified,
+                    FederationSetupStep::Certify(&manifest),
+                )
                 .await
                 .map_err(|_| FederationSetupHttpError::storage())?;
         }

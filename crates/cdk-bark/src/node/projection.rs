@@ -9,6 +9,7 @@ use cdk::federation::{
     FederationOperationId, FederationOperationStatus,
 };
 use cdk::mint::{Mint, QuoteId};
+use cdk_common::database::mint::{FederationIndexRange, FederationJournalEntryKey};
 
 use super::FederatedBarkNode;
 use crate::{
@@ -36,7 +37,7 @@ pub async fn reconcile_federation_bark_runtime(
     let next_index = read_replay_marker(mint, &marker_key).await?;
     let entries = mint
         .localstore()
-        .get_federation_journal_entries_from(next_index)
+        .get_federation_journal_entries(FederationIndexRange::starting_at(next_index))
         .await?;
     FederatedBarkRecoveryDriver::new(runtime.clone())
         .reconcile(&MintReplaySource { mint }, &entries)
@@ -193,7 +194,7 @@ impl FederatedBarkReplaySource for MintReplaySource<'_> {
     ) -> Result<FederationJournalEntry, Error> {
         self.mint
             .localstore()
-            .get_federation_journal_entry_by_operation_id(operation_id)
+            .get_federation_journal_entry(FederationJournalEntryKey::Operation(operation_id), None)
             .await
             .map_err(|_| Error::MaintenanceReconciliationFailed)?
             .ok_or(Error::MaintenanceReconciliationFailed)

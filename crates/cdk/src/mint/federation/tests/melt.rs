@@ -1,3 +1,8 @@
+use cdk_common::database::mint::{
+    FederationIndexRange, FederationJournalEntryKey, FederationPaymentObservationSelection,
+    FederationSignatureShareKey,
+};
+
 use super::*;
 
 #[tokio::test]
@@ -633,12 +638,18 @@ async fn accepted_melt_author_is_the_only_payment_actor() {
         .is_none());
     assert_eq!(author_payment_calls.load(Ordering::Relaxed), 1);
     assert!(author_store
-        .get_federation_journal_entry_by_operation_id(melt_entry.operation_id)
+        .get_federation_journal_entry(
+            FederationJournalEntryKey::Operation(melt_entry.operation_id),
+            None
+        )
         .await
         .expect("author journal lookup")
         .is_some());
     assert!(follower_store
-        .get_federation_journal_entry_by_operation_id(melt_entry.operation_id)
+        .get_federation_journal_entry(
+            FederationJournalEntryKey::Operation(melt_entry.operation_id),
+            None
+        )
         .await
         .expect("follower journal lookup")
         .is_some());
@@ -872,7 +883,7 @@ async fn add_federation_melt_change_signs_rotated_keyset() {
     );
 
     let share_records = localstore
-        .get_federation_signature_shares_for_blinded_message(change_secret)
+        .get_federation_signature_shares(FederationSignatureShareKey::BlindedMessage(change_secret))
         .await
         .expect("stored federation change signature shares");
     assert_eq!(share_records.len(), 1);
@@ -1443,7 +1454,10 @@ async fn apply_federation_melt_rejects_paid_quote_reuse_with_different_inputs() 
     );
     assert_eq!(
         localstore
-            .get_federation_journal_entry_by_operation_id(conflicting_operation_id)
+            .get_federation_journal_entry(
+                FederationJournalEntryKey::Operation(conflicting_operation_id),
+                None
+            )
             .await
             .expect("conflicting terminal-paid journal lookup")
             .expect("conflicting terminal-paid journal entry")
@@ -1547,7 +1561,10 @@ async fn apply_federation_melt_rejects_paid_quote_reuse_with_different_change_ou
     );
     assert_eq!(
         localstore
-            .get_federation_journal_entry_by_operation_id(conflicting_operation_id)
+            .get_federation_journal_entry(
+                FederationJournalEntryKey::Operation(conflicting_operation_id),
+                None
+            )
             .await
             .expect("conflicting terminal-paid change journal lookup")
             .expect("conflicting terminal-paid change journal entry")
@@ -1781,7 +1798,10 @@ async fn apply_federation_melt_keeps_terminal_zero_change_paid_quote_immutable()
         .expect("terminal paid zero-change replay should be a no-op"));
     assert_eq!(
         localstore
-            .get_federation_journal_entry_by_operation_id(original_entry.operation_id)
+            .get_federation_journal_entry(
+                FederationJournalEntryKey::Operation(original_entry.operation_id),
+                None
+            )
             .await
             .expect("zero-change replay journal lookup")
             .expect("zero-change replay journal entry")
@@ -1998,7 +2018,9 @@ async fn apply_federation_melt_keeps_quote_pending_when_backend_status_is_unknow
     );
     assert!(
         localstore
-            .get_federation_signature_shares_for_blinded_message(change_output.blinded_secret)
+            .get_federation_signature_shares(FederationSignatureShareKey::BlindedMessage(
+                change_output.blinded_secret
+            ))
             .await
             .expect("unknown backend change share lookup")
             .is_empty(),
@@ -2006,7 +2028,10 @@ async fn apply_federation_melt_keeps_quote_pending_when_backend_status_is_unknow
     );
     assert_eq!(
         localstore
-            .get_federation_journal_entry_by_operation_id(melt_entry.operation_id)
+            .get_federation_journal_entry(
+                FederationJournalEntryKey::Operation(melt_entry.operation_id),
+                None
+            )
             .await
             .expect("unknown backend journal lookup")
             .expect("unknown backend journal entry")
@@ -2079,12 +2104,15 @@ async fn apply_federation_melt_payment_observation_keeps_unknown_transient() {
     );
 
     let observations = localstore
-        .get_federation_payment_observations(
-            FederationPaymentObservationContext::MeltQuote,
-            &quote.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+            context: FederationPaymentObservationContext::MeltQuote,
+            quote: &quote.to_string(),
+        })
         .await
-        .expect("unknown observation rows");
+        .expect("unknown observation rows")
+        .into_iter()
+        .map(|observation| observation.record)
+        .collect::<Vec<_>>();
     assert_eq!(observations.len(), 1);
     let observation = observations
         .first()
@@ -2097,7 +2125,10 @@ async fn apply_federation_melt_payment_observation_keeps_unknown_transient() {
     }
     assert_eq!(
         localstore
-            .get_federation_journal_entry_by_operation_id(unknown_observation.operation_id)
+            .get_federation_journal_entry(
+                FederationJournalEntryKey::Operation(unknown_observation.operation_id),
+                None
+            )
             .await
             .expect("unknown observation journal lookup")
             .expect("unknown observation journal entry")
@@ -2181,7 +2212,7 @@ async fn accepted_federation_melt_persists_reserve_before_payment_attempt() {
     );
 
     let stored_entries = localstore
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal entries");
     let stored_entry = stored_entries
@@ -2356,12 +2387,15 @@ async fn assert_paid_melt_evidence_left_no_effect(
         .await
         .is_some());
     assert!(localstore
-        .get_federation_payment_observations(
-            FederationPaymentObservationContext::MeltQuote,
-            &fixture.quote.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+            context: FederationPaymentObservationContext::MeltQuote,
+            quote: &fixture.quote.to_string()
+        })
         .await
         .expect("payment observations after failed apply")
+        .into_iter()
+        .map(|observation| observation.record)
+        .collect::<Vec<_>>()
         .is_empty());
     assert_eq!(
         localstore
@@ -2371,7 +2405,10 @@ async fn assert_paid_melt_evidence_left_no_effect(
         vec![None]
     );
     assert!(localstore
-        .get_federation_signature_shares_for_output(fixture.melt_entry.operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id: fixture.melt_entry.operation_id,
+            output_index: 0
+        })
         .await
         .expect("change share after failed apply")
         .is_empty());
@@ -2383,7 +2420,10 @@ async fn assert_paid_melt_evidence_left_no_effect(
         .is_none());
     assert_eq!(
         localstore
-            .get_federation_journal_entry_by_operation_id(fixture.payment_entry.operation_id)
+            .get_federation_journal_entry(
+                FederationJournalEntryKey::Operation(fixture.payment_entry.operation_id),
+                None
+            )
             .await
             .expect("payment journal lookup after failed apply")
             .expect("payment journal entry after failed apply")
@@ -2415,7 +2455,10 @@ async fn assert_paid_melt_evidence_applied(fixture: &PaidFederationMeltAwaitingE
         .is_some());
     assert_eq!(
         localstore
-            .get_federation_signature_shares_for_output(fixture.melt_entry.operation_id, 0)
+            .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                operation_id: fixture.melt_entry.operation_id,
+                output_index: 0
+            })
             .await
             .expect("change share after apply")
             .len(),
@@ -2441,10 +2484,10 @@ async fn assert_paid_melt_evidence_applied(fixture: &PaidFederationMeltAwaitingE
         .is_none());
     // The quote is paid and final: its observation is stored, retired.
     let observations = localstore
-        .get_federation_payment_observation_history(
-            FederationPaymentObservationContext::MeltQuote,
-            &fixture.quote.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::History {
+            context: FederationPaymentObservationContext::MeltQuote,
+            quote: &fixture.quote.to_string(),
+        })
         .await
         .expect("payment observations after apply");
     assert_eq!(observations.len(), 1);
@@ -2458,7 +2501,10 @@ async fn assert_paid_melt_evidence_applied(fixture: &PaidFederationMeltAwaitingE
     );
     assert_eq!(
         localstore
-            .get_federation_journal_entry_by_operation_id(fixture.payment_entry.operation_id)
+            .get_federation_journal_entry(
+                FederationJournalEntryKey::Operation(fixture.payment_entry.operation_id),
+                None
+            )
             .await
             .expect("payment journal lookup after apply")
             .expect("payment journal entry after apply")
@@ -2467,7 +2513,10 @@ async fn assert_paid_melt_evidence_applied(fixture: &PaidFederationMeltAwaitingE
     );
     assert_eq!(
         localstore
-            .get_federation_journal_entry_by_operation_id(fixture.melt_entry.operation_id)
+            .get_federation_journal_entry(
+                FederationJournalEntryKey::Operation(fixture.melt_entry.operation_id),
+                None
+            )
             .await
             .expect("melt journal lookup after apply")
             .expect("melt journal entry after apply")
@@ -2692,19 +2741,25 @@ async fn failed_federation_melt_rolls_back_atomically_and_replays() {
     assert!(melt_request_after_failure.is_some());
     assert_eq!(
         localstore
-            .get_federation_payment_observations(
-                FederationPaymentObservationContext::MeltQuote,
-                &quote.to_string(),
-            )
+            .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+                context: FederationPaymentObservationContext::MeltQuote,
+                quote: &quote.to_string()
+            })
             .await
             .expect("payment observations after rollback failure")
+            .into_iter()
+            .map(|observation| observation.record)
+            .collect::<Vec<_>>()
             .len(),
         0,
         "the observation rolls back with the failed apply; replay records it again"
     );
     assert_eq!(
         localstore
-            .get_federation_journal_entry_by_operation_id(failed_observation.operation_id)
+            .get_federation_journal_entry(
+                FederationJournalEntryKey::Operation(failed_observation.operation_id),
+                None
+            )
             .await
             .expect("failed observation journal lookup")
             .expect("failed observation journal entry")
@@ -2758,18 +2813,24 @@ async fn failed_federation_melt_rolls_back_atomically_and_replays() {
     assert!(melt_request_after_replay.is_none());
     assert_eq!(
         localstore
-            .get_federation_payment_observations(
-                FederationPaymentObservationContext::MeltQuote,
-                &quote.to_string(),
-            )
+            .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+                context: FederationPaymentObservationContext::MeltQuote,
+                quote: &quote.to_string()
+            })
             .await
             .expect("payment observations after rollback replay")
+            .into_iter()
+            .map(|observation| observation.record)
+            .collect::<Vec<_>>()
             .len(),
         1
     );
     assert_eq!(
         localstore
-            .get_federation_journal_entry_by_operation_id(failed_observation.operation_id)
+            .get_federation_journal_entry(
+                FederationJournalEntryKey::Operation(failed_observation.operation_id),
+                None
+            )
             .await
             .expect("failed observation journal lookup after replay")
             .expect("failed observation journal entry after replay")
@@ -2947,12 +3008,15 @@ async fn internal_melt_to_mint_settlement_updates_both_quotes_in_accepted_melt()
     assert_eq!(completed_operation.completed_at(), &Some(0));
     assert!(
         localstore
-            .get_federation_payment_observations(
-                FederationPaymentObservationContext::MeltQuote,
-                &melt_quote.to_string(),
-            )
+            .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+                context: FederationPaymentObservationContext::MeltQuote,
+                quote: &melt_quote.to_string()
+            })
             .await
             .expect("melt payment observations")
+            .into_iter()
+            .map(|observation| observation.record)
+            .collect::<Vec<_>>()
             .is_empty(),
         "internal settlement should not require a separate melt payment observation"
     );
@@ -3162,12 +3226,15 @@ async fn assert_frost_onchain_internal_melt_finalized(
     tx.rollback().await.expect("rollback read transaction");
     assert!(fixture
         .localstore
-        .get_federation_payment_observations(
-            FederationPaymentObservationContext::MeltQuote,
-            &fixture.melt_quote.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+            context: FederationPaymentObservationContext::MeltQuote,
+            quote: &fixture.melt_quote.to_string()
+        })
         .await
         .expect("melt payment observations")
+        .into_iter()
+        .map(|observation| observation.record)
+        .collect::<Vec<_>>()
         .is_empty());
     assert!(fixture
         .localstore
@@ -3186,7 +3253,10 @@ async fn assert_frost_onchain_internal_melt_finalized(
     assert_eq!(
         fixture
             .localstore
-            .get_federation_journal_entry_by_operation_id(fixture.melt_entry.operation_id)
+            .get_federation_journal_entry(
+                FederationJournalEntryKey::Operation(fixture.melt_entry.operation_id),
+                None
+            )
             .await
             .expect("journal lookup")
             .expect("journal entry")
@@ -3293,12 +3363,15 @@ async fn real_policy_melt_payment_observations_finalize_from_stored_quorum() {
     );
 
     let observations_after_single = localstore
-        .get_federation_payment_observations(
-            FederationPaymentObservationContext::MeltQuote,
-            &quote.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+            context: FederationPaymentObservationContext::MeltQuote,
+            quote: &quote.to_string(),
+        })
         .await
-        .expect("single melt observation rows");
+        .expect("single melt observation rows")
+        .into_iter()
+        .map(|observation| observation.record)
+        .collect::<Vec<_>>();
     assert_eq!(observations_after_single.len(), 1);
 
     let matching_second = appended_entry(
@@ -3375,18 +3448,21 @@ async fn real_policy_melt_payment_observations_finalize_from_stored_quorum() {
     // The paid quote is final: its quorum observations retired when it was
     // paid, and the later conflicting observation is not recorded.
     assert!(localstore
-        .get_federation_payment_observations(
-            FederationPaymentObservationContext::MeltQuote,
-            &quote.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+            context: FederationPaymentObservationContext::MeltQuote,
+            quote: &quote.to_string()
+        })
         .await
         .expect("live melt observation rows")
+        .into_iter()
+        .map(|observation| observation.record)
+        .collect::<Vec<_>>()
         .is_empty());
     let history = localstore
-        .get_federation_payment_observation_history(
-            FederationPaymentObservationContext::MeltQuote,
-            &quote.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::History {
+            context: FederationPaymentObservationContext::MeltQuote,
+            quote: &quote.to_string(),
+        })
         .await
         .expect("melt observation history");
     assert_eq!(history.len(), 2);
@@ -3631,10 +3707,10 @@ async fn stale_pending_melt_observation_after_paid_settlement_is_idempotent() {
     );
     // The stale observation of the paid, final quote is not recorded.
     let observations = localstore
-        .get_federation_payment_observation_history(
-            FederationPaymentObservationContext::MeltQuote,
-            &quote.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::History {
+            context: FederationPaymentObservationContext::MeltQuote,
+            quote: &quote.to_string(),
+        })
         .await
         .expect("observation rows");
     assert_eq!(observations.len(), 1);
@@ -3712,12 +3788,15 @@ async fn stale_pending_melt_observation_after_failed_rollback_is_idempotent() {
         vec![None, None]
     );
     let observations = localstore
-        .get_federation_payment_observations(
-            FederationPaymentObservationContext::MeltQuote,
-            &quote.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+            context: FederationPaymentObservationContext::MeltQuote,
+            quote: &quote.to_string(),
+        })
         .await
-        .expect("observation rows");
+        .expect("observation rows")
+        .into_iter()
+        .map(|observation| observation.record)
+        .collect::<Vec<_>>();
     assert_eq!(observations.len(), 2);
 }
 
@@ -3841,12 +3920,15 @@ async fn real_policy_failed_melt_observations_rollback_from_stored_quorum() {
     );
 
     let observations_after_conflict = localstore
-        .get_federation_payment_observations(
-            FederationPaymentObservationContext::MeltQuote,
-            &quote.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+            context: FederationPaymentObservationContext::MeltQuote,
+            quote: &quote.to_string(),
+        })
         .await
-        .expect("conflicting melt observation rows");
+        .expect("conflicting melt observation rows")
+        .into_iter()
+        .map(|observation| observation.record)
+        .collect::<Vec<_>>();
     assert_eq!(observations_after_conflict.len(), 3);
 }
 

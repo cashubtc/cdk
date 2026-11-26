@@ -628,7 +628,8 @@ impl Mint {
         }
 
         for stored in &plan.payment_observations {
-            tx.install_federation_payment_observation(stored).await?;
+            tx.add_federation_payment_observation(&stored.record, stored.terminal_operation_index)
+                .await?;
         }
 
         for (quote, install) in &plan.mint_quotes {

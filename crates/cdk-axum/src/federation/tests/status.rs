@@ -1,3 +1,7 @@
+use cdk_common::database::mint::{
+    FederationCheckpointSelector, FederationIndexRange, FederationPaymentObservationSelection,
+};
+
 use super::*;
 
 #[tokio::test]
@@ -441,7 +445,7 @@ async fn private_status_routes_read_persisted_journal_after_runtime_reset() {
     let entries = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal entries");
     assert_eq!(entries.len(), 1);
@@ -634,7 +638,7 @@ async fn aleph_bft_finalized_channel_backpressure_never_drops_and_overflow_halts
                 .first_state
                 .mint
                 .localstore()
-                .get_federation_journal_entries()
+                .get_federation_journal_entries(FederationIndexRange::ALL)
                 .await
                 .expect("journal lookup after rotation")
                 .len();
@@ -824,7 +828,7 @@ async fn catching_up_member_blocks_wallet_observer_and_broadcaster_work() {
     assert!(state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal entries")
         .is_empty());
@@ -909,7 +913,7 @@ async fn private_journal_route_pages_to_checkpoint_without_range_signing() {
     assert!(state
         .mint
         .localstore()
-        .get_federation_checkpoint_quorum(checkpoint_id)
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Id(checkpoint_id))
         .await
         .expect("checkpoint quorum lookup")
         .is_none());
@@ -1538,10 +1542,10 @@ async fn poisoned_melt_quote_cannot_starve_observer_round() {
     let healthy_observations = state
         .mint
         .localstore()
-        .get_federation_payment_observation_history(
-            cdk::federation::FederationPaymentObservationContext::MeltQuote,
-            &healthy_quote.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::History {
+            context: cdk::federation::FederationPaymentObservationContext::MeltQuote,
+            quote: &healthy_quote.to_string(),
+        })
         .await
         .expect("healthy observation rows")
         .into_iter()

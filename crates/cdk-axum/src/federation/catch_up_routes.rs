@@ -6,6 +6,7 @@ use cdk::federation::{
     FederationSignedRequest, InMemoryFederationJournal, FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS,
     FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
 };
+use cdk_common::database::mint::{FederationCheckpointSelector, FederationIndexRange};
 use tracing::instrument;
 
 use crate::MintState;
@@ -50,7 +51,7 @@ async fn durable_catch_up_response(
             let checkpoint = state
                 .mint
                 .localstore()
-                .get_federation_checkpoint(checkpoint_id)
+                .get_federation_checkpoint(FederationCheckpointSelector::Id(checkpoint_id))
                 .await
                 .map_err(|err| anyhow_response(err.into()))?
                 .ok_or_else(|| {
@@ -138,7 +139,11 @@ async fn durable_catch_up_response(
     let entries = state
         .mint
         .localstore()
-        .get_federation_journal_entries_range(request.next_index, end_index, fetch_limit)
+        .get_federation_journal_entries(FederationIndexRange::page(
+            request.next_index,
+            end_index,
+            fetch_limit,
+        ))
         .await
         .map_err(|err| anyhow_response(err.into()))?;
     let base_order_digest = match entries.first() {
@@ -369,11 +374,11 @@ async fn maybe_attach_aleph_bft_finalized_items(
     let finalized_items = state
         .mint
         .localstore()
-        .get_federation_aleph_bft_finalized_items_range(
+        .get_federation_aleph_bft_finalized_items(FederationIndexRange::page(
             request.aleph_bft_next_item_index,
             finalized_end_item_index,
             fetch_limit.saturating_add(1),
-        )
+        ))
         .await?;
     let (finalized_items, fetched_page_complete) =
         truncate_to_complete_aleph_bft_units(finalized_items, requested_limit)?;

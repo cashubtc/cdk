@@ -90,6 +90,15 @@ where
         bark_projection::get_max_locator_index(&*conn).await
     }
 
+    async fn bark_projection_frontier(&self) -> Result<Option<u64>, Error> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        bark_projection::get_projection_frontier(&*conn).await
+    }
+
     async fn bark_projection_snapshot(&self) -> Result<FederationBarkProjectionSnapshot, Error> {
         let conn = self
             .pool

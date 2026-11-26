@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use cdk_common::database::mint::FederationIndexRange;
 use cdk_common::federation::{
     FederationAddressAllocationScope, FederationAddressKeychain, FederationDkgCeremonyId,
     FederationFrostApplicationConfig, FederationFrostApplicationId,
@@ -212,7 +213,7 @@ async fn sequential_duplicate_conflicting_and_keychain_allocations_are_determini
     assert!(journal.append(conflicting).is_err());
     assert_eq!(
         localstore
-            .get_federation_journal_entries()
+            .get_federation_journal_entries(FederationIndexRange::ALL)
             .await
             .expect("journal")
             .len(),

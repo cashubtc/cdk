@@ -1,3 +1,5 @@
+use cdk_common::database::mint::FederationDkgRecord;
+
 use super::*;
 
 #[tokio::test]
@@ -962,7 +964,7 @@ async fn federation_restart_activates_driver_derived_dkg_records() {
         .await
         .expect("begin transcript signatures");
     for signature in &transcript_signatures {
-        tx.add_federation_dkg_transcript_signature(signature)
+        tx.add_federation_dkg_record(FederationDkgRecord::TranscriptSignature(signature))
             .await
             .expect("persist transcript signature");
     }
@@ -973,7 +975,7 @@ async fn federation_restart_activates_driver_derived_dkg_records() {
             private_config,
         )
         .expect("activation confirmation");
-        tx.add_federation_dkg_activation(&activation)
+        tx.add_federation_dkg_record(FederationDkgRecord::Activation(&activation))
             .await
             .expect("persist activation confirmation");
     }

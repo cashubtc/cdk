@@ -129,12 +129,12 @@ pub(super) async fn post_bark_reconcile(
         .bark_runtime()
         .cloned()
         .ok_or_else(|| cdk_error_response(cdk::Error::Internal))?;
-    let projection = state
+    let accepted_frontier = state
         .mint
-        .federation_bark_projection_snapshot()
+        .federation_bark_projection_frontier()
         .await
-        .map_err(cdk_error_response)?;
-    let accepted_frontier = projection.frontier().unwrap_or(0);
+        .map_err(cdk_error_response)?
+        .unwrap_or(0);
     let local_frontier_before = runtime.status(accepted_frontier).await.local_frontier;
     Box::pin(crate::federation::reconcile_federation_bark_runtime(
         &state.mint,

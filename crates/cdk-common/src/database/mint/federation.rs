@@ -8,11 +8,12 @@ use cashu::Amount;
 
 use super::Error;
 use crate::federation::{
-    FederationAlephBftFinalizedItem, FederationAlephBftPendingOperationRecord,
-    FederationApplicationOperation, FederationApplicationState, FederationCheckpoint,
-    FederationCheckpointFrontier, FederationCheckpointId, FederationCheckpointKind,
-    FederationCheckpointQuorum, FederationCheckpointSignature, FederationConfigSnapshot,
-    FederationDkgActivationRequest, FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
+    validate_federation_setup_invitation_consumption, FederationAlephBftFinalizedItem,
+    FederationAlephBftPendingOperationRecord, FederationApplicationOperation,
+    FederationApplicationState, FederationCheckpoint, FederationCheckpointFrontier,
+    FederationCheckpointId, FederationCheckpointKind, FederationCheckpointQuorum,
+    FederationCheckpointSignature, FederationConfigSnapshot, FederationDkgActivationRequest,
+    FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgParticipantState, FederationDkgSecretShareRequest,
     FederationDkgTranscriptSignatureRequest, FederationFrostApplicationConfig,
@@ -20,15 +21,16 @@ use crate::federation::{
     FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
     FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
     FederationId, FederationJournalEntry, FederationJournalTip,
-    FederationMaterializedStateKeyRecord, FederationMaterializedStateRow,
-    FederationOperationConflictKey, FederationOperationId, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationRetentionFloor, FederationSetupActivation,
-    FederationSetupApproval, FederationSetupCoordinatorPhase, FederationSetupEnrollment,
-    FederationSetupId, FederationSetupInvitationId, FederationSetupInvitationRecord,
-    FederationSetupManifest, FederationSetupParticipantPhase, FederationSetupProposal,
-    FederationSetupSession, FederationSetupUrlPolicy, FederationSignatureShareRecord,
-    FederationStateSnapshotInfo, FederationStateSnapshotRow, FederationStateTransferWindowBounds,
-    MemberId, VerifiedFederationCheckpointQuorum, VerifiedFederationStateTransferWindow,
+    FederationMaterializedStateKeyRecord, FederationMaterializedStateKind,
+    FederationMaterializedStateRow, FederationOperationConflictKey, FederationOperationId,
+    FederationPaymentObservationContext, FederationPaymentObservationRecord,
+    FederationRetentionFloor, FederationSetupActivation, FederationSetupApproval,
+    FederationSetupEnrollment, FederationSetupId, FederationSetupInvitationId,
+    FederationSetupInvitationRecord, FederationSetupManifest, FederationSetupProposal,
+    FederationSetupRecord, FederationSetupSession, FederationSetupStep,
+    FederationSignatureShareRecord, FederationStateSnapshotInfo, FederationStateSnapshotRow,
+    FederationStateTransferWindowBounds, MemberId, VerifiedFederationCheckpointQuorum,
+    VerifiedFederationStateTransferWindow,
 };
 use crate::mint::{self, MintQuote as MintMintQuote};
 use crate::nuts::{
@@ -146,6 +148,183 @@ pub struct FederationAlephBftBackupMetadata {
     pub total_bytes: u64,
 }
 
+/// One immutable DKG record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FederationDkgRecord<'a> {
+    /// One pre-reveal commitment.
+    Commitment(&'a FederationDkgParticipantCommitment),
+    /// One public commitment reveal.
+    Reveal(&'a FederationDkgParticipantCommitmentReveal),
+    /// One private secret-share contribution.
+    SecretShareContribution(&'a FederationDkgSecretShareRequest),
+    /// One local restartable participant state.
+    ParticipantState(&'a FederationDkgParticipantState),
+    /// One completed local member keyset share.
+    MemberKeysetShare(&'a FederationDkgMemberKeysetShare),
+    /// One member signature over a DKG/setup transcript hash.
+    TranscriptSignature(&'a FederationDkgTranscriptSignatureRequest),
+    /// One member's finalized-config activation confirmation.
+    Activation(&'a FederationDkgActivationRequest),
+    /// One FROST DKG record.
+    Frost(FederationFrostDkgRecord<'a>),
+}
+
+/// One FROST DKG record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FederationFrostDkgRecord<'a> {
+    /// One distinct round-one broadcast.
+    Round1(&'a FederationFrostDkgRound1Request),
+    /// One confidential round-two contribution.
+    Round2(&'a FederationFrostDkgRound2Record),
+    /// Encrypted local DKG state, stored before phase advancement.
+    LocalState(&'a FederationFrostDkgLocalState),
+    /// The completed canonical root result.
+    Root(&'a FederationFrostRootRecord),
+    /// One signed canonical root confirmation.
+    Confirmation(&'a FederationFrostDkgConfirmationRequest),
+}
+
+/// Every durable FROST DKG record, by kind, each in ceremony, sender and
+/// receiver order.
+#[derive(Debug, Clone, Default)]
+pub struct FederationFrostDkgRecords {
+    /// Round-one broadcasts.
+    pub round1: Vec<FederationFrostDkgRound1Request>,
+    /// Round-two contributions.
+    pub round2: Vec<FederationFrostDkgRound2Record>,
+    /// Encrypted local states: round-one states, then round-two states.
+    pub local_states: Vec<FederationFrostDkgLocalState>,
+    /// Completed canonical root records.
+    pub roots: Vec<FederationFrostRootRecord>,
+    /// Signed canonical root confirmations.
+    pub confirmations: Vec<FederationFrostDkgConfirmationRequest>,
+}
+
+/// A range of consensus positions (journal indexes, finalized-item indexes or
+/// backup chunk indexes), read in ascending order.
+///
+/// The default range reads every stored row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct FederationIndexRange {
+    /// First position read.
+    pub start: u64,
+    /// First position not read; `None` reads to the end.
+    pub end: Option<u64>,
+    /// Maximum number of rows read; `None` reads every row in the range.
+    pub limit: Option<usize>,
+}
+
+impl FederationIndexRange {
+    /// Every stored row.
+    pub const ALL: Self = Self {
+        start: 0,
+        end: None,
+        limit: None,
+    };
+
+    /// Every stored row from `start` on.
+    #[must_use]
+    pub const fn starting_at(start: u64) -> Self {
+        Self {
+            start,
+            end: None,
+            limit: None,
+        }
+    }
+
+    /// At most `limit` rows in `[start, end)`.
+    #[must_use]
+    pub const fn page(start: u64, end: u64, limit: usize) -> Self {
+        Self {
+            start,
+            end: Some(end),
+            limit: Some(limit),
+        }
+    }
+
+    /// At most `limit` rows from `start` on.
+    #[must_use]
+    pub const fn limited(start: u64, limit: usize) -> Self {
+        Self {
+            start,
+            end: None,
+            limit: Some(limit),
+        }
+    }
+}
+
+/// How a journal entry is looked up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FederationJournalEntryKey<'a> {
+    /// The latest entry with this operation id.
+    ///
+    /// An operation id repeats only after its earlier entry has left the
+    /// operation validity window, so the latest entry is the one that can
+    /// still guard duplicates.
+    Operation(FederationOperationId),
+    /// The latest entry reserving this conflict key.
+    ConflictKey(&'a FederationOperationConflictKey),
+}
+
+/// Which stored checkpoint, or the quorum assembled for it, to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FederationCheckpointSelector {
+    /// The checkpoint with this id.
+    Id(FederationCheckpointId),
+    /// The newest one of this kind.
+    Latest(FederationCheckpointKind),
+    /// The scheduled one with the sequence after this one.
+    ///
+    /// Candidate capture is independent of signature collection. Quorums must
+    /// still be assembled and promoted in lineage order.
+    NextScheduled(u64),
+    /// The locally trusted one.
+    Trusted,
+    /// The one whose snapshot this member installed by state transfer.
+    ///
+    /// Journal positions below it hold no local entries: the installed state
+    /// stands for them.
+    StateTransferBase,
+}
+
+/// Which signature shares to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FederationSignatureShareKey {
+    /// Every member's share for one output of one accepted operation, in
+    /// member order.
+    Output {
+        /// Accepted operation.
+        operation_id: FederationOperationId,
+        /// Output position in the operation.
+        output_index: u32,
+    },
+    /// Every share for one blinded message, in operation, output and member
+    /// order.
+    BlindedMessage(PublicKey),
+}
+
+/// Which payment observations to read. Each selection is in consensus order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FederationPaymentObservationSelection<'a> {
+    /// The live (not retired) observations of one quote.
+    Live {
+        /// Observation context.
+        context: FederationPaymentObservationContext,
+        /// Quote identifier.
+        quote: &'a str,
+    },
+    /// Every stored observation of one quote, retired ones included, for
+    /// audit.
+    History {
+        /// Observation context.
+        context: FederationPaymentObservationContext,
+        /// Quote identifier.
+        quote: &'a str,
+    },
+    /// Every live observation.
+    AllLive,
+}
+
 impl From<MintMintQuote> for FederationMintQuoteState {
     fn from(quote: MintMintQuote) -> Self {
         let amount_paid = quote.amount_paid();
@@ -185,10 +364,12 @@ pub trait FederationJournalTransaction {
         entry: &FederationJournalEntry,
     ) -> Result<(), Self::Err>;
 
-    /// Get the latest accepted federation journal entry with an operation ID inside this transaction.
-    async fn get_federation_journal_entry_by_operation_id(
+    /// Get the latest accepted journal entry for `key` inside this
+    /// transaction, ordered before `before` when it is given.
+    async fn get_federation_journal_entry(
         &mut self,
-        operation_id: FederationOperationId,
+        key: FederationJournalEntryKey<'_>,
+        before: Option<u64>,
     ) -> Result<Option<FederationJournalEntry>, Self::Err>;
 
     /// Persist one legal post-consensus application state of the latest entry with an operation ID.
@@ -268,13 +449,6 @@ pub trait FederationJournalTransaction {
         window: &VerifiedFederationStateTransferWindow,
     ) -> Result<(), Self::Err>;
 
-    /// Prune superseded checkpoint candidates and covered recovery proofs.
-    ///
-    /// Scheduled quorums and checkpoints referenced by scalar frontier state
-    /// are always retained. The pruning decision and deletions run in the
-    /// caller's transaction.
-    async fn prune_federation_checkpoints(&mut self) -> Result<u64, Self::Err>;
-
     /// Advance the retention floor and delete one bounded batch below it.
     ///
     /// The floor is the scheduled checkpoint before the latest one covered by
@@ -329,23 +503,14 @@ pub trait FederationJournalTransaction {
     async fn latch_federation_materialized_state_audit_mismatch(&mut self)
         -> Result<(), Self::Err>;
 
-    /// Persist one finalized AlephBFT consensus item.
-    async fn add_federation_aleph_bft_finalized_item(
-        &mut self,
-        item: &FederationAlephBftFinalizedItem,
-    ) -> Result<(), Self::Err>;
-
-    /// Persist finalized AlephBFT consensus items.
+    /// Persist finalized AlephBFT consensus items in accepted item order.
+    ///
+    /// Storing an identical item again is accepted; a different item at a
+    /// stored position is a conflict.
     async fn add_federation_aleph_bft_finalized_items(
         &mut self,
         items: &[FederationAlephBftFinalizedItem],
-    ) -> Result<(), Self::Err> {
-        for item in items {
-            self.add_federation_aleph_bft_finalized_item(item).await?;
-        }
-
-        Ok(())
-    }
+    ) -> Result<(), Self::Err>;
 
     /// Append raw AlephBFT backup bytes for one local session.
     async fn append_federation_aleph_bft_backup_bytes(
@@ -398,7 +563,9 @@ pub trait FederationApplicationTransaction {
     /// Federation application database error.
     type Err: Into<Error> + From<Error>;
 
-    /// Persist one payment observation extracted from an accepted federation operation.
+    /// Persist one payment observation of an accepted federation operation,
+    /// or install one from a state transfer with the journal index at which
+    /// it was retired (`None` while it is live).
     ///
     /// An observation is identified by its operation id, which hashes its
     /// content. A later entry with the same id (re-ordered after its validity
@@ -408,6 +575,7 @@ pub trait FederationApplicationTransaction {
     async fn add_federation_payment_observation(
         &mut self,
         observation: &FederationPaymentObservationRecord,
+        terminal_operation_index: Option<u64>,
     ) -> Result<(), Self::Err>;
 
     /// Retire every live observation of one terminal quote at
@@ -431,39 +599,19 @@ pub trait FederationApplicationTransaction {
         operation_index: u64,
     ) -> Result<(), Self::Err>;
 
-    /// Install one observation from a state transfer, retired or not.
-    async fn install_federation_payment_observation(
-        &mut self,
-        observation: &FederationStoredPaymentObservation,
-    ) -> Result<(), Self::Err>;
-
-    /// Persist one local federation threshold signature share.
+    /// Persist local federation threshold signature shares.
     ///
     /// Storing an identical share again keeps its first accepted position.
-    async fn add_federation_signature_share(
-        &mut self,
-        share: &FederationSignatureShareRecord,
-    ) -> Result<(), Self::Err>;
-
-    /// Persist local federation threshold signature shares.
     async fn add_federation_signature_shares(
         &mut self,
         shares: &[FederationSignatureShareRecord],
-    ) -> Result<(), Self::Err> {
-        for share in shares {
-            self.add_federation_signature_share(share).await?;
-        }
+    ) -> Result<(), Self::Err>;
 
-        Ok(())
-    }
-
-    /// Get the live (not retired) payment observations for one quote and
-    /// context inside this transaction.
+    /// Get the selected payment observations inside this transaction.
     async fn get_federation_payment_observations(
         &mut self,
-        context: FederationPaymentObservationContext,
-        quote: &str,
-    ) -> Result<Vec<FederationPaymentObservationRecord>, Self::Err>;
+        selection: FederationPaymentObservationSelection<'_>,
+    ) -> Result<Vec<FederationStoredPaymentObservation>, Self::Err>;
 
     /// Read every stored row the materialized-state digest covers.
     async fn get_federation_materialized_state_source(
@@ -512,76 +660,10 @@ pub trait FederationDkgTransaction {
         updated: &FederationDkgCeremonyRecord,
     ) -> Result<(), Self::Err>;
 
-    /// Persist one DKG pre-reveal commitment.
-    async fn add_federation_dkg_commitment(
+    /// Persist one immutable DKG record exactly once, accepting exact replay.
+    async fn add_federation_dkg_record(
         &mut self,
-        commitment: &FederationDkgParticipantCommitment,
-    ) -> Result<(), Self::Err>;
-
-    /// Persist one DKG public commitment reveal.
-    async fn add_federation_dkg_reveal(
-        &mut self,
-        reveal: &FederationDkgParticipantCommitmentReveal,
-    ) -> Result<(), Self::Err>;
-
-    /// Persist one private DKG secret-share contribution.
-    async fn add_federation_dkg_secret_share_contribution(
-        &mut self,
-        contribution: &FederationDkgSecretShareRequest,
-    ) -> Result<(), Self::Err>;
-
-    /// Persist one local restartable DKG participant state.
-    async fn add_federation_dkg_participant_state(
-        &mut self,
-        state: &FederationDkgParticipantState,
-    ) -> Result<(), Self::Err>;
-
-    /// Persist one completed local member DKG keyset share.
-    async fn add_federation_dkg_member_keyset_share(
-        &mut self,
-        share: &FederationDkgMemberKeysetShare,
-    ) -> Result<(), Self::Err>;
-
-    /// Persist one member signature over a DKG/setup transcript hash.
-    async fn add_federation_dkg_transcript_signature(
-        &mut self,
-        signature: &FederationDkgTranscriptSignatureRequest,
-    ) -> Result<(), Self::Err>;
-
-    /// Persist one member's finalized-config activation confirmation.
-    async fn add_federation_dkg_activation(
-        &mut self,
-        activation: &FederationDkgActivationRequest,
-    ) -> Result<(), Self::Err>;
-
-    /// Persist one distinct FROST DKG round-one broadcast.
-    async fn add_federation_frost_dkg_round1(
-        &mut self,
-        request: &FederationFrostDkgRound1Request,
-    ) -> Result<(), Self::Err>;
-
-    /// Persist one confidential FROST DKG round-two contribution.
-    async fn add_federation_frost_dkg_round2(
-        &mut self,
-        record: &FederationFrostDkgRound2Record,
-    ) -> Result<(), Self::Err>;
-
-    /// Persist encrypted local FROST DKG state before phase advancement.
-    async fn set_federation_frost_dkg_local_state(
-        &mut self,
-        state: &FederationFrostDkgLocalState,
-    ) -> Result<(), Self::Err>;
-
-    /// Persist the completed canonical FROST root result.
-    async fn add_federation_frost_root_record(
-        &mut self,
-        record: &FederationFrostRootRecord,
-    ) -> Result<(), Self::Err>;
-
-    /// Persist one signed canonical FROST root confirmation.
-    async fn add_federation_frost_dkg_confirmation(
-        &mut self,
-        confirmation: &FederationFrostDkgConfirmationRequest,
+        record: FederationDkgRecord<'_>,
     ) -> Result<(), Self::Err>;
 }
 
@@ -649,40 +731,11 @@ pub trait FederationSetupTransaction {
         replacement: &FederationSetupInvitationRecord,
     ) -> Result<(), Self::Err>;
 
-    /// Persist one signed enrollment exactly once per setup member and invitation.
-    async fn add_federation_setup_enrollment(
+    /// Persist one immutable setup record exactly once, accepting exact
+    /// replay.
+    async fn add_federation_setup_record(
         &mut self,
-        enrollment: &FederationSetupEnrollment,
-    ) -> Result<(), Self::Err>;
-
-    /// Persist the one immutable coordinator-signed proposal.
-    async fn add_federation_setup_proposal(
-        &mut self,
-        proposal: &FederationSetupProposal,
-    ) -> Result<(), Self::Err>;
-
-    /// Persist the participant-local one-proposal approval fence.
-    async fn add_federation_setup_approval_fence(
-        &mut self,
-        approval: &FederationSetupApproval,
-    ) -> Result<(), Self::Err>;
-
-    /// Persist one approval received by the coordinator.
-    async fn add_federation_setup_approval(
-        &mut self,
-        approval: &FederationSetupApproval,
-    ) -> Result<(), Self::Err>;
-
-    /// Persist the one complete certified manifest.
-    async fn add_federation_setup_manifest(
-        &mut self,
-        manifest: &FederationSetupManifest,
-    ) -> Result<(), Self::Err>;
-
-    /// Persist one member's final config activation reference.
-    async fn add_federation_setup_activation(
-        &mut self,
-        activation: &FederationSetupActivation,
+        record: FederationSetupRecord<'_>,
     ) -> Result<(), Self::Err>;
 
     /// Atomically insert an enrollment and consume its invitation.
@@ -692,209 +745,25 @@ pub trait FederationSetupTransaction {
         consumed: &FederationSetupInvitationRecord,
         enrollment: &FederationSetupEnrollment,
     ) -> Result<(), Self::Err> {
-        expected
-            .validate_transition_to(consumed)
+        validate_federation_setup_invitation_consumption(expected, consumed, enrollment)
             .map_err(|error| Self::Err::from(Error::Federation(error)))?;
-        enrollment
-            .validate(FederationSetupUrlPolicy::AllowInsecureLocalhost)
-            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
-        if expected.setup_id != enrollment.setup_id
-            || expected.invitation_id != enrollment.invitation_id
-            || expected.member_id != enrollment.member_id
-            || consumed.state != crate::federation::FederationSetupInvitationState::Consumed
-        {
-            return Err(Self::Err::from(Error::Federation(
-                crate::federation::FederationError::InvalidSetup {
-                    reason: "setup enrollment does not match consumed invitation",
-                },
-            )));
-        }
-        self.add_federation_setup_enrollment(enrollment).await?;
+        self.add_federation_setup_record(FederationSetupRecord::Enrollment(enrollment))
+            .await?;
         self.transition_federation_setup_invitation(expected, consumed)
             .await
     }
 
-    /// Atomically persist the local signed enrollment and advance to enrolled.
-    async fn record_federation_setup_enrollment(
+    /// Atomically store the record of one local session step and advance the
+    /// local setup session from `expected` to `updated`.
+    async fn advance_federation_setup_session(
         &mut self,
         expected: &FederationSetupSession,
         updated: &FederationSetupSession,
-        enrollment: &FederationSetupEnrollment,
+        step: FederationSetupStep<'_>,
     ) -> Result<(), Self::Err> {
-        expected
-            .validate_transition_to(updated)
+        step.validate_transition(expected, updated)
             .map_err(|error| Self::Err::from(Error::Federation(error)))?;
-        enrollment
-            .validate(FederationSetupUrlPolicy::AllowInsecureLocalhost)
-            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
-        if expected.participant_phase != FederationSetupParticipantPhase::IdentityCreated
-            || updated.participant_phase != FederationSetupParticipantPhase::Enrolled
-            || expected.setup_id != enrollment.setup_id
-            || expected.local_role.member_id() != enrollment.member_id
-        {
-            return Err(Self::Err::from(Error::Federation(
-                crate::federation::FederationError::InvalidSetup {
-                    reason: "setup enrollment does not match the local enrollment transition",
-                },
-            )));
-        }
-        self.add_federation_setup_enrollment(enrollment).await?;
-        self.transition_federation_setup_session(expected, updated)
-            .await
-    }
-
-    /// Atomically persist an immutable proposal and advance coordinator state.
-    async fn publish_federation_setup_proposal(
-        &mut self,
-        expected: &FederationSetupSession,
-        updated: &FederationSetupSession,
-        proposal: &FederationSetupProposal,
-    ) -> Result<(), Self::Err> {
-        expected
-            .validate_transition_to(updated)
-            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
-        proposal
-            .validate(FederationSetupUrlPolicy::AllowInsecureLocalhost)
-            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
-        if expected.setup_id != proposal.body.setup_id
-            || expected.coordinator_phase
-                != Some(FederationSetupCoordinatorPhase::CollectingEnrollments)
-            || updated.coordinator_phase != Some(FederationSetupCoordinatorPhase::ProposalPublished)
-            || expected.participant_phase != FederationSetupParticipantPhase::Enrolled
-            || updated.participant_phase != FederationSetupParticipantPhase::Enrolled
-        {
-            return Err(Self::Err::from(Error::Federation(
-                crate::federation::FederationError::InvalidSetup {
-                    reason: "setup proposal does not match the coordinator publication transition",
-                },
-            )));
-        }
-        self.add_federation_setup_proposal(proposal).await?;
-        self.transition_federation_setup_session(expected, updated)
-            .await
-    }
-
-    /// Atomically persist the exact proposal reviewed by this local member.
-    async fn review_federation_setup_proposal(
-        &mut self,
-        expected: &FederationSetupSession,
-        updated: &FederationSetupSession,
-        proposal: &FederationSetupProposal,
-    ) -> Result<(), Self::Err> {
-        expected
-            .validate_transition_to(updated)
-            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
-        proposal
-            .validate(FederationSetupUrlPolicy::AllowInsecureLocalhost)
-            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
-        if expected.participant_phase != FederationSetupParticipantPhase::Enrolled
-            || updated.participant_phase != FederationSetupParticipantPhase::ProposalReviewed
-            || expected.setup_id != proposal.body.setup_id
-            || !proposal
-                .body
-                .enrollments
-                .contains_key(&expected.local_role.member_id())
-        {
-            return Err(Self::Err::from(Error::Federation(
-                crate::federation::FederationError::InvalidSetup {
-                    reason: "setup proposal does not match the local review transition",
-                },
-            )));
-        }
-        self.add_federation_setup_proposal(proposal).await?;
-        self.transition_federation_setup_session(expected, updated)
-            .await
-    }
-
-    /// Atomically persist the local approval fence before advancing to approved.
-    async fn fence_federation_setup_approval(
-        &mut self,
-        expected: &FederationSetupSession,
-        updated: &FederationSetupSession,
-        proposal: &FederationSetupProposal,
-        approval: &FederationSetupApproval,
-    ) -> Result<(), Self::Err> {
-        expected
-            .validate_transition_to(updated)
-            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
-        proposal
-            .validate(FederationSetupUrlPolicy::AllowInsecureLocalhost)
-            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
-        approval
-            .validate(proposal)
-            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
-        if updated.participant_phase != FederationSetupParticipantPhase::Approved
-            || expected.setup_id != proposal.body.setup_id
-            || expected.local_role.member_id() != approval.member_id
-        {
-            return Err(Self::Err::from(Error::Federation(
-                crate::federation::FederationError::InvalidSetup {
-                    reason: "setup approval fence does not match local session",
-                },
-            )));
-        }
-        self.add_federation_setup_approval_fence(approval).await?;
-        self.transition_federation_setup_session(expected, updated)
-            .await
-    }
-
-    /// Atomically persist a certified manifest and advance one local lifecycle.
-    async fn store_federation_setup_manifest(
-        &mut self,
-        expected: &FederationSetupSession,
-        updated: &FederationSetupSession,
-        manifest: &FederationSetupManifest,
-    ) -> Result<(), Self::Err> {
-        expected
-            .validate_transition_to(updated)
-            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
-        manifest
-            .validate(FederationSetupUrlPolicy::AllowInsecureLocalhost)
-            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
-        let coordinator_certified = expected.coordinator_phase
-            == Some(FederationSetupCoordinatorPhase::ProposalPublished)
-            && updated.coordinator_phase == Some(FederationSetupCoordinatorPhase::Certified);
-        let participant_certified = expected.participant_phase
-            == FederationSetupParticipantPhase::Approved
-            && updated.participant_phase == FederationSetupParticipantPhase::Certified;
-        if expected.setup_id != manifest.proposal.body.setup_id
-            || (!coordinator_certified && !participant_certified)
-        {
-            return Err(Self::Err::from(Error::Federation(
-                crate::federation::FederationError::InvalidSetup {
-                    reason: "setup manifest does not match a certification transition",
-                },
-            )));
-        }
-        self.add_federation_setup_manifest(manifest).await?;
-        self.transition_federation_setup_session(expected, updated)
-            .await
-    }
-
-    /// Atomically persist the final config reference and activate this member.
-    async fn activate_federation_setup(
-        &mut self,
-        expected: &FederationSetupSession,
-        updated: &FederationSetupSession,
-        activation: &FederationSetupActivation,
-    ) -> Result<(), Self::Err> {
-        expected
-            .validate_transition_to(updated)
-            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
-        activation
-            .validate()
-            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
-        if updated.participant_phase != FederationSetupParticipantPhase::Activated
-            || expected.setup_id != activation.setup_id
-            || expected.local_role.member_id() != activation.member_id
-        {
-            return Err(Self::Err::from(Error::Federation(
-                crate::federation::FederationError::InvalidSetup {
-                    reason: "setup activation does not match local session",
-                },
-            )));
-        }
-        self.add_federation_setup_activation(activation).await?;
+        self.add_federation_setup_record(step.record()).await?;
         self.transition_federation_setup_session(expected, updated)
             .await
     }
@@ -912,57 +781,22 @@ pub trait FederationJournalDatabase {
         federation_id: FederationId,
     ) -> Result<Option<FederationConfigSnapshot>, Self::Err>;
 
-    /// Get all accepted federation journal entries in consensus order.
+    /// Get accepted federation journal entries in `range`, in consensus order.
     async fn get_federation_journal_entries(
         &self,
+        range: FederationIndexRange,
     ) -> Result<Vec<FederationJournalEntry>, Self::Err>;
 
     /// Get scalar metadata for the latest accepted federation journal entry.
     async fn get_federation_journal_tip(&self) -> Result<Option<FederationJournalTip>, Self::Err>;
 
-    /// Get the latest accepted federation journal entry with an operation ID.
-    ///
-    /// An operation id repeats only after its earlier entry has left the
-    /// operation validity window, so the latest entry is the one that can
-    /// still guard duplicates.
-    async fn get_federation_journal_entry_by_operation_id(
+    /// Get the latest accepted journal entry for `key`, ordered before
+    /// `before` when it is given.
+    async fn get_federation_journal_entry(
         &self,
-        operation_id: FederationOperationId,
+        key: FederationJournalEntryKey<'_>,
+        before: Option<u64>,
     ) -> Result<Option<FederationJournalEntry>, Self::Err>;
-
-    /// Get the latest accepted federation journal entry reserving a conflict key.
-    async fn get_federation_journal_entry_by_conflict_key(
-        &self,
-        conflict_key: &FederationOperationConflictKey,
-    ) -> Result<Option<FederationJournalEntry>, Self::Err>;
-
-    /// Get the latest accepted entry with an operation ID ordered before `next_index`.
-    async fn get_federation_journal_entry_by_operation_id_before(
-        &self,
-        operation_id: FederationOperationId,
-        next_index: u64,
-    ) -> Result<Option<FederationJournalEntry>, Self::Err>;
-
-    /// Get the latest accepted entry reserving a conflict key ordered before `next_index`.
-    async fn get_federation_journal_entry_by_conflict_key_before(
-        &self,
-        conflict_key: &FederationOperationConflictKey,
-        next_index: u64,
-    ) -> Result<Option<FederationJournalEntry>, Self::Err>;
-
-    /// Get accepted federation journal entries starting at `next_index`.
-    async fn get_federation_journal_entries_from(
-        &self,
-        next_index: u64,
-    ) -> Result<Vec<FederationJournalEntry>, Self::Err>;
-
-    /// Get a bounded accepted-journal range in consensus order.
-    async fn get_federation_journal_entries_range(
-        &self,
-        next_index: u64,
-        end_index_exclusive: u64,
-        limit: usize,
-    ) -> Result<Vec<FederationJournalEntry>, Self::Err>;
 
     /// Get persisted effectful DKG sequence watermarks by member.
     async fn get_federation_dkg_member_sequences(
@@ -974,32 +808,11 @@ pub trait FederationJournalDatabase {
         &self,
     ) -> Result<FederationCheckpointFrontier, Self::Err>;
 
-    /// Get one persisted checkpoint payload by ID.
+    /// Get one persisted checkpoint payload.
     async fn get_federation_checkpoint(
         &self,
-        checkpoint_id: FederationCheckpointId,
+        selector: FederationCheckpointSelector,
     ) -> Result<Option<FederationCheckpoint>, Self::Err>;
-
-    /// Get the newest persisted candidate of one checkpoint kind.
-    async fn get_latest_federation_checkpoint(
-        &self,
-        kind: FederationCheckpointKind,
-    ) -> Result<Option<FederationCheckpoint>, Self::Err>;
-
-    /// Get the next scheduled candidate after the supplied sequence.
-    ///
-    /// Candidate capture is independent of signature collection. Quorums must
-    /// still be assembled and promoted in lineage order.
-    async fn get_next_federation_scheduled_checkpoint(
-        &self,
-        scheduled_checkpoint_sequence: u64,
-    ) -> Result<Option<FederationCheckpoint>, Self::Err>;
-
-    /// Get persisted checkpoint payloads after a finalized-item cursor.
-    async fn get_federation_checkpoints_after(
-        &self,
-        finalized_next_item_index: u64,
-    ) -> Result<Vec<FederationCheckpoint>, Self::Err>;
 
     /// Get all persisted signatures for one checkpoint ID.
     async fn get_federation_checkpoint_signatures(
@@ -1007,33 +820,13 @@ pub trait FederationJournalDatabase {
         checkpoint_id: FederationCheckpointId,
     ) -> Result<Vec<FederationCheckpointSignature>, Self::Err>;
 
-    /// Get one persisted assembled quorum by checkpoint ID.
+    /// Get one persisted assembled checkpoint quorum.
+    ///
+    /// Callers must verify the returned proof against the active public
+    /// config (and re-verify the trusted one before using it at startup).
     async fn get_federation_checkpoint_quorum(
         &self,
-        checkpoint_id: FederationCheckpointId,
-    ) -> Result<Option<FederationCheckpointQuorum>, Self::Err>;
-
-    /// Get the newest assembled quorum of one checkpoint kind.
-    ///
-    /// Callers must verify the returned proof against the active public config.
-    async fn get_latest_federation_checkpoint_quorum(
-        &self,
-        kind: FederationCheckpointKind,
-    ) -> Result<Option<FederationCheckpointQuorum>, Self::Err>;
-
-    /// Get the first assembled scheduled quorum after `scheduled_checkpoint_sequence`.
-    ///
-    /// Callers must verify the returned proof against the active public config.
-    async fn get_next_federation_scheduled_checkpoint_quorum(
-        &self,
-        scheduled_checkpoint_sequence: u64,
-    ) -> Result<Option<FederationCheckpointQuorum>, Self::Err>;
-
-    /// Get the locally trusted assembled checkpoint quorum.
-    ///
-    /// Callers must re-verify the bounded proof before using it at startup.
-    async fn get_trusted_federation_checkpoint_quorum(
-        &self,
+        selector: FederationCheckpointSelector,
     ) -> Result<Option<FederationCheckpointQuorum>, Self::Err>;
 
     /// Get the stored state snapshots, oldest scheduled sequence first.
@@ -1056,14 +849,6 @@ pub trait FederationJournalDatabase {
         checkpoint: &FederationCheckpoint,
     ) -> Result<FederationStateTransferWindowBounds, Self::Err>;
 
-    /// Get the checkpoint whose snapshot this member installed, if any.
-    ///
-    /// Journal positions below it hold no local entries: the installed state
-    /// stands for them.
-    async fn get_federation_state_transfer_base(
-        &self,
-    ) -> Result<Option<FederationCheckpoint>, Self::Err>;
-
     /// Get the retention floor: this member holds no journal entries or
     /// finalized items below it.
     async fn get_federation_retention_floor(
@@ -1085,52 +870,19 @@ pub trait FederationJournalDatabase {
         checkpoint: &FederationCheckpoint,
     ) -> Result<u64, Self::Err>;
 
-    /// Get all persisted AlephBFT finalized items in accepted item order.
+    /// Get persisted AlephBFT finalized items in `range`, in accepted item
+    /// order.
     async fn get_federation_aleph_bft_finalized_items(
         &self,
+        range: FederationIndexRange,
     ) -> Result<Vec<FederationAlephBftFinalizedItem>, Self::Err>;
 
-    /// Get persisted AlephBFT finalized items starting at `accepted_item_index`.
-    async fn get_federation_aleph_bft_finalized_items_from(
-        &self,
-        accepted_item_index: u64,
-    ) -> Result<Vec<FederationAlephBftFinalizedItem>, Self::Err>;
-
-    /// Get a bounded finalized-item range in accepted-item order.
-    async fn get_federation_aleph_bft_finalized_items_range(
-        &self,
-        accepted_item_index: u64,
-        end_item_index_exclusive: u64,
-        limit: usize,
-    ) -> Result<Vec<FederationAlephBftFinalizedItem>, Self::Err>;
-
-    /// Get raw AlephBFT backup bytes for one local session.
-    async fn get_federation_aleph_bft_backup_bytes(
-        &self,
-        session: u64,
-    ) -> Result<Option<Vec<u8>>, Self::Err>;
-
-    /// Get individually persisted AlephBFT backup chunks for one local session.
-    ///
-    /// Backends that stored legacy backups as one blob may return that blob as
-    /// a single chunk. The default preserves compatibility for those backends.
+    /// Get the persisted AlephBFT backup chunks of one local session whose
+    /// chunk index is in `range`, in chunk order.
     async fn get_federation_aleph_bft_backup_chunks(
         &self,
         session: u64,
-    ) -> Result<Vec<Vec<u8>>, Self::Err> {
-        Ok(self
-            .get_federation_aleph_bft_backup_bytes(session)
-            .await?
-            .into_iter()
-            .collect())
-    }
-
-    /// Get a bounded range of AlephBFT backup chunks for one local session.
-    async fn get_federation_aleph_bft_backup_chunks_from(
-        &self,
-        session: u64,
-        from_chunk: u64,
-        limit: usize,
+        range: FederationIndexRange,
     ) -> Result<Vec<Vec<u8>>, Self::Err>;
 
     /// Get scalar chunk and byte totals for one local AlephBFT session backup.
@@ -1155,37 +907,18 @@ pub trait FederationApplicationDatabase {
     /// Federation application database error.
     type Err: Into<Error> + From<Error>;
 
-    /// Get the live (not retired) payment observations for one quote and
-    /// context in consensus order.
+    /// Get the selected payment observations.
     async fn get_federation_payment_observations(
         &self,
-        context: FederationPaymentObservationContext,
-        quote: &str,
-    ) -> Result<Vec<FederationPaymentObservationRecord>, Self::Err>;
-
-    /// Get every stored payment observation for one quote and context in
-    /// consensus order, retired ones included, for audit.
-    async fn get_federation_payment_observation_history(
-        &self,
-        context: FederationPaymentObservationContext,
-        quote: &str,
+        selection: FederationPaymentObservationSelection<'_>,
     ) -> Result<Vec<FederationStoredPaymentObservation>, Self::Err>;
 
-    /// Get all live (not retired) payment observations in consensus order.
-    async fn get_all_federation_payment_observations(
-        &self,
-    ) -> Result<Vec<FederationPaymentObservationRecord>, Self::Err>;
-
-    /// Get the direct registry of consensus-authoritative materialized row keys.
+    /// Get the registry records of one kind of consensus-authoritative
+    /// materialized row key, in row-key order.
     async fn get_federation_materialized_state_keys(
         &self,
+        kind: FederationMaterializedStateKind,
     ) -> Result<Vec<FederationMaterializedStateKeyRecord>, Self::Err>;
-
-    /// Get minimal mint-quote state for convergence projection in input order.
-    async fn get_federation_mint_quote_states(
-        &self,
-        quote_ids: &[QuoteId],
-    ) -> Result<Vec<Option<FederationMintQuoteState>>, Self::Err>;
 
     /// Get melt quotes needed for convergence projection by quote ID.
     ///
@@ -1196,31 +929,15 @@ pub trait FederationApplicationDatabase {
         quote_ids: &[QuoteId],
     ) -> Result<Vec<mint::MeltQuote>, Self::Err>;
 
-    /// Get completed operations needed for convergence projection by operation ID.
-    ///
-    /// Only matching rows are returned; callers reconstruct deterministic
-    /// ordering and missing-row markers from their input key set.
-    async fn get_federation_completed_operations(
-        &self,
-        operation_ids: &[uuid::Uuid],
-    ) -> Result<Vec<mint::Operation>, Self::Err>;
-
     /// Read every stored row the materialized-state digest covers.
     async fn get_federation_materialized_state_source(
         &self,
     ) -> Result<FederationMaterializedStateSource, Self::Err>;
 
-    /// Get signature shares for one accepted operation output.
-    async fn get_federation_signature_shares_for_output(
+    /// Get the signature shares `key` names.
+    async fn get_federation_signature_shares(
         &self,
-        operation_id: FederationOperationId,
-        output_index: u32,
-    ) -> Result<Vec<FederationSignatureShareRecord>, Self::Err>;
-
-    /// Get signature shares for one blinded message.
-    async fn get_federation_signature_shares_for_blinded_message(
-        &self,
-        blinded_message: PublicKey,
+        key: FederationSignatureShareKey,
     ) -> Result<Vec<FederationSignatureShareRecord>, Self::Err>;
 }
 
@@ -1270,30 +987,10 @@ pub trait FederationDkgDatabase {
         &self,
     ) -> Result<Vec<FederationDkgCeremonyRecord>, Self::Err>;
 
-    /// Get all durable FROST DKG round-one broadcasts.
-    async fn get_federation_frost_dkg_round1(
+    /// Get every durable FROST DKG record, by kind.
+    async fn get_federation_frost_dkg_records(
         &self,
-    ) -> Result<Vec<FederationFrostDkgRound1Request>, Self::Err>;
-
-    /// Get all durable FROST DKG round-two contributions.
-    async fn get_federation_frost_dkg_round2(
-        &self,
-    ) -> Result<Vec<FederationFrostDkgRound2Record>, Self::Err>;
-
-    /// Get encrypted local FROST DKG phase records.
-    async fn get_federation_frost_dkg_local_states(
-        &self,
-    ) -> Result<Vec<FederationFrostDkgLocalState>, Self::Err>;
-
-    /// Get completed canonical FROST root records.
-    async fn get_federation_frost_root_records(
-        &self,
-    ) -> Result<Vec<FederationFrostRootRecord>, Self::Err>;
-
-    /// Get signed canonical FROST root confirmations.
-    async fn get_federation_frost_dkg_confirmations(
-        &self,
-    ) -> Result<Vec<FederationFrostDkgConfirmationRequest>, Self::Err>;
+    ) -> Result<FederationFrostDkgRecords, Self::Err>;
 }
 
 #[async_trait]

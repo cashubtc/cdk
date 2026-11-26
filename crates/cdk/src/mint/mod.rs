@@ -12,6 +12,8 @@ use std::time::Duration;
 use arc_swap::ArcSwap;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 use cdk_common::database::mint::Acquired;
+#[cfg(feature = "federation")]
+use cdk_common::database::mint::FederationSignatureShareKey;
 use cdk_common::database::{self, DynMintAuthDatabase, DynMintDatabase};
 #[cfg(feature = "federation")]
 use cdk_common::federation::FederationSignatureShareRecord;
@@ -1605,7 +1607,9 @@ impl Mint {
                 for output in &request.outputs {
                     let restored_share = self
                         .localstore
-                        .get_federation_signature_shares_for_blinded_message(output.blinded_secret)
+                        .get_federation_signature_shares(
+                            FederationSignatureShareKey::BlindedMessage(output.blinded_secret),
+                        )
                         .await?
                         .into_iter()
                         .find(|share| federation_restore_share_matches_output(share, output))

@@ -1,3 +1,5 @@
+use cdk_common::database::mint::{FederationIndexRange, FederationJournalEntryKey};
+
 use super::*;
 
 #[tokio::test]
@@ -76,7 +78,10 @@ async fn run_five_member_partition_and_heal(partition_size: usize, finalizes_whi
             assert!(state
                 .mint
                 .localstore()
-                .get_federation_journal_entry_by_operation_id(partitioned_operation_id)
+                .get_federation_journal_entry(
+                    FederationJournalEntryKey::Operation(partitioned_operation_id),
+                    None
+                )
                 .await
                 .expect("isolated journal lookup")
                 .is_none());
@@ -88,7 +93,10 @@ async fn run_five_member_partition_and_heal(partition_size: usize, finalizes_whi
             assert!(state
                 .mint
                 .localstore()
-                .get_federation_journal_entry_by_operation_id(partitioned_operation_id)
+                .get_federation_journal_entry(
+                    FederationJournalEntryKey::Operation(partitioned_operation_id),
+                    None
+                )
                 .await
                 .expect("split journal lookup")
                 .is_none());
@@ -532,7 +540,7 @@ async fn aleph_bft_live_healthy_swaps_do_not_trigger_catch_up() {
     let expected_entries = session.states[0]
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("healthy stress journal");
     assert_eq!(expected_entries.len(), operation_ids.len());
@@ -552,7 +560,7 @@ async fn aleph_bft_live_healthy_swaps_do_not_trigger_catch_up() {
         let entries = state
             .mint
             .localstore()
-            .get_federation_journal_entries()
+            .get_federation_journal_entries(FederationIndexRange::ALL)
             .await
             .expect("member healthy stress journal");
         assert_eq!(

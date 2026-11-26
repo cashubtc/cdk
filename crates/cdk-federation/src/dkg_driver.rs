@@ -16,6 +16,7 @@ use cdk::federation::{
     FederationFrostRootPublicConfig, FederationFrostRootRecord, FederationSetupManifest,
     FederationSetupUrlPolicy, MemberId, ValidatedFederationDkgParticipantState,
 };
+use cdk_common::database::mint::{FederationDkgRecord, FederationFrostDkgRecord};
 use cdk_frost::rand_core::OsRng;
 use cdk_frost::{
     advance_dkg, finish_dkg, start_dkg, CanonicalRootKeyPackage, DkgRound1Package, DkgRound1Secret,
@@ -661,7 +662,7 @@ async fn missing_federation_dkg_members_for_phase(
                 .collect()
         }
         FederationDkgDriverPhase::FrostRound1 => {
-            let records = db.get_federation_frost_dkg_round1().await?;
+            let records = db.get_federation_frost_dkg_records().await?.round1;
             members
                 .into_iter()
                 .filter(|member| {
@@ -672,7 +673,7 @@ async fn missing_federation_dkg_members_for_phase(
                 .collect()
         }
         FederationDkgDriverPhase::FrostRound2 => {
-            let records = db.get_federation_frost_dkg_round2().await?;
+            let records = db.get_federation_frost_dkg_records().await?.round2;
             members
                 .into_iter()
                 .filter(|member| {
@@ -685,7 +686,7 @@ async fn missing_federation_dkg_members_for_phase(
                 .collect()
         }
         FederationDkgDriverPhase::FrostConfirmation => {
-            let records = db.get_federation_frost_dkg_confirmations().await?;
+            let records = db.get_federation_frost_dkg_records().await?.confirmations;
             members
                 .into_iter()
                 .filter(|member| {
@@ -805,8 +806,10 @@ pub async fn prepare_federation_dkg_participant_state(
     )
     .await?;
     let mut tx = db.begin_transaction().await?;
-    tx.add_federation_dkg_participant_state(participant.participant_state())
-        .await?;
+    tx.add_federation_dkg_record(FederationDkgRecord::ParticipantState(
+        participant.participant_state(),
+    ))
+    .await?;
     tx.commit().await?;
     Ok(participant)
 }
@@ -857,14 +860,14 @@ async fn plan_frost_dkg(
         .map_err(|error| cdk::Error::Custom(error.to_string()))?;
     let storage_key = frost_storage_key(private_config, &context)?;
     let db = state.mint.localstore();
-    let roots = db.get_federation_frost_root_records().await?;
+    let roots = db.get_federation_frost_dkg_records().await?.roots;
 
     if let Some(root) = roots
         .iter()
         .find(|record| record.context == context && record.member_id == local_member)
     {
         let public = root.validate(public_config)?;
-        let confirmations = db.get_federation_frost_dkg_confirmations().await?;
+        let confirmations = db.get_federation_frost_dkg_records().await?.confirmations;
         let matching = confirmations
             .iter()
             .filter(|candidate| candidate.context == context)
@@ -892,7 +895,7 @@ async fn plan_frost_dkg(
         return Ok(plan);
     }
 
-    let states = db.get_federation_frost_dkg_local_states().await?;
+    let states = db.get_federation_frost_dkg_records().await?.local_states;
     let local_states = states
         .iter()
         .filter(|record| record.context == context && record.member_id == local_member)
@@ -941,8 +944,9 @@ async fn plan_frost_dkg(
                 package: secret.public_package().encode(),
             };
             let received = db
-                .get_federation_frost_dkg_round1()
+                .get_federation_frost_dkg_records()
                 .await?
+                .round1
                 .iter()
                 .filter(|candidate| {
                     candidate.context == context && candidate.sender != local_member
@@ -965,23 +969,27 @@ async fn plan_frost_dkg(
                 .seal(&storage_key, &mut OsRng)
                 .map_err(|error| cdk::Error::Custom(error.to_string()))?;
             let mut tx = db.begin_transaction().await?;
-            tx.set_federation_frost_dkg_local_state(&FederationFrostDkgLocalState {
-                context: context.clone(),
-                member_id: local_member,
-                phase: FederationFrostDkgLocalPhase::Round2,
-                encrypted_state: encrypted.to_bytes(),
-            })
+            tx.add_federation_dkg_record(FederationDkgRecord::Frost(
+                FederationFrostDkgRecord::LocalState(&FederationFrostDkgLocalState {
+                    context: context.clone(),
+                    member_id: local_member,
+                    phase: FederationFrostDkgLocalPhase::Round2,
+                    encrypted_state: encrypted.to_bytes(),
+                }),
+            ))
             .await?;
             for (receiver, package) in outgoing {
                 let encrypted = package
                     .seal(&storage_key, &mut OsRng)
                     .map_err(|error| cdk::Error::Custom(error.to_string()))?;
-                tx.add_federation_frost_dkg_round2(&FederationFrostDkgRound2Record {
-                    context: context.clone(),
-                    sender: local_member,
-                    receiver: MemberId::new(receiver.get())?,
-                    encrypted_package: encrypted.to_bytes(),
-                })
+                tx.add_federation_dkg_record(FederationDkgRecord::Frost(
+                    FederationFrostDkgRecord::Round2(&FederationFrostDkgRound2Record {
+                        context: context.clone(),
+                        sender: local_member,
+                        receiver: MemberId::new(receiver.get())?,
+                        encrypted_package: encrypted.to_bytes(),
+                    }),
+                ))
                 .await?;
             }
             tx.commit().await?;
@@ -989,7 +997,7 @@ async fn plan_frost_dkg(
         }
         (_, Some(state_record)) => {
             state_record.validate(public_config)?;
-            let records = db.get_federation_frost_dkg_round2().await?;
+            let records = db.get_federation_frost_dkg_records().await?.round2;
             let requests = records
                 .iter()
                 .filter(|candidate| {
@@ -1025,8 +1033,9 @@ async fn plan_frost_dkg(
                 return Ok(plan);
             }
             let round1 = db
-                .get_federation_frost_dkg_round1()
+                .get_federation_frost_dkg_records()
                 .await?
+                .round1
                 .into_iter()
                 .filter(|candidate| {
                     candidate.context == context && candidate.sender != local_member
@@ -1690,7 +1699,7 @@ async fn persist_federation_dkg_member_keyset_share(
 ) -> Result<(), cdk::Error> {
     let db = state.mint.localstore();
     let mut tx = db.begin_transaction().await?;
-    tx.add_federation_dkg_member_keyset_share(keyset_share)
+    tx.add_federation_dkg_record(FederationDkgRecord::MemberKeysetShare(keyset_share))
         .await?;
     tx.commit().await?;
     Ok(())
@@ -1718,8 +1727,9 @@ pub async fn complete_federation_dkg_ceremony(
         .root_key_epoch;
     let frost_context = FederationFrostDkgContext::new(public_config, ceremony_id, root_key_epoch)?;
     let frost_root = db
-        .get_federation_frost_root_records()
+        .get_federation_frost_dkg_records()
         .await?
+        .roots
         .into_iter()
         .find(|record| record.context == frost_context && record.member_id == local_member)
         .ok_or_else(|| {
@@ -1741,8 +1751,9 @@ pub async fn complete_federation_dkg_ceremony(
     .map_err(|error| cdk::Error::Custom(error.to_string()))?;
     let frost_public = frost_public_package.encode();
     let confirmations = db
-        .get_federation_frost_dkg_confirmations()
+        .get_federation_frost_dkg_records()
         .await?
+        .confirmations
         .into_iter()
         .filter(|confirmation| confirmation.context == frost_context)
         .collect::<Vec<_>>();

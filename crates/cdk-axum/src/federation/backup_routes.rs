@@ -6,6 +6,7 @@ use cdk::federation::{
     FEDERATION_MAX_ALEPH_BFT_BACKUP_CHUNKS_PER_PAGE,
     FEDERATION_MAX_ALEPH_BFT_BACKUP_RAW_BYTES_PER_PAGE,
 };
+use cdk_common::database::mint::FederationIndexRange;
 use tracing::instrument;
 
 use crate::MintState;
@@ -60,10 +61,9 @@ async fn backup_page(
     let available = state
         .mint
         .localstore()
-        .get_federation_aleph_bft_backup_chunks_from(
+        .get_federation_aleph_bft_backup_chunks(
             request.session,
-            request.next_chunk,
-            query_limit,
+            FederationIndexRange::limited(request.next_chunk, query_limit),
         )
         .await
         .map_err(|err| anyhow_response(err.into()))?;

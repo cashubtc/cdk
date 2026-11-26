@@ -23,6 +23,7 @@ use cdk::federation::{
     FederationRestMessageKind, FederationSubmitOperationResponse, MemberId,
 };
 use cdk::mint::Mint;
+use cdk_common::database::mint::FederationJournalEntryKey;
 use futures::future::BoxFuture;
 
 use super::node_runtime::{
@@ -888,7 +889,10 @@ impl FederationNodeRuntime {
             };
             let operation_id = envelope.operation_id()?;
             if let Some(entry) = db
-                .get_federation_journal_entry_by_operation_id(operation_id)
+                .get_federation_journal_entry(
+                    FederationJournalEntryKey::Operation(operation_id),
+                    None,
+                )
                 .await?
                 .filter(|entry| entry.guards_session(payload.session))
             {
@@ -896,7 +900,10 @@ impl FederationNodeRuntime {
             }
             for conflict_key in envelope.operation.conflict_keys() {
                 if let Some(entry) = db
-                    .get_federation_journal_entry_by_conflict_key(&conflict_key)
+                    .get_federation_journal_entry(
+                        FederationJournalEntryKey::ConflictKey(&conflict_key),
+                        None,
+                    )
                     .await?
                     .filter(|entry| entry.guards_session(payload.session))
                 {
@@ -1001,7 +1008,10 @@ impl FederationNodeRuntime {
         let mut terminal_applications = Vec::with_capacity(entries.len());
         for entry in entries {
             let persisted_before_apply = db
-                .get_federation_journal_entry_by_operation_id(entry.operation_id)
+                .get_federation_journal_entry(
+                    FederationJournalEntryKey::Operation(entry.operation_id),
+                    None,
+                )
                 .await?;
             let persisted = match persisted_before_apply {
                 Some(persisted)
@@ -1016,13 +1026,16 @@ impl FederationNodeRuntime {
                     if self.apply_journal_entry_for_replay(entry).await?.is_some() {
                         applied.push(entry.operation_id);
                     }
-                    db.get_federation_journal_entry_by_operation_id(entry.operation_id)
-                        .await?
-                        .ok_or_else(|| {
-                            cdk::Error::Federation(FederationError::UnknownOperation {
-                                operation_id: entry.operation_id.to_string(),
-                            })
-                        })?
+                    db.get_federation_journal_entry(
+                        FederationJournalEntryKey::Operation(entry.operation_id),
+                        None,
+                    )
+                    .await?
+                    .ok_or_else(|| {
+                        cdk::Error::Federation(FederationError::UnknownOperation {
+                            operation_id: entry.operation_id.to_string(),
+                        })
+                    })?
                 }
             };
             if !matches!(
@@ -1098,7 +1111,10 @@ impl FederationNodeRuntime {
             let local_entry = self
                 .active_mint()?
                 .localstore()
-                .get_federation_journal_entry_by_operation_id(peer_entry.operation_id)
+                .get_federation_journal_entry(
+                    FederationJournalEntryKey::Operation(peer_entry.operation_id),
+                    None,
+                )
                 .await?
                 .ok_or_else(|| {
                     cdk::Error::Federation(FederationError::UnknownOperation {
@@ -1127,7 +1143,10 @@ impl FederationNodeRuntime {
         if outcome.is_err() {
             let persisted = mint
                 .localstore()
-                .get_federation_journal_entry_by_operation_id(entry.operation_id)
+                .get_federation_journal_entry(
+                    FederationJournalEntryKey::Operation(entry.operation_id),
+                    None,
+                )
                 .await?
                 .ok_or_else(|| {
                     cdk::Error::Federation(FederationError::UnknownOperation {

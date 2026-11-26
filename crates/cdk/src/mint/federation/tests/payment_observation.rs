@@ -1,6 +1,10 @@
-use super::*;
+use cdk_common::database::mint::{
+    FederationJournalEntryKey, FederationPaymentObservationSelection,
+};
 #[cfg(feature = "federation-bark")]
 use cdk_common::federation::FederationPaymentObservationReport;
+
+use super::*;
 
 #[test]
 #[cfg(feature = "federation-bark")]
@@ -654,12 +658,15 @@ async fn real_policy_allows_quorum_despite_minority_disagreement() {
     );
 
     let observations_after_single = localstore
-        .get_federation_payment_observations(
-            FederationPaymentObservationContext::MintQuote,
-            &quote.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+            context: FederationPaymentObservationContext::MintQuote,
+            quote: &quote.to_string(),
+        })
         .await
-        .expect("single observation rows");
+        .expect("single observation rows")
+        .into_iter()
+        .map(|observation| observation.record)
+        .collect::<Vec<_>>();
     assert_eq!(observations_after_single.len(), 1);
 
     let conflicting_third = appended_entry(
@@ -694,12 +701,15 @@ async fn real_policy_allows_quorum_despite_minority_disagreement() {
     );
 
     let observations_after_conflict = localstore
-        .get_federation_payment_observations(
-            FederationPaymentObservationContext::MintQuote,
-            &quote.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+            context: FederationPaymentObservationContext::MintQuote,
+            quote: &quote.to_string(),
+        })
         .await
-        .expect("conflicting observation rows");
+        .expect("conflicting observation rows")
+        .into_iter()
+        .map(|observation| observation.record)
+        .collect::<Vec<_>>();
     assert_eq!(observations_after_conflict.len(), 3);
     assert_eq!(
         observations_after_conflict[1].observation.observer(),
@@ -735,15 +745,21 @@ async fn mint_payment_observation_without_prior_quote_is_rejected_without_mutati
         .expect("quote lookup before quote entry")
         .is_none());
     let observations_before_quote = localstore
-        .get_federation_payment_observations(
-            FederationPaymentObservationContext::MintQuote,
-            &quote.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+            context: FederationPaymentObservationContext::MintQuote,
+            quote: &quote.to_string(),
+        })
         .await
-        .expect("stored observation before quote");
+        .expect("stored observation before quote")
+        .into_iter()
+        .map(|observation| observation.record)
+        .collect::<Vec<_>>();
     assert!(observations_before_quote.is_empty());
     let stored_observation_entry = localstore
-        .get_federation_journal_entry_by_operation_id(observation_entry.operation_id)
+        .get_federation_journal_entry(
+            FederationJournalEntryKey::Operation(observation_entry.operation_id),
+            None,
+        )
         .await
         .expect("observation journal lookup")
         .expect("observation journal entry");
@@ -796,15 +812,21 @@ async fn mint_payment_observation_rejects_quote_applied_only_at_later_index() {
         Amount::new(0, CurrencyUnit::Sat)
     );
     assert!(localstore
-        .get_federation_payment_observations(
-            FederationPaymentObservationContext::MintQuote,
-            &quote.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+            context: FederationPaymentObservationContext::MintQuote,
+            quote: &quote.to_string()
+        })
         .await
         .expect("payment observations")
+        .into_iter()
+        .map(|observation| observation.record)
+        .collect::<Vec<_>>()
         .is_empty());
     let stored_observation_entry = localstore
-        .get_federation_journal_entry_by_operation_id(observation_entry.operation_id)
+        .get_federation_journal_entry(
+            FederationJournalEntryKey::Operation(observation_entry.operation_id),
+            None,
+        )
         .await
         .expect("observation journal lookup")
         .expect("observation journal entry");
@@ -857,15 +879,21 @@ async fn mint_payment_observation_apply_error_rolls_back_observation_and_status(
         .expect_err("payment-method mismatch must reject apply");
     assert!(matches!(error, Error::InvalidPaymentMethod));
     assert!(localstore
-        .get_federation_payment_observations(
-            FederationPaymentObservationContext::MintQuote,
-            &quote.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+            context: FederationPaymentObservationContext::MintQuote,
+            quote: &quote.to_string()
+        })
         .await
         .expect("payment observations")
+        .into_iter()
+        .map(|observation| observation.record)
+        .collect::<Vec<_>>()
         .is_empty());
     let stored_entry = localstore
-        .get_federation_journal_entry_by_operation_id(observation_entry.operation_id)
+        .get_federation_journal_entry(
+            FederationJournalEntryKey::Operation(observation_entry.operation_id),
+            None,
+        )
         .await
         .expect("journal lookup")
         .expect("journal entry");

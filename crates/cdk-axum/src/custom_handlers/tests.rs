@@ -1,4 +1,9 @@
 #[cfg(feature = "federation")]
+use cdk_common::database::mint::{
+    FederationIndexRange, FederationJournalEntryKey, FederationPaymentObservationSelection,
+    FederationSignatureShareKey,
+};
+#[cfg(feature = "federation")]
 use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet};
 #[cfg(feature = "federation")]
@@ -884,7 +889,7 @@ async fn first_federation_operation_id(
     state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("federation journal lookup")
         .into_iter()
@@ -2071,7 +2076,10 @@ fn appended_entry(
 async fn persist_and_apply_entry(mint: &Mint, entry: &FederationJournalEntry) {
     if mint
         .localstore()
-        .get_federation_journal_entry_by_operation_id(entry.operation_id)
+        .get_federation_journal_entry(
+            FederationJournalEntryKey::Operation(entry.operation_id),
+            None,
+        )
         .await
         .expect("load existing journal entry")
         .is_some()
@@ -2081,7 +2089,7 @@ async fn persist_and_apply_entry(mint: &Mint, entry: &FederationJournalEntry) {
     let runtime_config = mint.federation_config().expect("federation config");
     let retained_items = mint
         .localstore()
-        .get_federation_aleph_bft_finalized_items()
+        .get_federation_aleph_bft_finalized_items(FederationIndexRange::ALL)
         .await
         .expect("load finalized AlephBFT history");
     let mut adapter = FederationConsensusRuntime::recover_finalized_items_for_test(
@@ -3389,12 +3397,15 @@ async fn get_check_melt_custom_quote_skips_unattempted_unpaid_observation() {
     assert!(state
         .mint
         .localstore()
-        .get_federation_payment_observations(
-            cdk::federation::FederationPaymentObservationContext::MeltQuote,
-            &quote_id.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+            context: cdk::federation::FederationPaymentObservationContext::MeltQuote,
+            quote: &quote_id.to_string()
+        })
         .await
         .expect("melt payment observations")
+        .into_iter()
+        .map(|observation| observation.record)
+        .collect::<Vec<_>>()
         .is_empty());
 }
 
@@ -3578,7 +3589,7 @@ async fn cache_post_batch_mint_returns_federation_signature_shares() {
             let entries = state
                 .mint
                 .localstore()
-                .get_federation_journal_entries()
+                .get_federation_journal_entries(FederationIndexRange::ALL)
                 .await
                 .expect("journal lookup after rejected mint");
             let outcomes = entries
@@ -3624,7 +3635,10 @@ async fn cache_post_batch_mint_returns_federation_signature_shares() {
     let share_records = state
         .mint
         .localstore()
-        .get_federation_signature_shares_for_output(operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id,
+            output_index: 0,
+        })
         .await
         .expect("persisted mint share lookup");
     assert_eq!(share_records.len(), 1);
@@ -3736,7 +3750,10 @@ async fn batch_mint_pending_aleph_bft_retry_returns_persisted_response_without_i
         state
             .mint
             .localstore()
-            .get_federation_signature_shares_for_output(operation_id, 0)
+            .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                operation_id,
+                output_index: 0
+            })
             .await
             .expect("pending mint share lookup")
             .is_empty(),
@@ -3781,7 +3798,10 @@ async fn batch_mint_pending_aleph_bft_retry_returns_persisted_response_without_i
     let share_records = state
         .mint
         .localstore()
-        .get_federation_signature_shares_for_output(operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id,
+            output_index: 0,
+        })
         .await
         .expect("accepted mint share lookup");
     assert_eq!(share_records.len(), 1);
@@ -3831,7 +3851,10 @@ async fn batch_mint_pending_aleph_bft_retry_returns_persisted_response_without_i
         state
             .mint
             .localstore()
-            .get_federation_signature_shares_for_output(operation_id, 0)
+            .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                operation_id,
+                output_index: 0
+            })
             .await
             .expect("duplicate mint share lookup"),
         share_records
@@ -3922,7 +3945,10 @@ async fn post_mint_pending_aleph_bft_retry_returns_persisted_response_without_is
         state
             .mint
             .localstore()
-            .get_federation_signature_shares_for_output(operation_id, 0)
+            .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                operation_id,
+                output_index: 0
+            })
             .await
             .expect("pending single mint share lookup")
             .is_empty(),
@@ -3988,7 +4014,10 @@ async fn post_mint_pending_aleph_bft_retry_returns_persisted_response_without_is
     let share_records = state
         .mint
         .localstore()
-        .get_federation_signature_shares_for_output(operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id,
+            output_index: 0,
+        })
         .await
         .expect("accepted single mint share lookup");
     assert_eq!(share_records.len(), 1);
@@ -4048,7 +4077,10 @@ async fn post_mint_pending_aleph_bft_retry_returns_persisted_response_without_is
         state
             .mint
             .localstore()
-            .get_federation_signature_shares_for_output(operation_id, 0)
+            .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                operation_id,
+                output_index: 0
+            })
             .await
             .expect("duplicate single mint share lookup"),
         share_records
@@ -4158,7 +4190,10 @@ async fn duplicate_batch_mint_aleph_bft_pending_requests_join_one_queue_item() {
         state
             .mint
             .localstore()
-            .get_federation_signature_shares_for_output(operation_id, 0)
+            .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                operation_id,
+                output_index: 0
+            })
             .await
             .expect("pending duplicate mint share lookup")
             .is_empty(),
@@ -4185,7 +4220,10 @@ async fn duplicate_batch_mint_aleph_bft_pending_requests_join_one_queue_item() {
     let share_records = state
         .mint
         .localstore()
-        .get_federation_signature_shares_for_output(operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id,
+            output_index: 0,
+        })
         .await
         .expect("accepted duplicate mint share lookup");
     assert_eq!(share_records.len(), 1);
@@ -4313,7 +4351,10 @@ async fn duplicate_post_mint_aleph_bft_pending_requests_join_one_queue_item() {
         state
             .mint
             .localstore()
-            .get_federation_signature_shares_for_output(operation_id, 0)
+            .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                operation_id,
+                output_index: 0
+            })
             .await
             .expect("pending duplicate single mint share lookup")
             .is_empty(),
@@ -4352,7 +4393,10 @@ async fn duplicate_post_mint_aleph_bft_pending_requests_join_one_queue_item() {
     let share_records = state
         .mint
         .localstore()
-        .get_federation_signature_shares_for_output(operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id,
+            output_index: 0,
+        })
         .await
         .expect("accepted duplicate single mint share lookup");
     assert_eq!(share_records.len(), 1);
@@ -4872,7 +4916,7 @@ async fn batch_mint_rejects_same_quote_with_different_outputs_without_signing() 
     let entries = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     assert_eq!(entries.len(), 4);
@@ -4949,7 +4993,10 @@ async fn post_swap_returns_federation_signature_shares() {
     let share_records = state
         .mint
         .localstore()
-        .get_federation_signature_shares_for_output(operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id,
+            output_index: 0,
+        })
         .await
         .expect("persisted swap share lookup");
     assert_eq!(share_records.len(), 1);
@@ -5157,7 +5204,10 @@ async fn post_swap_pending_aleph_bft_retry_returns_persisted_response_after_fina
     let share_records = state
         .mint
         .localstore()
-        .get_federation_signature_shares_for_output(operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id,
+            output_index: 0,
+        })
         .await
         .expect("accepted swap share lookup");
     assert_eq!(share_records.len(), 1);
@@ -5265,7 +5315,10 @@ async fn duplicate_post_swap_aleph_bft_pending_requests_join_one_queue_item() {
         state
             .mint
             .localstore()
-            .get_federation_signature_shares_for_output(operation_id, 0)
+            .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                operation_id,
+                output_index: 0
+            })
             .await
             .expect("pending duplicate swap share lookup")
             .is_empty(),
@@ -5310,7 +5363,10 @@ async fn duplicate_post_swap_aleph_bft_pending_requests_join_one_queue_item() {
     let share_records = state
         .mint
         .localstore()
-        .get_federation_signature_shares_for_output(operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id,
+            output_index: 0,
+        })
         .await
         .expect("accepted duplicate swap share lookup");
     assert_eq!(share_records.len(), 1);
@@ -5626,7 +5682,7 @@ async fn concurrent_conflicting_swaps_spend_one_input_once_without_signing_loser
     let journal_entries = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     assert_eq!(journal_entries.len(), request_count);
@@ -6007,7 +6063,10 @@ async fn process_melt_pending_aleph_bft_retry_returns_persisted_response_after_f
     let share_records = state
         .mint
         .localstore()
-        .get_federation_signature_shares_for_output(operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id,
+            output_index: 0,
+        })
         .await
         .expect("accepted melt share lookup");
     assert_eq!(share_records.len(), 1);
@@ -6172,7 +6231,10 @@ async fn duplicate_process_melt_aleph_bft_pending_requests_join_one_queue_item()
         state
             .mint
             .localstore()
-            .get_federation_signature_shares_for_output(operation_id, 0)
+            .get_federation_signature_shares(FederationSignatureShareKey::Output {
+                operation_id,
+                output_index: 0
+            })
             .await
             .expect("pending duplicate melt share lookup")
             .is_empty(),
@@ -6268,7 +6330,10 @@ async fn duplicate_process_melt_aleph_bft_pending_requests_join_one_queue_item()
     let share_records = state
         .mint
         .localstore()
-        .get_federation_signature_shares_for_output(operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id,
+            output_index: 0,
+        })
         .await
         .expect("accepted duplicate melt share lookup");
     assert_eq!(share_records.len(), 1);
@@ -6599,10 +6664,10 @@ async fn successful_federation_melt_quote_check_records_terminal_payment_observa
     let observations = state
         .mint
         .localstore()
-        .get_federation_payment_observation_history(
-            cdk::federation::FederationPaymentObservationContext::MeltQuote,
-            &quote_id.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::History {
+            context: cdk::federation::FederationPaymentObservationContext::MeltQuote,
+            quote: &quote_id.to_string(),
+        })
         .await
         .expect("melt payment observations")
         .into_iter()
@@ -6672,7 +6737,7 @@ async fn duplicate_federation_melt_returns_persisted_response() {
     let entries = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("federation journal entries");
     assert!(
@@ -7982,12 +8047,15 @@ async fn pending_federated_melt_public_quote_check_observes_only_terminal_settle
     assert!(state
         .mint
         .localstore()
-        .get_federation_payment_observations(
-            cdk::federation::FederationPaymentObservationContext::MeltQuote,
-            &quote_id.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+            context: cdk::federation::FederationPaymentObservationContext::MeltQuote,
+            quote: &quote_id.to_string()
+        })
         .await
         .expect("pending melt payment observations")
+        .into_iter()
+        .map(|observation| observation.record)
+        .collect::<Vec<_>>()
         .is_empty());
     assert_eq!(
         state
@@ -8048,10 +8116,10 @@ async fn pending_federated_melt_public_quote_check_observes_only_terminal_settle
     let observations = state
         .mint
         .localstore()
-        .get_federation_payment_observation_history(
-            cdk::federation::FederationPaymentObservationContext::MeltQuote,
-            &quote_id.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::History {
+            context: cdk::federation::FederationPaymentObservationContext::MeltQuote,
+            quote: &quote_id.to_string(),
+        })
         .await
         .expect("settled melt payment observations")
         .into_iter()
@@ -8502,10 +8570,10 @@ async fn failed_federation_melt_quote_check_records_terminal_failed_observation(
     let observations = state
         .mint
         .localstore()
-        .get_federation_payment_observation_history(
-            cdk::federation::FederationPaymentObservationContext::MeltQuote,
-            &quote_id.to_string(),
-        )
+        .get_federation_payment_observations(FederationPaymentObservationSelection::History {
+            context: cdk::federation::FederationPaymentObservationContext::MeltQuote,
+            quote: &quote_id.to_string(),
+        })
         .await
         .expect("melt payment observations")
         .into_iter()

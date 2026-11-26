@@ -1,3 +1,5 @@
+use cdk_common::database::mint::{FederationIndexRange, FederationSignatureShareKey};
+
 use super::*;
 
 #[test]
@@ -86,7 +88,7 @@ async fn apply_federation_keyset_rotation_marks_operation_applied() {
 
     let persisted = mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal lookup");
     assert_eq!(
@@ -423,7 +425,9 @@ async fn restore_returns_old_keyset_signature_after_rotation() {
     assert_eq!(restored.signatures[0].keyset_id, old_keyset.id);
 
     let share_records = localstore
-        .get_federation_signature_shares_for_blinded_message(restored.outputs[0].blinded_secret)
+        .get_federation_signature_shares(FederationSignatureShareKey::BlindedMessage(
+            restored.outputs[0].blinded_secret,
+        ))
         .await
         .expect("stored federation restore signature share");
     assert_eq!(share_records.len(), 1);
@@ -444,7 +448,10 @@ async fn restore_returns_old_keyset_signature_after_rotation() {
     );
 
     let operation_output_records = localstore
-        .get_federation_signature_shares_for_output(mint_entry.operation_id, 1)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id: mint_entry.operation_id,
+            output_index: 1,
+        })
         .await
         .expect("stored federation restore signature share by operation output");
     assert_eq!(operation_output_records, share_records);

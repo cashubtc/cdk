@@ -1,5 +1,7 @@
 //! Recovery checkpoint demand, ordered barriers and their quorums.
 
+use cdk_common::database::mint::FederationCheckpointSelector;
+
 use super::*;
 
 #[tokio::test]
@@ -163,7 +165,9 @@ async fn ordered_recovery_barrier_captures_complete_unit_without_stopping_traffi
     let checkpoint = state
         .mint
         .localstore()
-        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Recovery)
+        .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            cdk::federation::FederationCheckpointKind::Recovery,
+        ))
         .await
         .expect("recovery checkpoint lookup")
         .expect("recovery checkpoint candidate");
@@ -174,7 +178,7 @@ async fn ordered_recovery_barrier_captures_complete_unit_without_stopping_traffi
     assert!(state
         .mint
         .localstore()
-        .get_trusted_federation_checkpoint_quorum()
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
         .await
         .expect("trusted checkpoint lookup")
         .is_none());
@@ -240,7 +244,9 @@ async fn ordered_recovery_barrier_captures_complete_unit_without_stopping_traffi
     let retained_checkpoint = state
         .mint
         .localstore()
-        .get_latest_federation_checkpoint(FederationCheckpointKind::Recovery)
+        .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            FederationCheckpointKind::Recovery,
+        ))
         .await
         .expect("retained recovery checkpoint lookup")
         .expect("retained recovery checkpoint");
@@ -290,7 +296,9 @@ async fn ordered_recovery_barrier_captures_complete_unit_without_stopping_traffi
     let advanced_checkpoint = state
         .mint
         .localstore()
-        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Recovery)
+        .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            cdk::federation::FederationCheckpointKind::Recovery,
+        ))
         .await
         .expect("advanced recovery checkpoint lookup")
         .expect("advanced recovery checkpoint");
@@ -325,14 +333,18 @@ async fn recovery_barrier_reaches_quorum_with_one_member_unavailable() {
     let first_checkpoint = first
         .mint
         .localstore()
-        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Recovery)
+        .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            cdk::federation::FederationCheckpointKind::Recovery,
+        ))
         .await
         .expect("first checkpoint lookup")
         .expect("first checkpoint");
     let second_checkpoint = second
         .mint
         .localstore()
-        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Recovery)
+        .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            cdk::federation::FederationCheckpointKind::Recovery,
+        ))
         .await
         .expect("second checkpoint lookup")
         .expect("second checkpoint");
@@ -386,7 +398,9 @@ async fn concurrent_recovery_requests_queue_one_effective_barrier() {
     assert!(state
         .mint
         .localstore()
-        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Recovery)
+        .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            cdk::federation::FederationCheckpointKind::Recovery
+        ))
         .await
         .expect("recovery checkpoint lookup")
         .is_some());
@@ -446,7 +460,9 @@ async fn stale_pending_barrier_does_not_block_current_recovery_request() {
     assert!(state
         .mint
         .localstore()
-        .get_latest_federation_checkpoint(FederationCheckpointKind::Recovery)
+        .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            FederationCheckpointKind::Recovery
+        ))
         .await
         .expect("recovery checkpoint lookup")
         .is_some());
@@ -466,7 +482,9 @@ async fn restart_retries_last_ordered_barrier_with_the_same_checkpoint_id() {
     assert!(state
         .mint
         .localstore()
-        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Recovery)
+        .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            cdk::federation::FederationCheckpointKind::Recovery
+        ))
         .await
         .expect("suppressed checkpoint lookup")
         .is_none());
@@ -489,7 +507,9 @@ async fn restart_retries_last_ordered_barrier_with_the_same_checkpoint_id() {
     let first_id = state
         .mint
         .localstore()
-        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Recovery)
+        .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            cdk::federation::FederationCheckpointKind::Recovery,
+        ))
         .await
         .expect("recovered checkpoint lookup")
         .expect("recovered checkpoint")
@@ -504,7 +524,9 @@ async fn restart_retries_last_ordered_barrier_with_the_same_checkpoint_id() {
     let repeated_id = state
         .mint
         .localstore()
-        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Recovery)
+        .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            cdk::federation::FederationCheckpointKind::Recovery,
+        ))
         .await
         .expect("repeated checkpoint lookup")
         .expect("repeated checkpoint")

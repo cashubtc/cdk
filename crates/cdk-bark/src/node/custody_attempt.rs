@@ -5,6 +5,7 @@ use cdk::federation::{
     FederationBarkSemanticPhase, FederationJournalEntry,
 };
 use cdk::mint::Mint;
+use cdk_common::database::mint::FederationJournalEntryKey;
 
 /// Resolve the consensus entry authorizing the action's current custody
 /// attempt. The action plan authorizes attempt one; a later attempt is
@@ -47,7 +48,7 @@ pub async fn accepted_bark_custody_authorization(
         .map(|(_, operation_id)| operation_id)
         .ok_or(cdk::Error::Internal)?;
     mint.localstore()
-        .get_federation_journal_entry_by_operation_id(operation_id)
+        .get_federation_journal_entry(FederationJournalEntryKey::Operation(operation_id), None)
         .await?
         .ok_or(cdk::Error::Internal)
 }

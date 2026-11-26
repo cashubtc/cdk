@@ -22,6 +22,7 @@ use cdk_common::bitcoin::{
     FeeRate, Network as BitcoinNetwork, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut,
     Txid, Witness,
 };
+use cdk_common::database::mint::FederationIndexRange;
 use cdk_federation::test_support::cdk_bitcoin_wallet::{
     ChainSource, EsploraConfig, FederatedBdkWallet, FederatedWalletConfig, FederatedWalletKeychain,
     FederatedWalletScope,

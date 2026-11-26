@@ -1,3 +1,7 @@
+use cdk_common::database::mint::{
+    FederationCheckpointSelector, FederationIndexRange, FederationSignatureShareKey,
+};
+
 use super::*;
 
 async fn live_digest(state: &MintState) -> cdk::federation::FederationMaterializedStateDigest {
@@ -18,7 +22,10 @@ async fn own_share(
     let mut shares = state
         .mint
         .localstore()
-        .get_federation_signature_shares_for_output(operation_id, output_index)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id,
+            output_index,
+        })
         .await
         .expect("signature share lookup");
     assert_eq!(shares.len(), 1, "each member stores exactly its own share");
@@ -89,7 +96,9 @@ async fn wiped_member_installs_checkpoint_state_then_catches_up_and_restores() {
     let scheduled = first
         .mint
         .localstore()
-        .get_latest_federation_checkpoint(FederationCheckpointKind::Scheduled)
+        .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            FederationCheckpointKind::Scheduled,
+        ))
         .await
         .expect("scheduled checkpoint lookup")
         .expect("scheduled checkpoint");
@@ -290,16 +299,17 @@ async fn wiped_member_installs_checkpoint_state_then_catches_up_and_restores() {
     assert!(third
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal after refused install")
         .is_empty());
     assert!(third
         .mint
         .localstore()
-        .get_federation_materialized_state_keys()
+        .get_federation_materialized_state_source()
         .await
         .expect("state keys after refused install")
+        .state_keys
         .is_empty());
     assert_eq!(
         third
@@ -340,7 +350,7 @@ async fn wiped_member_installs_checkpoint_state_then_catches_up_and_restores() {
         third
             .mint
             .localstore()
-            .get_federation_journal_entries()
+            .get_federation_journal_entries(FederationIndexRange::ALL)
             .await
             .expect("installed journal")
             .iter()
@@ -349,7 +359,7 @@ async fn wiped_member_installs_checkpoint_state_then_catches_up_and_restores() {
         first
             .mint
             .localstore()
-            .get_federation_journal_entries()
+            .get_federation_journal_entries(FederationIndexRange::ALL)
             .await
             .expect("source journal")
             .iter()
@@ -380,7 +390,7 @@ async fn wiped_member_installs_checkpoint_state_then_catches_up_and_restores() {
     let entries = third
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("caught-up journal");
     assert_eq!(
@@ -507,7 +517,7 @@ async fn wiped_member_installs_checkpoint_state_then_catches_up_and_restores() {
     let first_journal = first
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("first journal after replay");
     assert!(
@@ -539,7 +549,7 @@ async fn wiped_member_installs_checkpoint_state_then_catches_up_and_restores() {
         let entries = state
             .mint
             .localstore()
-            .get_federation_journal_entries()
+            .get_federation_journal_entries(FederationIndexRange::ALL)
             .await
             .expect("journal after replay");
         let actual = outcome(entries);
@@ -599,7 +609,9 @@ async fn scheduled_capture_keeps_the_latest_two_snapshots() {
         let checkpoint = first
             .mint
             .localstore()
-            .get_latest_federation_checkpoint(FederationCheckpointKind::Scheduled)
+            .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+                FederationCheckpointKind::Scheduled,
+            ))
             .await
             .expect("scheduled checkpoint lookup")
             .expect("scheduled checkpoint");

@@ -13,8 +13,8 @@ use cdk_common::federation::{
     FederationCheckpointPolicy, FederationDkgKeysetSpec, FederationPaymentObservationPolicy,
     FederationSetupApproval, FederationSetupBitcoinNetwork, FederationSetupEnrollment,
     FederationSetupFrostPolicy, FederationSetupInvitation, FederationSetupInvitationState,
-    FederationSetupProposal, FederationSetupUrlPolicy, MemberId, ThresholdParams,
-    FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
+    FederationSetupProposal, FederationSetupRecord, FederationSetupUrlPolicy, MemberId,
+    ThresholdParams, FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::{Amount, CurrencyUnit};
@@ -143,7 +143,8 @@ impl FederationSetupCoordinator for FakeCoordinator {
             bail!("fake coordinator approval conflict");
         }
         let mut tx = Database::begin_transaction(self.db.as_ref()).await?;
-        tx.add_federation_setup_approval(approval).await?;
+        tx.add_federation_setup_record(FederationSetupRecord::Approval(approval))
+            .await?;
         tx.commit().await?;
         if self
             .fail_approval_after_commit

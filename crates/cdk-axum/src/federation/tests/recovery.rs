@@ -1,3 +1,7 @@
+use cdk_common::database::mint::{
+    FederationCheckpointSelector, FederationIndexRange, FederationJournalEntryKey,
+};
+
 use super::*;
 
 #[tokio::test]
@@ -346,7 +350,9 @@ async fn assert_trusted_checkpoint_partial_tail_restart_recovers(
         repaired_frontier.journal_next_index
     );
     let repaired_entries = db
-        .get_federation_journal_entries_from(checkpoint.journal_next_index)
+        .get_federation_journal_entries(FederationIndexRange::starting_at(
+            checkpoint.journal_next_index,
+        ))
         .await
         .expect("repaired checkpoint journal suffix");
     assert_eq!(repaired_entries.len(), suffix_quote_ids.len());
@@ -528,7 +534,10 @@ async fn assert_trusted_checkpoint_suffix_rejects_corruption(alter_consensus_evi
             ),
         }));
     assert!(db
-        .get_federation_journal_entry_by_operation_id(corrupted_operation_id)
+        .get_federation_journal_entry(
+            FederationJournalEntryKey::Operation(corrupted_operation_id),
+            None
+        )
         .await
         .expect("corrupted operation lookup")
         .is_some());
@@ -596,11 +605,15 @@ async fn trusted_checkpoint_startup_rejects_changed_terminal_result() {
         .await
         .expect("terminal-result checkpoint frontier");
     let mut journal_entries = db
-        .get_federation_journal_entries_from(checkpoint.journal_next_index)
+        .get_federation_journal_entries(FederationIndexRange::starting_at(
+            checkpoint.journal_next_index,
+        ))
         .await
         .expect("terminal-result checkpoint journal suffix");
     let finalized_items = db
-        .get_federation_aleph_bft_finalized_items_from(checkpoint.finalized_next_item_index)
+        .get_federation_aleph_bft_finalized_items(FederationIndexRange::starting_at(
+            checkpoint.finalized_next_item_index,
+        ))
         .await
         .expect("terminal-result checkpoint finalized suffix");
     assert_eq!(journal_entries.len(), 1);
@@ -747,7 +760,9 @@ async fn trusted_checkpoint_restart_replays_rejection_and_later_operation() {
         .await
         .expect("startup replays rejection checkpoint suffix");
     let repaired = db
-        .get_federation_journal_entries_from(checkpoint.journal_next_index)
+        .get_federation_journal_entries(FederationIndexRange::starting_at(
+            checkpoint.journal_next_index,
+        ))
         .await
         .expect("repaired rejection checkpoint suffix");
     assert_eq!(repaired.len(), 2);
@@ -776,7 +791,10 @@ async fn trusted_checkpoint_restart_replays_rejection_and_later_operation() {
         .await
         .expect("second rejection checkpoint startup");
     let stable_rejection = db
-        .get_federation_journal_entry_by_operation_id(conflicting_operation_id)
+        .get_federation_journal_entry(
+            FederationJournalEntryKey::Operation(conflicting_operation_id),
+            None,
+        )
         .await
         .expect("stable rejection lookup")
         .expect("stable rejected operation");
@@ -826,7 +844,9 @@ async fn scheduled_checkpoint_captures_first_complete_eligible_boundary() {
     .expect("first finalized operation timeout")
     .expect("first finalized operation");
     assert!(db
-        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Scheduled)
+        .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            cdk::federation::FederationCheckpointKind::Scheduled
+        ))
         .await
         .expect("first scheduled checkpoint lookup")
         .is_none());
@@ -839,7 +859,9 @@ async fn scheduled_checkpoint_captures_first_complete_eligible_boundary() {
     .expect("eligible finalized operation timeout")
     .expect("eligible finalized operation");
     let candidate = db
-        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Scheduled)
+        .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            cdk::federation::FederationCheckpointKind::Scheduled,
+        ))
         .await
         .expect("eligible scheduled checkpoint lookup")
         .expect("scheduled checkpoint candidate");
@@ -866,7 +888,9 @@ async fn scheduled_checkpoint_captures_first_complete_eligible_boundary() {
     .expect("later finalized operation timeout")
     .expect("later finalized operation");
     let retained = db
-        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Scheduled)
+        .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            cdk::federation::FederationCheckpointKind::Scheduled,
+        ))
         .await
         .expect("retained scheduled checkpoint lookup")
         .expect("retained scheduled checkpoint candidate");
@@ -928,7 +952,9 @@ async fn scheduled_checkpoint_preserves_the_canonical_byte_trigger() {
     let candidate = state
         .mint
         .localstore()
-        .get_latest_federation_checkpoint(FederationCheckpointKind::Scheduled)
+        .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            FederationCheckpointKind::Scheduled,
+        ))
         .await
         .expect("byte-triggered checkpoint lookup")
         .expect("byte-triggered scheduled checkpoint");
@@ -955,14 +981,18 @@ where
     let first_candidate = first
         .mint
         .localstore()
-        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Scheduled)
+        .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            cdk::federation::FederationCheckpointKind::Scheduled,
+        ))
         .await
         .expect("first scheduled-boundary lookup")
         .expect("first scheduled-boundary candidate");
     let second_candidate = second
         .mint
         .localstore()
-        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Scheduled)
+        .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            cdk::federation::FederationCheckpointKind::Scheduled,
+        ))
         .await
         .expect("second scheduled-boundary lookup")
         .expect("second scheduled-boundary candidate");
@@ -1075,7 +1105,9 @@ async fn startup_recovers_an_interrupted_eligible_checkpoint_capture_once() {
         .await
         .expect("eligible pre-restart operation");
     assert!(db
-        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Scheduled)
+        .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            cdk::federation::FederationCheckpointKind::Scheduled
+        ))
         .await
         .expect("pre-restart scheduled checkpoint lookup")
         .is_none());
@@ -1102,7 +1134,9 @@ async fn startup_recovers_an_interrupted_eligible_checkpoint_capture_once() {
         .await
         .expect("recover interrupted checkpoint capture");
     let candidate = db
-        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Scheduled)
+        .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            cdk::federation::FederationCheckpointKind::Scheduled,
+        ))
         .await
         .expect("recovered scheduled checkpoint lookup")
         .expect("recovered scheduled checkpoint");
@@ -1138,7 +1172,9 @@ async fn startup_checkpoint_capture_skips_scheduled_quorum_ahead_of_local_fronti
     let checkpoint = source
         .mint
         .localstore()
-        .get_latest_federation_checkpoint(FederationCheckpointKind::Scheduled)
+        .get_federation_checkpoint(FederationCheckpointSelector::Latest(
+            FederationCheckpointKind::Scheduled,
+        ))
         .await
         .expect("source scheduled checkpoint lookup")
         .expect("source scheduled checkpoint");
@@ -1624,7 +1660,7 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
         0
     );
     assert!(target_db
-        .get_trusted_federation_checkpoint_quorum()
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
         .await
         .expect("ahead checkpoint remains untrusted")
         .is_none());
@@ -1636,13 +1672,13 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
     assert_eq!(ahead_frontier.application_next_index, 0);
 
     let source_entries = source_db
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("source journal");
     let source_journal =
         InMemoryFederationJournal::from_entries(source_entries).expect("source journal");
     let finalized_items = source_db
-        .get_federation_aleph_bft_finalized_items()
+        .get_federation_aleph_bft_finalized_items(FederationIndexRange::ALL)
         .await
         .expect("source finalized items");
     let request = FederationJournalCatchUpRequest::new(0)
@@ -1664,7 +1700,7 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
         .expect("checkpoint response binding");
 
     assert!(target_db
-        .get_trusted_federation_checkpoint_quorum()
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
         .await
         .expect("target trusted checkpoint before catch-up")
         .is_none());
@@ -1713,7 +1749,7 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
         .await
         .expect_err("injected pre-promotion failure");
     assert!(target_db
-        .get_trusted_federation_checkpoint_quorum()
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
         .await
         .expect("trusted checkpoint after pre-promotion failure")
         .is_none());
@@ -1750,7 +1786,7 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
         0
     );
     assert!(target_db
-        .get_trusted_federation_checkpoint_quorum()
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
         .await
         .expect("trusted checkpoint after resumed sync round")
         .is_some());
@@ -1760,7 +1796,7 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
         .is_none());
 
     let trusted = target_db
-        .get_trusted_federation_checkpoint_quorum()
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
         .await
         .expect("target trusted checkpoint after catch-up")
         .expect("promoted target checkpoint");
@@ -1857,13 +1893,15 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
         .await
         .expect("commit second checkpoint proof");
     let source_entries = source_db
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("source journal with suffix");
     let source_journal =
         InMemoryFederationJournal::from_entries(source_entries).expect("source suffix journal");
     let finalized_items = source_db
-        .get_federation_aleph_bft_finalized_items_from(checkpoint.finalized_next_item_index)
+        .get_federation_aleph_bft_finalized_items(FederationIndexRange::starting_at(
+            checkpoint.finalized_next_item_index,
+        ))
         .await
         .expect("source finalized suffix");
     assert_eq!(finalized_items.len(), 2);
@@ -1900,7 +1938,7 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
     drop(target_consensus);
     assert_eq!(
         target_db
-            .get_trusted_federation_checkpoint_quorum()
+            .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
             .await
             .expect("second trusted checkpoint")
             .expect("promoted second checkpoint")
@@ -1986,7 +2024,7 @@ async fn empty_database_bootstrap_crosses_scheduled_checkpoints_and_recovery() {
     let source_entries = source
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("source journal");
     let source_journal =
@@ -1994,7 +2032,7 @@ async fn empty_database_bootstrap_crosses_scheduled_checkpoints_and_recovery() {
     let source_finalized = source
         .mint
         .localstore()
-        .get_federation_aleph_bft_finalized_items()
+        .get_federation_aleph_bft_finalized_items(FederationIndexRange::ALL)
         .await
         .expect("source finalized items");
     let checkpoints = [
@@ -2049,7 +2087,7 @@ async fn empty_database_bootstrap_crosses_scheduled_checkpoints_and_recovery() {
         target
             .mint
             .localstore()
-            .get_trusted_federation_checkpoint_quorum()
+            .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
             .await
             .expect("trusted checkpoint")
             .expect("trusted recovery checkpoint")
@@ -2350,12 +2388,12 @@ async fn long_offline_member_recovers_from_one_quorum_holder_without_signer_work
     );
     let target_db = target.mint.localstore();
     assert!(target_db
-        .get_federation_checkpoint_quorum(checkpoint_id)
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Id(checkpoint_id))
         .await
         .expect("fetched checkpoint quorum")
         .is_some());
     assert!(target_db
-        .get_trusted_federation_checkpoint_quorum()
+        .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
         .await
         .expect("unpromoted fetched checkpoint")
         .is_none());
@@ -2367,7 +2405,7 @@ async fn long_offline_member_recovers_from_one_quorum_holder_without_signer_work
     assert_eq!(peer_status.operation_count, 3);
     assert_eq!(
         target_db
-            .get_trusted_federation_checkpoint_quorum()
+            .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
             .await
             .expect("trusted recovered checkpoint")
             .expect("promoted recovered checkpoint")
@@ -2430,7 +2468,7 @@ async fn federation_dkg_setup_runtime_has_no_persisted_application_consensus() {
     assert!(state
         .mint
         .localstore()
-        .get_federation_aleph_bft_finalized_items()
+        .get_federation_aleph_bft_finalized_items(FederationIndexRange::ALL)
         .await
         .expect("load pre-finalization consensus units")
         .is_empty());
@@ -2785,7 +2823,7 @@ async fn router_startup_replays_aleph_bft_finalized_items_before_serving_local_s
     let replayed_entries = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("replayed journal entries");
     assert_eq!(replayed_entries.len(), 1);
@@ -2881,7 +2919,7 @@ async fn finalized_catch_up_does_not_carry_backup_state() {
     let stored_finalized_items = state
         .mint
         .localstore()
-        .get_federation_aleph_bft_finalized_items()
+        .get_federation_aleph_bft_finalized_items(FederationIndexRange::ALL)
         .await
         .expect("stored finalized items");
     assert_eq!(stored_finalized_items.len(), 2);
@@ -2889,7 +2927,7 @@ async fn finalized_catch_up_does_not_carry_backup_state() {
     let stored_entries = state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("stored journal entries");
     assert_eq!(stored_entries.len(), 1);
@@ -2993,12 +3031,12 @@ async fn scheduled_checkpoint_lineage_does_not_depend_on_quorum_arrival() {
         ))];
         apply_identical_finalized_unit(&first, &second, items).await;
         let left = first_db
-            .get_next_federation_scheduled_checkpoint(sequence - 1)
+            .get_federation_checkpoint(FederationCheckpointSelector::NextScheduled(sequence - 1))
             .await
             .expect("first candidate")
             .expect("first stored candidate");
         let right = second_db
-            .get_next_federation_scheduled_checkpoint(sequence - 1)
+            .get_federation_checkpoint(FederationCheckpointSelector::NextScheduled(sequence - 1))
             .await
             .expect("second candidate")
             .expect("second stored candidate");
@@ -3034,7 +3072,7 @@ async fn scheduled_checkpoint_lineage_does_not_depend_on_quorum_arrival() {
         let id = quorum.checkpoint.id().expect("checkpoint id");
         for db in [&first_db, &second_db] {
             assert_eq!(
-                db.get_federation_checkpoint(id)
+                db.get_federation_checkpoint(FederationCheckpointSelector::Id(id))
                     .await
                     .expect("retained ancestor"),
                 Some(quorum.checkpoint.clone())
@@ -3066,7 +3104,7 @@ async fn scheduled_checkpoint_lineage_does_not_depend_on_quorum_arrival() {
         run_federation_peer_sync_round(&second, &client, &[]).await;
         assert_eq!(
             second_db
-                .get_trusted_federation_checkpoint_quorum()
+                .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
                 .await
                 .expect("promoted local quorum"),
             Some(expected.clone()),
@@ -3075,16 +3113,16 @@ async fn scheduled_checkpoint_lineage_does_not_depend_on_quorum_arrival() {
     }
     assert_eq!(
         first_db
-            .get_trusted_federation_checkpoint_quorum()
+            .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
             .await
             .expect("first trust"),
         second_db
-            .get_trusted_federation_checkpoint_quorum()
+            .get_federation_checkpoint_quorum(FederationCheckpointSelector::Trusted)
             .await
             .expect("second trust"),
     );
     assert!(first_db
-        .get_next_federation_scheduled_checkpoint(3)
+        .get_federation_checkpoint(FederationCheckpointSelector::NextScheduled(3))
         .await
         .expect("bounded end")
         .is_none());

@@ -12,6 +12,7 @@ use cdk::federation::{
 };
 use cdk::mint::QuoteId;
 use cdk::nuts::MeltQuoteState;
+use cdk_common::database::mint::FederationJournalEntryKey;
 
 use super::evidence::{collect_bark_evidence_certificate, scheduled_bark_evidence_collector_round};
 use super::observer::{
@@ -950,7 +951,7 @@ async fn send_transition_entry(
     state
         .mint()
         .localstore()
-        .get_federation_journal_entry_by_operation_id(operation_id)
+        .get_federation_journal_entry(FederationJournalEntryKey::Operation(operation_id), None)
         .await?
         .ok_or(cdk::Error::Internal)
 }

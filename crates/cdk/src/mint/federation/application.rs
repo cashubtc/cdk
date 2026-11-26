@@ -26,18 +26,23 @@ use crate::types::PaymentProcessorKey;
 #[cfg(feature = "federation-bark")]
 use cdk_common::bitcoin::hashes::{sha256, Hash};
 use cdk_common::database;
+use cdk_common::database::mint::{
+    FederationCheckpointSelector, FederationJournalEntryKey, FederationPaymentObservationSelection,
+    FederationSignatureShareKey,
+};
 use cdk_common::error::Error;
 use cdk_common::federation::{
     FederatedKeyset, FederationAddressAllocationScope, FederationAddressKeychain,
     FederationApplicationState, FederationError, FederationJournalEntry,
-    FederationKeysetRotationOperation, FederationMaterializedStateKey, FederationMeltOperation,
-    FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation, FederationMintOperation,
-    FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
-    FederationOnchainMeltPaymentReceipt, FederationOperation, FederationOperationConflictKey,
-    FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
-    FederationPaymentObservationContext, FederationPaymentObservationRecord,
-    FederationPaymentObservationReport, FederationSignatureShareRecord, FederationStoredState,
-    FederationSwapOperation, FederationTransactionState, MemberId,
+    FederationKeysetRotationOperation, FederationMaterializedStateKey,
+    FederationMaterializedStateKind, FederationMeltOperation, FederationMeltQuoteOperation,
+    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
+    FederationMintQuotePaymentObservation, FederationOnchainMeltPaymentReceipt,
+    FederationOperation, FederationOperationConflictKey, FederationOperationId,
+    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationPaymentObservationRecord, FederationPaymentObservationReport,
+    FederationSignatureShareRecord, FederationStoredState, FederationSwapOperation,
+    FederationTransactionState, MemberId,
 };
 use cdk_common::mint::{
     MeltQuote, MeltSagaState, MintQuote, Operation, OperationKind, SagaStateEnum,
@@ -152,7 +157,7 @@ async fn record_live_payment_observation(
     record: &FederationPaymentObservationRecord,
 ) -> Result<(), Error> {
     if !payment_observation_quote_is_final(tx, &record.observation).await? {
-        tx.add_federation_payment_observation(record).await?;
+        tx.add_federation_payment_observation(record, None).await?;
     }
     Ok(())
 }
@@ -521,7 +526,7 @@ impl Mint {
             .ok_or(Error::Internal)?;
         let entry = self
             .localstore
-            .get_federation_journal_entry_by_operation_id(operation_id)
+            .get_federation_journal_entry(FederationJournalEntryKey::Operation(operation_id), None)
             .await?
             .ok_or(Error::Internal)?;
         if entry.status() != FederationOperationStatus::Applied
@@ -548,7 +553,7 @@ impl Mint {
             .ok_or(Error::Internal)?;
         let entry = self
             .localstore
-            .get_federation_journal_entry_by_operation_id(operation_id)
+            .get_federation_journal_entry(FederationJournalEntryKey::Operation(operation_id), None)
             .await?
             .ok_or(Error::Internal)?;
         if entry.status() != FederationOperationStatus::Applied
@@ -749,7 +754,10 @@ impl Mint {
                 };
                 let plan_entry = self
                     .localstore
-                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .get_federation_journal_entry(
+                        FederationJournalEntryKey::Operation(transition.plan_operation_id),
+                        None,
+                    )
                     .await?
                     .ok_or(Error::Internal)?;
                 let FederationBarkOperation::ActionPlan(plan) =
@@ -785,7 +793,10 @@ impl Mint {
                 };
                 let revocation_entry = self
                     .localstore
-                    .get_federation_journal_entry_by_operation_id(completed.plan_operation_id)
+                    .get_federation_journal_entry(
+                        FederationJournalEntryKey::Operation(completed.plan_operation_id),
+                        None,
+                    )
                     .await?
                     .ok_or(Error::Internal)?;
                 let FederationBarkOperation::ActionPlan(revocation) =
@@ -800,8 +811,9 @@ impl Mint {
                 }
                 let failed_entry = self
                     .localstore
-                    .get_federation_journal_entry_by_operation_id(
-                        revocation.predecessor_operation_id,
+                    .get_federation_journal_entry(
+                        FederationJournalEntryKey::Operation(revocation.predecessor_operation_id),
+                        None,
                     )
                     .await?
                     .ok_or(Error::Internal)?;
@@ -812,7 +824,10 @@ impl Mint {
                 };
                 let plan_entry = self
                     .localstore
-                    .get_federation_journal_entry_by_operation_id(failed.plan_operation_id)
+                    .get_federation_journal_entry(
+                        FederationJournalEntryKey::Operation(failed.plan_operation_id),
+                        None,
+                    )
                     .await?
                     .ok_or(Error::Internal)?;
                 let FederationBarkOperation::ActionPlan(plan) =
@@ -1046,7 +1061,7 @@ impl Mint {
         }
         let entry = self
             .localstore
-            .get_federation_journal_entry_by_operation_id(operation_id)
+            .get_federation_journal_entry(FederationJournalEntryKey::Operation(operation_id), None)
             .await?
             .ok_or(Error::Internal)?;
         let author = entry
@@ -1134,7 +1149,7 @@ impl Mint {
                 .map_err(|_| Error::Custom("federation output index overflow".to_string()))?;
             let share = self
                 .localstore
-                .get_federation_signature_shares_for_output(operation_id, output_index)
+                .get_federation_signature_shares(FederationSignatureShareKey::Output { operation_id, output_index })
                 .await?
                 .into_iter()
                 .find(|share| {
@@ -1230,7 +1245,7 @@ impl Mint {
         let mut effective = config.clone();
         let mut rotations = self
             .localstore
-            .get_federation_materialized_state_keys()
+            .get_federation_materialized_state_keys(FederationMaterializedStateKind::KeysetRotation)
             .await?
             .into_iter()
             .filter_map(|record| match record.key {
@@ -1312,7 +1327,10 @@ impl Mint {
     ) -> Result<bool, Error> {
         if let Some(persisted_entry) = self
             .localstore
-            .get_federation_journal_entry_by_operation_id(entry.operation_id)
+            .get_federation_journal_entry(
+                FederationJournalEntryKey::Operation(entry.operation_id),
+                None,
+            )
             .await?
         {
             match persisted_entry.status() {
@@ -1546,10 +1564,15 @@ impl Mint {
                     .ok_or(Error::UnknownQuote)?;
                 let observations = transaction
                     .get_federation_payment_observations(
-                        FederationPaymentObservationContext::MintQuote,
-                        &observation.quote,
+                        FederationPaymentObservationSelection::Live {
+                            context: FederationPaymentObservationContext::MintQuote,
+                            quote: &observation.quote,
+                        },
                     )
-                    .await?;
+                    .await?
+                    .into_iter()
+                    .map(|observation| observation.record)
+                    .collect::<Vec<_>>();
                 if let Some(amount_paid) = self
                     .apply_mint_payment_observations_to_quote(
                         &mut transaction,
@@ -1654,7 +1677,10 @@ impl Mint {
                     .ok_or(Error::Internal)?;
                 let registered_entry = self
                     .localstore()
-                    .get_federation_journal_entry_by_operation_id(registered_operation_id)
+                    .get_federation_journal_entry(
+                        FederationJournalEntryKey::Operation(registered_operation_id),
+                        None,
+                    )
                     .await?
                     .ok_or(Error::Internal)?;
                 let FederationBarkOperation::ActionTransition(registered) =
@@ -1812,7 +1838,7 @@ impl Mint {
     ) -> Result<(), Error> {
         let applied_before = self
             .localstore
-            .get_federation_journal_entry_by_conflict_key(&quote_key)
+            .get_federation_journal_entry(FederationJournalEntryKey::ConflictKey(&quote_key), None)
             .await?
             .is_some_and(|entry| {
                 entry.index < max_operation_index
@@ -1829,7 +1855,7 @@ impl Mint {
         // applied before `max_operation_index`.
         let transfer_base = self
             .localstore
-            .get_federation_state_transfer_base()
+            .get_federation_checkpoint(FederationCheckpointSelector::StateTransferBase)
             .await?
             .map(|base| base.journal_next_index);
         let retention_floor = self
@@ -1964,11 +1990,14 @@ impl Mint {
             };
 
             let observations = tx
-                .get_federation_payment_observations(
-                    FederationPaymentObservationContext::MintQuote,
-                    &operation.quote,
-                )
-                .await?;
+                .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+                    context: FederationPaymentObservationContext::MintQuote,
+                    quote: &operation.quote,
+                })
+                .await?
+                .into_iter()
+                .map(|observation| observation.record)
+                .collect::<Vec<_>>();
             let paid_notification = self
                 .apply_mint_payment_observations_to_quote(&mut tx, &mut quote, &observations)
                 .await?
@@ -2144,13 +2173,16 @@ impl Mint {
             if quote.as_deref().is_some_and(mint_quote_payments_are_final) {
                 return Ok(None);
             }
-            tx.add_federation_payment_observation(&record).await?;
+            tx.add_federation_payment_observation(&record, None).await?;
             let observations = tx
-                .get_federation_payment_observations(
-                    FederationPaymentObservationContext::MintQuote,
-                    &observation.quote,
-                )
-                .await?;
+                .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+                    context: FederationPaymentObservationContext::MintQuote,
+                    quote: &observation.quote,
+                })
+                .await?
+                .into_iter()
+                .map(|observation| observation.record)
+                .collect::<Vec<_>>();
             let mut paid_notification = None;
             if let Some(mut quote) = quote.take() {
                 if let Some(amount_paid) = self
@@ -2361,10 +2393,15 @@ impl Mint {
                     .map_err(|_| Error::AmountOverflow)?;
                 let observations = tx
                     .get_federation_payment_observations(
-                        FederationPaymentObservationContext::MintQuote,
-                        &quote.id.to_string(),
+                        FederationPaymentObservationSelection::Live {
+                            context: FederationPaymentObservationContext::MintQuote,
+                            quote: &quote.id.to_string(),
+                        },
                     )
-                    .await?;
+                    .await?
+                    .into_iter()
+                    .map(|observation| observation.record)
+                    .collect::<Vec<_>>();
                 if !self.federation_mint_payment_quorum_covers_amount_at_or_before(
                     quote,
                     &required_amount,
@@ -2729,13 +2766,16 @@ impl Mint {
             )
             .await?;
 
-        tx.add_federation_payment_observation(record).await?;
+        tx.add_federation_payment_observation(record, None).await?;
         let observations = tx
-            .get_federation_payment_observations(
-                FederationPaymentObservationContext::MeltQuote,
-                &observation.quote,
-            )
-            .await?;
+            .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+                context: FederationPaymentObservationContext::MeltQuote,
+                quote: &observation.quote,
+            })
+            .await?
+            .into_iter()
+            .map(|observation| observation.record)
+            .collect::<Vec<_>>();
         let can_finalize = self.federation_payment_observation_can_finalize_at_or_before(
             &record.observation,
             &observations,

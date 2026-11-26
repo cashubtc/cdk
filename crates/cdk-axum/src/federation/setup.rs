@@ -387,7 +387,7 @@ mod tests {
             .await
             .expect("equivocation transaction");
         assert!(transaction
-            .add_federation_setup_proposal(&equivocating_proposal)
+            .add_federation_setup_record(FederationSetupRecord::Proposal(&equivocating_proposal))
             .await
             .is_err());
         transaction.rollback().await.expect("rollback equivocation");
@@ -416,7 +416,7 @@ mod tests {
             .await
             .expect("creator approval transaction");
         transaction
-            .add_federation_setup_approval(&creator_approval)
+            .add_federation_setup_record(FederationSetupRecord::Approval(&creator_approval))
             .await
             .expect("creator approval");
         transaction.commit().await.expect("commit creator approval");
@@ -801,7 +801,9 @@ mod tests {
             .await
             .expect("session");
         transaction
-            .add_federation_setup_enrollment(enrollments.get(&member_id(1)).expect("creator"))
+            .add_federation_setup_record(FederationSetupRecord::Enrollment(
+                enrollments.get(&member_id(1)).expect("creator"),
+            ))
             .await
             .expect("creator enrollment");
         for invitation in invitations.values() {
@@ -914,7 +916,11 @@ mod tests {
             .await
             .expect("proposal transaction");
         transaction
-            .publish_federation_setup_proposal(&session, &published, &proposal)
+            .advance_federation_setup_session(
+                &session,
+                &published,
+                FederationSetupStep::PublishProposal(&proposal),
+            )
             .await
             .expect("publish proposal");
         transaction.commit().await.expect("commit proposal");

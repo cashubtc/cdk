@@ -12,6 +12,7 @@ use cdk::federation::{
     FederationAlephBftActivityRequest, FederationAlephBftError, FederationError,
     FederationOperationId, MemberConfigPublic, MemberId,
 };
+use cdk_common::database::mint::FederationIndexRange;
 use cdk_common::database::DynMintDatabase;
 use cdk_http_client::Transport;
 use futures::channel::oneshot;
@@ -649,7 +650,7 @@ where
         ))
     })?;
     let existing_session_backup_chunks = db
-        .get_federation_aleph_bft_backup_chunks_from(session_id, 0, 1)
+        .get_federation_aleph_bft_backup_chunks(session_id, FederationIndexRange::limited(0, 1))
         .await
         .map_err(|err| {
             cdk::Error::Custom(format!(

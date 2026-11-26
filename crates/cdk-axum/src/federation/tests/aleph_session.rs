@@ -1,3 +1,5 @@
+use cdk_common::database::mint::{FederationIndexRange, FederationJournalEntryKey};
+
 use super::*;
 
 #[tokio::test]
@@ -77,7 +79,7 @@ async fn aleph_bft_live_session_start_installs_inbound_queue() {
     assert!(state
         .mint
         .localstore()
-        .get_federation_journal_entries()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
         .await
         .expect("journal")
         .is_empty());
@@ -410,7 +412,7 @@ async fn aleph_bft_non_retryable_finalized_payload_failure_halts_exact_generatio
         assert!(state
             .mint
             .localstore()
-            .get_federation_journal_entry_by_operation_id(operation_id)
+            .get_federation_journal_entry(FederationJournalEntryKey::Operation(operation_id), None)
             .await
             .expect("journal lookup after apply failure")
             .is_none());
@@ -436,7 +438,10 @@ async fn assert_balance_overflow_rejection_converged(
         state
             .mint
             .localstore()
-            .get_federation_journal_entry_by_operation_id(invalid_operation_id)
+            .get_federation_journal_entry(
+                FederationJournalEntryKey::Operation(invalid_operation_id),
+                None
+            )
             .await
             .expect("invalid operation journal lookup")
             .is_none(),
@@ -445,7 +450,7 @@ async fn assert_balance_overflow_rejection_converged(
     let invalid_status = state
         .mint
         .localstore()
-        .get_federation_aleph_bft_finalized_items()
+        .get_federation_aleph_bft_finalized_items(FederationIndexRange::ALL)
         .await
         .expect("finalized items lookup")
         .into_iter()
@@ -594,7 +599,10 @@ async fn byzantine_balance_overflow_operation_does_not_halt_finalized_applicatio
             if let Some(entry) = honest_states[0]
                 .mint
                 .localstore()
-                .get_federation_journal_entry_by_operation_id(same_unit_operation_id)
+                .get_federation_journal_entry(
+                    FederationJournalEntryKey::Operation(same_unit_operation_id),
+                    None,
+                )
                 .await
                 .expect("same-unit journal lookup")
             {
@@ -660,7 +668,7 @@ async fn byzantine_balance_overflow_operation_does_not_halt_finalized_applicatio
                 &state
                     .mint
                     .localstore()
-                    .get_federation_journal_entries()
+                    .get_federation_journal_entries(FederationIndexRange::ALL)
                     .await
                     .expect("honest journal lookup"),
             ));
@@ -795,7 +803,7 @@ async fn byzantine_balance_overflow_operation_does_not_halt_finalized_applicatio
         &session.states[0]
             .mint
             .localstore()
-            .get_federation_journal_entries()
+            .get_federation_journal_entries(FederationIndexRange::ALL)
             .await
             .expect("final reference journal lookup"),
     );
@@ -805,7 +813,7 @@ async fn byzantine_balance_overflow_operation_does_not_halt_finalized_applicatio
                 &state
                     .mint
                     .localstore()
-                    .get_federation_journal_entries()
+                    .get_federation_journal_entries(FederationIndexRange::ALL)
                     .await
                     .expect("converged journal lookup"),
             ),
@@ -1307,7 +1315,10 @@ async fn stateful_invalid_chain_deposit_rejects_item_without_halt() {
     let deposit_entry = state
         .mint
         .localstore()
-        .get_federation_journal_entry_by_operation_id(deposit_operation_id)
+        .get_federation_journal_entry(
+            FederationJournalEntryKey::Operation(deposit_operation_id),
+            None,
+        )
         .await
         .expect("deposit journal lookup")
         .expect("deposit journal entry");
@@ -1319,7 +1330,10 @@ async fn stateful_invalid_chain_deposit_rejects_item_without_halt() {
     let trailing_entry = state
         .mint
         .localstore()
-        .get_federation_journal_entry_by_operation_id(trailing_operation_id)
+        .get_federation_journal_entry(
+            FederationJournalEntryKey::Operation(trailing_operation_id),
+            None,
+        )
         .await
         .expect("trailing journal lookup")
         .expect("trailing journal entry");
@@ -1608,11 +1622,14 @@ async fn aleph_bft_restart_finalizes_atomically_rebound_pending_operations() {
         .is_empty());
     for operation_id in [first_operation_id, second_operation_id] {
         assert_eq!(
-            db.get_federation_journal_entry_by_operation_id(operation_id)
-                .await
-                .expect("journal lookup")
-                .expect("recovered journal entry")
-                .status(),
+            db.get_federation_journal_entry(
+                FederationJournalEntryKey::Operation(operation_id),
+                None
+            )
+            .await
+            .expect("journal lookup")
+            .expect("recovered journal entry")
+            .status(),
             FederationOperationStatus::Applied
         );
     }

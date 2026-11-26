@@ -1,6 +1,4 @@
-#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
 use std::str::FromStr;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -18,6 +16,7 @@ use cdk::federation::{
 };
 use cdk::mint::QuoteId;
 use cdk::nuts::{MeltQuoteState, MintQuoteState};
+use cdk_common::database::mint::FederationPaymentObservationSelection;
 use futures::FutureExt as _;
 
 use super::payment_schedule::{
@@ -1343,8 +1342,14 @@ async fn submit_observation(
     let records = state
         .mint
         .localstore()
-        .get_federation_payment_observations(candidate.context(), candidate.quote())
-        .await?;
+        .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+            context: candidate.context(),
+            quote: candidate.quote(),
+        })
+        .await?
+        .into_iter()
+        .map(|observation| observation.record)
+        .collect::<Vec<_>>();
     if records.iter().any(|record| {
         record.observation.observer() == candidate.observer()
             && candidate.matches_payment_evidence(&record.observation)
@@ -1394,25 +1399,30 @@ pub async fn payment_observation_report_summaries(
     let Some(runtime_config) = state.mint.federation_config() else {
         return Ok(Vec::new());
     };
-    let db = state.mint.localstore();
-    let mut report_keys = BTreeSet::new();
-    for record in db.get_all_federation_payment_observations().await? {
-        report_keys.insert((
-            record.observation.context(),
-            record.observation.quote().to_string(),
-        ));
+    // One read of the live observations, grouped by quote in consensus order.
+    let mut observations_by_quote = BTreeMap::<_, Vec<_>>::new();
+    for observation in state
+        .mint
+        .localstore()
+        .get_federation_payment_observations(FederationPaymentObservationSelection::AllLive)
+        .await?
+    {
+        observations_by_quote
+            .entry((
+                observation.record.observation.context(),
+                observation.record.observation.quote().to_string(),
+            ))
+            .or_default()
+            .push(observation.record);
     }
 
-    let mut reports = Vec::with_capacity(report_keys.len());
+    let mut reports = Vec::with_capacity(observations_by_quote.len());
     let now = current_unix_time();
-    for (context, quote) in report_keys {
+    for ((context, quote), observations) in observations_by_quote {
         let required = runtime_config
             .public_config()
             .payment_verification_policy(context)
             .required_matching_observations();
-        let observations = db
-            .get_federation_payment_observations(context, &quote)
-            .await?;
         let report = FederationPaymentObservationReport::from_records(
             context,
             &quote,

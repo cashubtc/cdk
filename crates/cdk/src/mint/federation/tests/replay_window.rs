@@ -10,6 +10,7 @@
 
 use bitcoin::hashes::Hash;
 use bitcoin::{Amount as BitcoinAmount, BlockHash, OutPoint, Txid};
+use cdk_common::database::mint::{FederationJournalEntryKey, FederationSignatureShareKey};
 use cdk_common::federation::{
     FederationAcceptedTransactionState, FederationAddressAllocation,
     FederationAddressAllocationScope, FederationAddressKeychain, FederationChainObservation,
@@ -117,7 +118,10 @@ pub(super) async fn apply_window_replay(
     let outcome = match mint.apply_accepted_federation_operation(entry).await {
         Ok(_) => {
             let stored = localstore
-                .get_federation_journal_entry_by_operation_id(entry.operation_id)
+                .get_federation_journal_entry(
+                    FederationJournalEntryKey::Operation(entry.operation_id),
+                    None,
+                )
                 .await
                 .expect("replayed entry lookup")
                 .expect("replayed entry");
@@ -274,7 +278,10 @@ async fn swap_replayed_after_its_window_is_already_applied_by_its_spent_proofs()
         WindowReplay::AlreadyApplied
     );
     let shares = localstore
-        .get_federation_signature_shares_for_output(entry.operation_id, 0)
+        .get_federation_signature_shares(FederationSignatureShareKey::Output {
+            operation_id: entry.operation_id,
+            output_index: 0,
+        })
         .await
         .expect("swap shares");
     assert_eq!(shares.len(), 1);
