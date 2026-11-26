@@ -481,6 +481,7 @@ impl MintBuilder {
                         max_amount: Some(limits.mint_max),
                         options: Some(MintMethodOptions::Bolt11 {
                             description: bolt11_settings.invoice_description,
+                            max_expiry_seconds: None,
                         }),
                     };
                     self.mint_info.nuts.nut04.methods.push(mint_method_settings);
@@ -513,6 +514,7 @@ impl MintBuilder {
                         max_amount: Some(limits.mint_max),
                         options: Some(MintMethodOptions::Bolt12 {
                             description: bolt12_settings.invoice_description,
+                            max_expiry_seconds: None,
                         }),
                     };
                     self.mint_info.nuts.nut04.methods.push(mint_method_settings);
@@ -1176,7 +1178,10 @@ mod tests {
         assert_eq!(mint_method.max_amount, Some(limits.mint_max));
         assert!(matches!(
             mint_method.options,
-            Some(MintMethodOptions::Bolt11 { description: true })
+            Some(MintMethodOptions::Bolt11 {
+                description: true,
+                ..
+            })
         ));
 
         // Check NUT05 (melt) settings
@@ -1350,7 +1355,10 @@ mod tests {
         assert_eq!(mint_method.max_amount, Some(limits.mint_max));
         assert_eq!(
             mint_method.options,
-            Some(MintMethodOptions::Bolt12 { description: true })
+            Some(MintMethodOptions::Bolt12 {
+                description: true,
+                max_expiry_seconds: None
+            })
         );
 
         // Check NUT05 (melt) settings
