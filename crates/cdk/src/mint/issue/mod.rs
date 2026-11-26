@@ -213,6 +213,7 @@ impl Mint {
     ///
     /// Checks that:
     /// - Minting is enabled for the requested payment method
+    /// - A quote includes a lock key when the unit only has active v3 keysets
     /// - The currency unit is supported
     /// - The amount (if provided) is within the allowed range for the payment method
     ///
@@ -253,6 +254,19 @@ impl Mint {
                     amount,
                 )
             );
+        }
+
+        if mint_quote_request.pubkey().is_none() {
+            let keysets = self.keysets.load();
+            let mut active_versions = keysets
+                .iter()
+                .filter(|keyset| keyset.active && keyset.unit == unit)
+                .map(|keyset| keyset.id.get_version());
+            if active_versions.next() == Some(KeySetVersion::Version02)
+                && active_versions.all(|version| version == KeySetVersion::Version02)
+            {
+                return Err(Error::PubkeyRequired);
+            }
         }
 
         Ok(())
@@ -1292,20 +1306,25 @@ mod batch_mint_tests {
     use crate::mint::{Mint, MintBuilder, MintMeltLimits, MintQuoteRequest};
     use crate::types::{FeeReserve, QuoteTTL};
 
-    struct OnchainTestBackend {
+    struct QuoteTestBackend {
         unit: CurrencyUnit,
         confirmations: u32,
         check_count: Arc<AtomicUsize>,
+        invoice_count: Arc<AtomicUsize>,
     }
 
     #[async_trait]
-    impl MintPayment for OnchainTestBackend {
+    impl MintPayment for QuoteTestBackend {
         type Err = payment::Error;
 
         async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
             Ok(SettingsResponse {
                 unit: self.unit.to_string(),
-                bolt11: None,
+                bolt11: Some(payment::Bolt11Settings {
+                    mpp: false,
+                    amountless: false,
+                    invoice_description: false,
+                }),
                 bolt12: None,
                 onchain: Some(OnchainSettings {
                     confirmations: self.confirmations,
@@ -1318,9 +1337,19 @@ mod batch_mint_tests {
 
         async fn create_incoming_payment_request(
             &self,
-            _options: IncomingPaymentOptions,
+            options: IncomingPaymentOptions,
         ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
-            Err(payment::Error::UnsupportedPaymentOption)
+            let IncomingPaymentOptions::Bolt11(options) = options else {
+                return Err(payment::Error::UnsupportedPaymentOption);
+            };
+            self.invoice_count.fetch_add(1, Ordering::Relaxed);
+            let id = QuoteId::new();
+            Ok(CreateIncomingPaymentResponse {
+                request: format!("test-invoice-{id}"),
+                request_lookup_id: PaymentIdentifier::QuoteId(id),
+                expiry: options.unix_expiry,
+                extra_json: None,
+            })
         }
 
         async fn get_payment_quote(
@@ -1396,6 +1425,72 @@ mod batch_mint_tests {
             v3_output_request(&[v3, v2]),
             Err(Error::MixedOutputVersions)
         ));
+    }
+
+    #[tokio::test]
+    async fn mint_quote_requires_pubkey_only_for_active_v3_unit() {
+        use cdk_common::error::ErrorResponse;
+        use cdk_common::nuts::{KeySetVersion, SecretKey};
+
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+        let mut builder =
+            MintBuilder::new(db.clone()).with_pubkey(SecretKey::generate().public_key());
+        let invoice_count = Arc::<AtomicUsize>::default();
+        for unit in [CurrencyUnit::Sat, CurrencyUnit::Msat] {
+            let backend = QuoteTestBackend {
+                unit: unit.clone(),
+                confirmations: 1,
+                check_count: Arc::default(),
+                invoice_count: invoice_count.clone(),
+            };
+            builder
+                .add_payment_processor(
+                    unit,
+                    PaymentMethod::Known(KnownMethod::Bolt11),
+                    MintMeltLimits::new(1, 10_000),
+                    Arc::new(backend),
+                )
+                .await
+                .unwrap();
+        }
+        let mint = builder.build_with_seed(db, &[42; 64]).await.unwrap();
+        mint.rotate_keyset_by_version(
+            CurrencyUnit::Sat,
+            vec![1, 2, 4, 8],
+            0,
+            KeySetVersion::Version02,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let request = |unit, pubkey| {
+            MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
+                amount: 8.into(),
+                unit,
+                description: None,
+                pubkey,
+            })
+        };
+        let err = mint
+            .get_mint_quote(request(CurrencyUnit::Sat, None))
+            .await
+            .unwrap_err();
+        assert_eq!(ErrorResponse::from(err).code.to_code(), 20009);
+        assert_eq!(invoice_count.load(Ordering::Relaxed), 0);
+        assert!(mint.mint_quotes().await.unwrap().is_empty());
+
+        mint.get_mint_quote(request(
+            CurrencyUnit::Sat,
+            Some(SecretKey::generate().public_key()),
+        ))
+        .await
+        .unwrap();
+        mint.get_mint_quote(request(CurrencyUnit::Msat, None))
+            .await
+            .unwrap();
+        assert_eq!(invoice_count.load(Ordering::Relaxed), 2);
+        assert_eq!(mint.mint_quotes().await.unwrap().len(), 2);
     }
 
     #[tokio::test]
@@ -1476,10 +1571,11 @@ mod batch_mint_tests {
             .unwrap();
 
         let onchain_check_count = Arc::new(AtomicUsize::new(0));
-        let onchain_backend = OnchainTestBackend {
+        let onchain_backend = QuoteTestBackend {
             unit: CurrencyUnit::Sat,
             confirmations: 1,
             check_count: onchain_check_count.clone(),
+            invoice_count: Arc::default(),
         };
 
         mint_builder
