@@ -143,6 +143,7 @@ async fn settled_mint_quote<C: MintConnector>(conn: &C, amount: Amount) -> Strin
             unit: CurrencyUnit::Sat,
             description: None,
             pubkey: None,
+            expiry_seconds: None,
         }))
         .await
         .expect("mint quote");
