@@ -2024,16 +2024,17 @@ macro_rules! wallet_db_test {
         );
     };
     ($make_db_fn:ident, $($name:ident),+ $(,)?) => {
-        ::paste::paste! {
+        /// Generated wallet database conformance tests
+        mod wallet_db_tests {
             $(
                 #[tokio::test]
-                async fn [<wallet_ $name>]() {
+                async fn $name() {
                     use std::time::{SystemTime, UNIX_EPOCH};
                     let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .expect("Time went backwards");
 
-                    cdk_common::database::wallet::test::$name($make_db_fn(format!("test_{}_{}", now.as_nanos(), stringify!($name))).await).await;
+                    cdk_common::database::wallet::test::$name(super::$make_db_fn(format!("test_{}_{}", now.as_nanos(), stringify!($name))).await).await;
                 }
             )+
         }
