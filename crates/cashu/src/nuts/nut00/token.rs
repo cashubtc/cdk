@@ -11,11 +11,13 @@ use bitcoin::base64::{alphabet, Engine as _};
 use bitcoin::hashes::sha256;
 use serde::{Deserialize, Serialize};
 
-use super::{Error, Proof, ProofV3, ProofV4, Proofs};
+use super::{deserialize_v4_pubkey_option, Error, Proof, ProofV3, ProofV4, Proofs, Witness};
 use crate::mint_url::MintUrl;
 use crate::nut02::ShortKeysetId;
 use crate::nuts::nut10::SpendingConditions;
-use crate::nuts::{CurrencyUnit, Id, Kind, PublicKey};
+use crate::nuts::nut12::ProofDleq;
+use crate::nuts::{CurrencyUnit, DhkePoint, Id, Kind, PublicKey};
+use crate::secret::Secret;
 use crate::{ensure_cdk, Amount, KeySetInfo};
 
 /// Token Enum
@@ -598,28 +600,60 @@ impl<'de> Deserialize<'de> for TokenV4Token {
     where
         D: serde::Deserializer<'de>,
     {
+        /// A V4 proof with `c` still encoded. The proof does not carry its
+        /// keyset id, so `c` is decoded once the token's keyset version, and
+        /// with it the curve, is known.
+        #[derive(Deserialize)]
+        struct EncodedProofV4 {
+            #[serde(rename = "a")]
+            amount: Amount,
+            #[serde(rename = "s")]
+            secret: Secret,
+            c: Vec<u8>,
+            #[serde(rename = "w", alias = "witness", default)]
+            witness: Option<Witness>,
+            #[serde(rename = "d", default)]
+            dleq: Option<ProofDleq>,
+            #[serde(
+                rename = "pe",
+                default,
+                deserialize_with = "deserialize_v4_pubkey_option"
+            )]
+            p2pk_e: Option<PublicKey>,
+        }
+
         #[derive(Deserialize)]
         struct EncodedTokenV4Token {
             #[serde(rename = "i", deserialize_with = "deserialize_v4_keyset_id")]
             keyset_id: ShortKeysetId,
             #[serde(rename = "p")]
-            proofs: Vec<ProofV4>,
+            proofs: Vec<EncodedProofV4>,
         }
 
         let encoded = EncodedTokenV4Token::deserialize(deserializer)?;
         let version = encoded.keyset_id.get_version();
-        if encoded
+        let proofs = encoded
             .proofs
-            .iter()
-            .any(|proof| !proof.c.is_for_version(version))
-        {
-            return Err(serde::de::Error::custom(format!(
-                "proof signature is not on the curve for keyset version {version}"
-            )));
-        }
+            .into_iter()
+            .map(|proof| {
+                let c = DhkePoint::from_slice_for_version(&proof.c, version).map_err(|err| {
+                    serde::de::Error::custom(format!(
+                        "invalid proof signature for keyset version {version}: {err}"
+                    ))
+                })?;
+                Ok(ProofV4 {
+                    amount: proof.amount,
+                    secret: proof.secret,
+                    c,
+                    witness: proof.witness,
+                    dleq: proof.dleq,
+                    p2pk_e: proof.p2pk_e,
+                })
+            })
+            .collect::<Result<Vec<_>, D::Error>>()?;
         Ok(Self {
             keyset_id: encoded.keyset_id,
-            proofs: encoded.proofs,
+            proofs,
         })
     }
 }
@@ -1624,5 +1658,39 @@ mod tests {
         roundtrip(v3_id, bls).expect("BLS point on a v3 keyset");
         assert!(roundtrip(legacy_id, bls).is_err());
         assert!(roundtrip(v3_id, secp).is_err());
+    }
+
+    #[test]
+    fn token_v4_rejects_uncompressed_secp256k1_signatures() {
+        use ciborium::Value;
+
+        let key = crate::nuts::SecretKey::generate().public_key();
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let token_with_c = |c: Vec<u8>| {
+            let token = Value::Map(vec![
+                (
+                    Value::Text("i".to_string()),
+                    Value::Bytes(keyset_id.to_bytes()),
+                ),
+                (
+                    Value::Text("p".to_string()),
+                    Value::Array(vec![Value::Map(vec![
+                        (Value::Text("a".to_string()), Value::Integer(1.into())),
+                        (
+                            Value::Text("s".to_string()),
+                            Value::Text(Secret::generate().to_string()),
+                        ),
+                        (Value::Text("c".to_string()), Value::Bytes(c)),
+                    ])]),
+                ),
+            ]);
+            let mut cbor = Vec::new();
+            ciborium::into_writer(&token, &mut cbor).expect("encode");
+            ciborium::from_reader::<TokenV4Token, _>(cbor.as_slice())
+        };
+
+        let decoded = token_with_c(key.to_bytes().to_vec()).expect("compressed signature");
+        assert_eq!(decoded.proofs[0].c, key.into());
+        assert!(token_with_c(key.to_uncompressed_bytes().to_vec()).is_err());
     }
 }

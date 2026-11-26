@@ -273,8 +273,9 @@ pub fn verify_message(
 /// The secret key lets the mint check `C == a·Y` directly, without DLEQ
 /// proofs or pairings. This function ignores any DLEQ proof attached to the
 /// proof: a legacy DLEQ carries nothing the mint needs, and the mint refuses a
-/// v3 input that carries one (NUT-00) in `Mint::verify_inputs`, before it
-/// reaches this check.
+/// v3 proof that carries one (NUT-00) before it reaches this check, in
+/// `Mint::verify_inputs` for inputs and `Mint::verify_blind_auth` for blind
+/// auth tokens.
 pub fn verify_proof_with_mint_key(
     proof: &Proof,
     mint_secret_key: &MintSecretKey,

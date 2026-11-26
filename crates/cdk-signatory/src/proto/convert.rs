@@ -541,7 +541,7 @@ mod tests {
         let current = (Constants::SchemaVersion as i32).to_string();
         let expected = Box::leak(current.clone().into_boxed_str());
         let check = create_version_check_interceptor(VERSION_SIGNATORY_HEADER, expected);
-        for version in ["1", "2"] {
+        for version in ["1", "2", "3"] {
             let request = VersionInterceptor::new(VERSION_SIGNATORY_HEADER, version)
                 .call(tonic::Request::new(()))
                 .unwrap();

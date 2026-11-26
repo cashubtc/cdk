@@ -733,7 +733,7 @@ fn default_input_fee_ppk() -> u64 {
 /// fn assert_serialize<T: serde::Serialize>() {}
 /// assert_serialize::<cashu::nuts::nut02::MintKeySet>();
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MintKeySet {
     /// Keyset [`Id`]
     pub id: Id,
@@ -742,7 +742,6 @@ pub struct MintKeySet {
     /// Keyset [`MintKeys`]
     pub keys: MintKeys,
     /// Input Fee PPK
-    #[serde(default)]
     pub input_fee_ppk: u64,
     /// Expiry [`Option<u64>`]
     pub final_expiry: Option<u64>,

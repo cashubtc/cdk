@@ -738,8 +738,9 @@ fn deserialize_v4_pubkey<'de, D>(deserializer: D) -> Result<DhkePoint, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    // A V4 proof does not carry its keyset id; `TokenV4Token` checks the curve
-    // against the token's keyset version once the whole token is decoded.
+    // A V4 proof decoded on its own has no keyset id to select the curve.
+    // `TokenV4Token` does not use this path: it decodes `c` with the token's
+    // keyset version.
     let bytes = Vec::<u8>::deserialize(deserializer)?;
     DhkePoint::from_slice_any_curve(&bytes).map_err(serde::de::Error::custom)
 }

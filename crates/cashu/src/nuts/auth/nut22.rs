@@ -159,6 +159,7 @@ pub struct AuthProof {
     #[serde(rename = "C")]
     pub c: DhkePoint,
     /// Auth Proof Dleq
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub dleq: Option<ProofDleq>,
 }
 
@@ -315,6 +316,12 @@ mod tests {
             c: secret_key.public_key().into(),
             dleq: None,
         }
+    }
+
+    #[test]
+    fn auth_proof_without_dleq_omits_the_field() {
+        let json = serde_json::to_value(test_auth_proof()).expect("serialize");
+        assert!(json.get("dleq").is_none());
     }
 
     #[test]

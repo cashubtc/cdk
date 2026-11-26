@@ -4,7 +4,7 @@ use core::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use super::{BlsG1PublicKey, DhkePoint, Error, PublicKey};
+use super::{bls, BlsG1PublicKey, DhkePoint, Error, PublicKey};
 
 const SECP256K1_POINT_SIZE: usize = 33;
 const BLS_G1_POINT_SIZE: usize = 48;
@@ -49,11 +49,19 @@ impl ProofId {
     }
 
     /// Parse a hexadecimal proof identifier without curve validation.
+    ///
+    /// A BLS12-381 identifier must be lowercase hex (NUT-00).
     pub fn from_hex<S>(hex: S) -> Result<Self, Error>
     where
         S: AsRef<str>,
     {
-        Self::from_slice(&crate::util::hex::decode(hex.as_ref())?)
+        let hex = hex.as_ref();
+        let bytes = if hex.len() == BLS_G1_POINT_SIZE * 2 {
+            bls::decode_point_hex(hex)?
+        } else {
+            crate::util::hex::decode(hex)?
+        };
+        Self::from_slice(&bytes)
     }
 
     /// Return the compressed identifier bytes.
@@ -163,5 +171,22 @@ mod tests {
         assert!(ProofId::from_slice(&invalid_bls_point).is_ok());
         assert!(DhkePoint::from_slice_any_curve(&invalid_secp_point).is_err());
         assert!(DhkePoint::from_slice_any_curve(&invalid_bls_point).is_err());
+    }
+
+    #[test]
+    fn from_hex_requires_lowercase_bls_identifiers() {
+        let bls_hex = "ab".repeat(BLS_G1_POINT_SIZE);
+        let secp_hex = "ab".repeat(SECP256K1_POINT_SIZE);
+
+        assert!(ProofId::from_hex(&bls_hex).is_ok());
+        assert!(ProofId::from_hex(bls_hex.to_uppercase()).is_err());
+        assert!(
+            serde_json::from_str::<ProofId>(&format!("\"{}\"", bls_hex.to_uppercase())).is_err()
+        );
+        // secp256k1 identifiers stay case-insensitive.
+        assert_eq!(
+            ProofId::from_hex(secp_hex.to_uppercase()).expect("uppercase secp256k1"),
+            ProofId::from_hex(&secp_hex).expect("lowercase secp256k1"),
+        );
     }
 }

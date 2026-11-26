@@ -193,7 +193,7 @@ pub struct KeysResponse {
 /// fn assert_serialize<T: serde::Serialize>() {}
 /// assert_serialize::<cashu::nuts::nut01::MintKeys>();
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MintKeys(BTreeMap<Amount, MintKeyPair>);
 
 impl Deref for MintKeys {
@@ -227,7 +227,7 @@ impl MintKeys {
 /// fn assert_serialize<T: serde::Serialize>() {}
 /// assert_serialize::<cashu::nuts::nut01::MintKeyPair>();
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MintKeyPair {
     /// Publickey
     pub public_key: MintPublicKey,

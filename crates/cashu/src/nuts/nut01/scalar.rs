@@ -254,17 +254,6 @@ impl Serialize for MintSecretKey {
     }
 }
 
-/// Deserializes a secp256k1 scalar only.
-///
-/// The encoding has no curve tag, and the only deserialized scalars are
-/// legacy ones (NUT-12 DLEQ blinding factors), so a BLS scalar must be
-/// rebuilt with [`Self::bls_from_slice`] using its keyset version.
-impl<'de> Deserialize<'de> for MintSecretKey {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(Self::Secp256k1(SecretKey::deserialize(deserializer)?))
-    }
-}
-
 /// Serialize scalar bytes the way [`SecretKey`] does: hex in human-readable
 /// formats and raw bytes otherwise.
 ///
@@ -305,15 +294,11 @@ mod tests {
     }
 
     #[test]
-    fn scalars_deserialize_as_secp256k1() {
+    fn blinding_factors_deserialize_as_secp256k1() {
         let json = format!("\"{}\"", "07".repeat(32));
         assert!(matches!(
             serde_json::from_str::<BlindingFactor>(&json).unwrap(),
             BlindingFactor::Secp256k1(_)
-        ));
-        assert!(matches!(
-            serde_json::from_str::<MintSecretKey>(&json).unwrap(),
-            MintSecretKey::Secp256k1(_)
         ));
 
         // The removed curve-tagged encodings are no longer accepted.
