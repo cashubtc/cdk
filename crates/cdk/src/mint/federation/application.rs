@@ -1,3 +1,46 @@
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::str::FromStr;
+use std::sync::{Arc, Mutex, OnceLock, Weak};
+
+#[cfg(feature = "federation-bark")]
+use cdk_common::bitcoin::hashes::{sha256, Hash};
+use cdk_common::database;
+use cdk_common::database::mint::{
+    FederationCheckpointSelector, FederationJournalEntryKey, FederationPaymentObservationSelection,
+    FederationSignatureShareKey,
+};
+use cdk_common::error::Error;
+use cdk_common::federation::{
+    FederatedKeyset, FederationAddressAllocationScope, FederationAddressAllocationState,
+    FederationAddressKeychain, FederationApplicationState, FederationBlindSignatureShareSet,
+    FederationError, FederationJournalEntry, FederationKeysetRotationOperation,
+    FederationMaterializedStateKey, FederationMaterializedStateKind, FederationMeltOperation,
+    FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation, FederationMintOperation,
+    FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
+    FederationOnchainMeltPaymentReceipt, FederationOperation, FederationOperationConflictKey,
+    FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
+    FederationPaymentObservationContext, FederationPaymentObservationRecord,
+    FederationPaymentObservationReport, FederationSignatureShareRecord, FederationStoredState,
+    FederationSwapOperation, FederationTransactionState, MemberId,
+};
+use cdk_common::mint::{
+    MeltQuote, MeltSagaState, MintQuote, Operation, OperationKind, SagaStateEnum,
+};
+use cdk_common::payment::PaymentIdentifier;
+use cdk_common::{
+    Amount, BlindSignature, BlindedMessage, CurrencyUnit, MeltRequest, MintQuoteBolt11Response,
+    MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteOnchainResponse, MintQuoteRequest,
+    MintQuoteResponse, MintQuoteState, MintResponse, NotificationPayload, Proofs, ProofsMethods,
+    PublicKey, QuoteId, SpendingConditionVerification, State, SwapRequest, SwapResponse,
+};
+#[cfg(feature = "federation-bark")]
+use cdk_federation_bark::{
+    FederationBarkCpfpPackageSet, FederationBarkCpfpPublication, FederationBarkOperation,
+    FederationBarkRecoveryState, FederationBarkSemanticPhase,
+};
+use futures::future::BoxFuture;
+
 use super::configuration_and_admission::{
     FederationProofVerificationContext, FederationRuntimeConfig,
     FEDERATION_EXTERNAL_ACTION_ACTOR_LEASE_ITEMS,
@@ -20,50 +63,233 @@ use crate::mint::melt::ensure_melt_quote_matches_request;
 use crate::mint::melt::shared::MeltNotifications;
 use crate::mint::swap::{plan_swap, SwapPlan};
 use crate::mint::verification::{self, Verification};
-use crate::mint::Mint;
-use crate::mint::MintInput;
+use crate::mint::{Mint, MintInput};
 use crate::types::PaymentProcessorKey;
-#[cfg(feature = "federation-bark")]
-use cdk_common::bitcoin::hashes::{sha256, Hash};
-use cdk_common::database;
-use cdk_common::database::mint::{
-    FederationCheckpointSelector, FederationJournalEntryKey, FederationPaymentObservationSelection,
-    FederationSignatureShareKey,
-};
-use cdk_common::error::Error;
-use cdk_common::federation::{
-    FederatedKeyset, FederationAddressAllocationScope, FederationAddressKeychain,
-    FederationApplicationState, FederationError, FederationJournalEntry,
-    FederationKeysetRotationOperation, FederationMaterializedStateKey,
-    FederationMaterializedStateKind, FederationMeltOperation, FederationMeltQuoteOperation,
-    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
-    FederationMintQuotePaymentObservation, FederationOnchainMeltPaymentReceipt,
-    FederationOperation, FederationOperationConflictKey, FederationOperationId,
-    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationPaymentObservationReport,
-    FederationSignatureShareRecord, FederationStoredState, FederationSwapOperation,
-    FederationTransactionState, MemberId,
-};
-use cdk_common::mint::{
-    MeltQuote, MeltSagaState, MintQuote, Operation, OperationKind, SagaStateEnum,
-};
-use cdk_common::payment::PaymentIdentifier;
-use cdk_common::{
-    Amount, BlindSignature, BlindedMessage, CurrencyUnit, MeltRequest, MintQuoteBolt11Response,
-    MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteOnchainResponse, MintQuoteRequest,
-    MintQuoteResponse, MintQuoteState, MintResponse, NotificationPayload, Proofs, PublicKey,
-    QuoteId, State, SwapRequest, SwapResponse,
-};
-use cdk_common::{ProofsMethods, SpendingConditionVerification};
-#[cfg(feature = "federation-bark")]
-use cdk_federation_bark::{
-    FederationBarkCpfpPackageSet, FederationBarkCpfpPublication, FederationBarkOperation,
-    FederationBarkRecoveryState, FederationBarkSemanticPhase,
-};
-use futures::future::BoxFuture;
-use std::collections::{HashMap, HashSet};
-use std::str::FromStr;
-use std::sync::Arc;
+
+const FEDERATION_SIGNATURE_SHARE_CACHE_CAPACITY: usize = 4096;
+
+type BatchApplyOutcome = (FederationOperationId, bool, FederationApplicationState);
+type BatchApplyFuture<'a> = BoxFuture<'a, Result<Vec<BatchApplyOutcome>, Error>>;
+
+struct CachedSignatureShares {
+    db: Weak<dyn database::MintDatabase<database::Error> + Send + Sync>,
+    shares: Vec<FederationSignatureShareRecord>,
+}
+
+#[derive(Default)]
+struct FederationSignatureShareCache {
+    entries: HashMap<(usize, FederationOperationId), CachedSignatureShares>,
+    order: VecDeque<(usize, FederationOperationId)>,
+}
+
+fn federation_signature_share_cache() -> &'static Mutex<FederationSignatureShareCache> {
+    static CACHE: OnceLock<Mutex<FederationSignatureShareCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(FederationSignatureShareCache::default()))
+}
+
+fn db_signature_share_cache_key(
+    db: &database::DynMintDatabase,
+    operation_id: FederationOperationId,
+) -> (usize, FederationOperationId) {
+    (Arc::as_ptr(db) as *const () as usize, operation_id)
+}
+
+fn cache_committed_signature_shares(
+    db: &database::DynMintDatabase,
+    operation_id: FederationOperationId,
+    shares: Vec<FederationSignatureShareRecord>,
+) {
+    if shares.is_empty() {
+        return;
+    }
+    let key = db_signature_share_cache_key(db, operation_id);
+    let mut cache = match federation_signature_share_cache().lock() {
+        Ok(cache) => cache,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let cached = CachedSignatureShares {
+        db: Arc::downgrade(db),
+        shares,
+    };
+    if let Entry::Occupied(mut entry) = cache.entries.entry(key) {
+        entry.insert(cached);
+        return;
+    }
+    while cache.entries.len() >= FEDERATION_SIGNATURE_SHARE_CACHE_CAPACITY {
+        match cache.order.pop_front() {
+            Some(evicted) => {
+                cache.entries.remove(&evicted);
+            }
+            None => break,
+        }
+    }
+    cache.entries.insert(key, cached);
+    cache.order.push_back(key);
+}
+
+fn cached_committed_signature_shares(
+    db: &database::DynMintDatabase,
+    operation_id: FederationOperationId,
+) -> Option<Vec<FederationSignatureShareRecord>> {
+    let key = db_signature_share_cache_key(db, operation_id);
+    let mut cache = match federation_signature_share_cache().lock() {
+        Ok(cache) => cache,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let matches = cache
+        .entries
+        .get(&key)
+        .and_then(|entry| entry.db.upgrade().map(|live| Arc::ptr_eq(&live, db)))
+        .unwrap_or(false);
+    if matches {
+        cache.entries.get(&key).map(|entry| entry.shares.clone())
+    } else {
+        cache.entries.remove(&key);
+        None
+    }
+}
+
+fn match_signature_shares_for_outputs(
+    operation_id: FederationOperationId,
+    member_id: MemberId,
+    outputs: &[BlindedMessage],
+    shares: Vec<FederationSignatureShareRecord>,
+) -> Result<Vec<BlindSignature>, Error> {
+    let mut by_output_index: HashMap<u32, FederationSignatureShareRecord> =
+        HashMap::with_capacity(outputs.len());
+    for share in shares {
+        if share.member_id == member_id {
+            by_output_index.entry(share.output_index).or_insert(share);
+        }
+    }
+    let mut signatures = Vec::with_capacity(outputs.len());
+    for (index, output) in outputs.iter().enumerate() {
+        let output_index = u32::try_from(index)
+            .map_err(|_| Error::Custom("federation output index overflow".to_string()))?;
+        let share = by_output_index
+            .remove(&output_index)
+            .filter(|share| {
+                share.member_id == member_id
+                    && share.output_index == output_index
+                    && share.blinded_secret == output.blinded_secret
+                    && share.keyset_id == output.keyset_id
+                    && share.amount == output.amount
+            })
+            .ok_or_else(|| {
+                Error::Custom(format!(
+                    "missing persisted federation signature share for operation {operation_id} output {output_index}"
+                ))
+            })?;
+        signatures.push(crate::mint::federation_signature_share_to_blind_signature(
+            share,
+        ));
+    }
+    Ok(signatures)
+}
+
+fn is_retryable_federation_batch_apply_error(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Database(database::Error::Locked | database::Error::ConcurrentUpdate)
+            | Error::ConcurrentUpdate
+    )
+}
+
+fn is_batchable_federation_operation(operation: &FederationOperation) -> bool {
+    matches!(
+        operation,
+        FederationOperation::Swap(_)
+            | FederationOperation::Mint(_)
+            | FederationOperation::MintQuote(_)
+            | FederationOperation::MintQuotePayment(_)
+            | FederationOperation::MeltQuote(_)
+            | FederationOperation::MeltQuotePayment(_)
+    )
+}
+
+enum BatchPostCommitNotification {
+    ProofsSpent(Vec<PublicKey>),
+    MintQuoteCreated(MintQuote),
+    MintQuotePayment(MintQuote, Amount<CurrencyUnit>),
+    MintQuoteIssue(MintQuote, Amount<CurrencyUnit>),
+    Melt(MeltNotifications),
+}
+
+impl BatchPostCommitNotification {
+    fn publish(self, mint: &Mint) {
+        match self {
+            Self::ProofsSpent(ys) => {
+                for y in ys {
+                    mint.pubsub_manager.proof_state((y, State::Spent));
+                }
+            }
+            Self::MintQuoteCreated(quote) => {
+                if let Err(err) = mint.publish_federation_mint_quote_created(&quote) {
+                    tracing::warn!(
+                        quote_id = %quote.id,
+                        "Could not publish federation mint quote creation notification: {err}"
+                    );
+                }
+            }
+            Self::MintQuotePayment(quote, amount_paid) => {
+                mint.pubsub_manager.mint_quote_payment(&quote, amount_paid);
+            }
+            Self::MintQuoteIssue(quote, amount_issued) => {
+                mint.pubsub_manager.mint_quote_issue(&quote, amount_issued);
+            }
+            Self::Melt(notifications) => {
+                notifications.publish(&mint.pubsub_manager);
+            }
+        }
+    }
+}
+
+enum BatchEntryError {
+    NeedsSingleOpFallback,
+    Apply(Error),
+}
+
+impl From<Error> for BatchEntryError {
+    fn from(error: Error) -> Self {
+        Self::Apply(error)
+    }
+}
+
+impl From<database::Error> for BatchEntryError {
+    fn from(error: database::Error) -> Self {
+        Self::Apply(Error::from(error))
+    }
+}
+
+impl From<FederationError> for BatchEntryError {
+    fn from(error: FederationError) -> Self {
+        Self::Apply(Error::from(error))
+    }
+}
+
+struct PreparedBatchSwap {
+    swap_plan: SwapPlan,
+    input_ys: Vec<PublicKey>,
+    blinded_secrets: Vec<PublicKey>,
+    pre_signed_shares: Option<Result<FederationBlindSignatureShareSet, Error>>,
+}
+
+struct PreparedBatchMint {
+    input: MintInput,
+    outputs_amount: Amount<CurrencyUnit>,
+    blinded_secrets: Vec<PublicKey>,
+    quote_ids: Vec<QuoteId>,
+    pre_signed_shares: Option<Result<FederationBlindSignatureShareSet, Error>>,
+}
+
+enum PreparedBatchEntry {
+    Swap(Result<PreparedBatchSwap, Error>),
+    Mint(Result<PreparedBatchMint, Error>),
+    MintQuote(Result<MintQuote, Error>),
+    MintQuotePayment(Result<(QuoteId, FederationPaymentObservationRecord), Error>),
+    MeltQuote(Result<MeltQuote, Error>),
+    MeltQuotePayment(Result<FederationPaymentObservationRecord, Error>),
+}
 
 struct FederationActiveMeltPayment {
     active: std::sync::Arc<std::sync::Mutex<HashSet<QuoteId>>>,
@@ -277,14 +503,20 @@ pub(super) async fn finish_federation_apply_transaction<T>(
     outcome: Result<T, Error>,
 ) -> Result<T, Error> {
     let outcome = match outcome {
-        Ok(value) => transaction
-            .set_federation_operation_application_state(
-                entry.operation_id,
+        Ok(value) => match transaction
+            .record_federation_operation_application_state_deferred(
+                entry,
                 &FederationApplicationState::Applied {},
             )
             .await
-            .map(|()| value)
-            .map_err(Error::from),
+        {
+            Ok(()) => transaction
+                .advance_federation_application_frontier()
+                .await
+                .map(|()| value)
+                .map_err(Error::from),
+            Err(err) => Err(Error::from(err)),
+        },
         Err(error) => Err(error),
     };
 
@@ -1154,34 +1386,18 @@ impl Mint {
             .await?
             .ok_or(Error::Internal)?;
         let member_id = config.member_id();
-        let mut signatures = Vec::with_capacity(outputs.len());
-
-        for (index, output) in outputs.iter().enumerate() {
-            let output_index = u32::try_from(index)
-                .map_err(|_| Error::Custom("federation output index overflow".to_string()))?;
-            let share = self
-                .localstore
-                .get_federation_signature_shares(FederationSignatureShareKey::Output { operation_id, output_index })
-                .await?
-                .into_iter()
-                .find(|share| {
-                    share.member_id == member_id
-                        && share.output_index == output_index
-                        && share.blinded_secret == output.blinded_secret
-                        && share.keyset_id == output.keyset_id
-                        && share.amount == output.amount
-                })
-                .ok_or_else(|| {
-                    Error::Custom(format!(
-                        "missing persisted federation signature share for operation {operation_id} output {output_index}"
-                    ))
-                })?;
-            signatures.push(crate::mint::federation_signature_share_to_blind_signature(
-                share,
-            ));
+        if let Some(cached) = cached_committed_signature_shares(&self.localstore, operation_id) {
+            if let Ok(signatures) =
+                match_signature_shares_for_outputs(operation_id, member_id, outputs, cached)
+            {
+                return Ok(signatures);
+            }
         }
-
-        Ok(signatures)
+        let shares = self
+            .localstore
+            .get_federation_signature_shares(FederationSignatureShareKey::Operation(operation_id))
+            .await?;
+        match_signature_shares_for_outputs(operation_id, member_id, outputs, shares)
     }
 
     /// Return this member's persisted wallet-facing mint share response.
@@ -1304,15 +1520,1107 @@ impl Mint {
         &self,
         entries: &[FederationJournalEntry],
     ) -> Result<Vec<FederationOperationId>, Error> {
-        let mut applied = Vec::new();
+        let outcomes = self
+            .apply_federation_journal_entries_batch(entries, false)
+            .await?;
+        Ok(outcomes
+            .into_iter()
+            .filter_map(|(operation_id, newly_applied, _)| newly_applied.then_some(operation_id))
+            .collect())
+    }
+
+    /// Apply a batch of accepted federation journal entries, coalescing
+    /// contiguous batchable operations into a single database transaction with
+    /// savepoint-isolated deterministic rejections and one frontier update.
+    ///
+    /// Returns `(operation_id, newly_applied, terminal_application_state)` in
+    /// input order. When `record_definitive_rejections` is true, deterministic
+    /// apply rejections are persisted as [`FederationApplicationState::Rejected`]
+    /// inside the same transaction without aborting earlier or later valid
+    /// operations in the unit.
+    pub async fn apply_federation_journal_entries_batch(
+        &self,
+        entries: &[FederationJournalEntry],
+        record_definitive_rejections: bool,
+    ) -> Result<Vec<(FederationOperationId, bool, FederationApplicationState)>, Error> {
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let operation_ids = entries
+            .iter()
+            .map(|entry| entry.operation_id)
+            .collect::<Vec<_>>();
+        let persisted_states = self
+            .localstore
+            .get_federation_journal_application_states(&operation_ids)
+            .await?;
+
+        let mut outcomes = Vec::with_capacity(entries.len());
+        let mut pending_batch: Vec<&FederationJournalEntry> = Vec::new();
 
         for entry in entries {
-            if self.apply_accepted_federation_operation(entry).await? {
-                applied.push(entry.operation_id);
+            let persisted = persisted_states
+                .get(&entry.operation_id)
+                .map(|(_, state)| state);
+            match persisted {
+                Some(
+                    state @ (FederationApplicationState::Applied {}
+                    | FederationApplicationState::Rejected { .. }
+                    | FederationApplicationState::ConsensusRejected {}),
+                ) => {
+                    if !pending_batch.is_empty() {
+                        let segment = std::mem::take(&mut pending_batch);
+                        outcomes.extend(
+                            self.apply_prepared_batch_segment(
+                                &segment,
+                                record_definitive_rejections,
+                            )
+                            .await?,
+                        );
+                    }
+                    if !record_definitive_rejections
+                        && state.status() == FederationOperationStatus::Rejected
+                    {
+                        return Err(Error::Custom(format!(
+                            "federation operation {} has local status {} and is not accepted for apply",
+                            entry.operation_id,
+                            federation_operation_status_label(state.status())
+                        )));
+                    }
+                    outcomes.push((entry.operation_id, false, state.clone()));
+                    continue;
+                }
+                Some(FederationApplicationState::Failed {}) => {
+                    if !pending_batch.is_empty() {
+                        let segment = std::mem::take(&mut pending_batch);
+                        outcomes.extend(
+                            self.apply_prepared_batch_segment(
+                                &segment,
+                                record_definitive_rejections,
+                            )
+                            .await?,
+                        );
+                    }
+                    outcomes.push(
+                        self.apply_single_entry_for_batch(entry, record_definitive_rejections)
+                            .await?,
+                    );
+                    continue;
+                }
+                None | Some(FederationApplicationState::Accepted {}) => {}
+            }
+
+            match entry.status() {
+                FederationOperationStatus::Applied => {
+                    if !pending_batch.is_empty() {
+                        let segment = std::mem::take(&mut pending_batch);
+                        outcomes.extend(
+                            self.apply_prepared_batch_segment(
+                                &segment,
+                                record_definitive_rejections,
+                            )
+                            .await?,
+                        );
+                    }
+                    outcomes.push((entry.operation_id, false, entry.application.clone()));
+                    continue;
+                }
+                FederationOperationStatus::Rejected => {
+                    if !pending_batch.is_empty() {
+                        let segment = std::mem::take(&mut pending_batch);
+                        outcomes.extend(
+                            self.apply_prepared_batch_segment(
+                                &segment,
+                                record_definitive_rejections,
+                            )
+                            .await?,
+                        );
+                    }
+                    if !record_definitive_rejections {
+                        return Err(Error::Custom(format!(
+                            "federation operation {} has local status {} and is not accepted for apply",
+                            entry.operation_id,
+                            federation_operation_status_label(entry.status())
+                        )));
+                    }
+                    outcomes.push((entry.operation_id, false, entry.application.clone()));
+                    continue;
+                }
+                FederationOperationStatus::Failed => {
+                    if !pending_batch.is_empty() {
+                        let segment = std::mem::take(&mut pending_batch);
+                        outcomes.extend(
+                            self.apply_prepared_batch_segment(
+                                &segment,
+                                record_definitive_rejections,
+                            )
+                            .await?,
+                        );
+                    }
+                    if !record_definitive_rejections {
+                        return Err(Error::Custom(format!(
+                            "federation operation {} has local status {} and is not accepted for apply",
+                            entry.operation_id,
+                            federation_operation_status_label(entry.status())
+                        )));
+                    }
+                    outcomes.push(
+                        self.apply_single_entry_for_batch(entry, record_definitive_rejections)
+                            .await?,
+                    );
+                    continue;
+                }
+                FederationOperationStatus::Accepted => {}
+            }
+
+            if is_batchable_federation_operation(&entry.envelope.operation) {
+                pending_batch.push(entry);
+            } else {
+                if !pending_batch.is_empty() {
+                    let segment = std::mem::take(&mut pending_batch);
+                    outcomes.extend(
+                        self.apply_prepared_batch_segment(&segment, record_definitive_rejections)
+                            .await?,
+                    );
+                }
+                outcomes.push(
+                    self.apply_single_entry_for_batch(entry, record_definitive_rejections)
+                        .await?,
+                );
             }
         }
 
-        Ok(applied)
+        if !pending_batch.is_empty() {
+            outcomes.extend(
+                self.apply_prepared_batch_segment(&pending_batch, record_definitive_rejections)
+                    .await?,
+            );
+        }
+
+        Ok(outcomes)
+    }
+
+    async fn apply_single_entry_for_batch(
+        &self,
+        entry: &FederationJournalEntry,
+        record_definitive_rejections: bool,
+    ) -> Result<(FederationOperationId, bool, FederationApplicationState), Error> {
+        let mut replay_entry = entry.clone();
+        if record_definitive_rejections
+            && replay_entry.status() == FederationOperationStatus::Failed
+        {
+            replay_entry.application = FederationApplicationState::Accepted {};
+        }
+        match self
+            .apply_accepted_federation_operation(&replay_entry)
+            .await
+        {
+            Ok(applied) => Ok((
+                entry.operation_id,
+                applied,
+                FederationApplicationState::Applied {},
+            )),
+            Err(err) if !record_definitive_rejections => Err(err),
+            Err(err) if is_retryable_federation_batch_apply_error(&err) => Err(err),
+            Err(err) if super::is_definitive_federation_apply_rejection(&err) => {
+                let rejection = FederationApplicationState::Rejected {
+                    response: cdk_common::error::ErrorResponse::from(err),
+                };
+                let mut tx = self.localstore.begin_transaction().await?;
+                let persist = async {
+                    tx.record_federation_operation_application_state_deferred(entry, &rejection)
+                        .await?;
+                    tx.advance_federation_application_frontier().await
+                }
+                .await;
+                match persist {
+                    Ok(()) => tx.commit().await?,
+                    Err(db_err) => {
+                        tx.rollback().await?;
+                        return Err(db_err.into());
+                    }
+                }
+                Ok((entry.operation_id, false, rejection))
+            }
+            Err(err) => {
+                let mut tx = self.localstore.begin_transaction().await?;
+                let persist = tx
+                    .record_federation_operation_application_state_deferred(
+                        entry,
+                        &FederationApplicationState::Failed {},
+                    )
+                    .await;
+                match persist {
+                    Ok(()) => tx.commit().await?,
+                    Err(db_err) => {
+                        tx.rollback().await?;
+                        return Err(db_err.into());
+                    }
+                }
+                Err(err)
+            }
+        }
+    }
+
+    fn prepare_batch_entry(
+        &self,
+        config: &FederationRuntimeConfig,
+        entry: &FederationJournalEntry,
+    ) -> PreparedBatchEntry {
+        match &entry.envelope.operation {
+            FederationOperation::Swap(operation) => {
+                let prepared = (|| {
+                    let input_proofs = operation.request.inputs();
+                    if input_proofs.is_empty() {
+                        return Err(Error::TransactionUnbalanced(
+                            0,
+                            operation.request.output_amount()?.to_u64(),
+                            0,
+                        ));
+                    }
+                    let input_verification = self
+                        .verify_federation_inputs_with_config_and_context(
+                            config,
+                            entry.operation_id,
+                            input_proofs,
+                            FederationProofVerificationContext::SwapApply,
+                        )?;
+                    operation.request.verify_spending_conditions()?;
+                    // Consensus orders completion but does not attest its wall-clock time.
+                    let swap_plan = plan_swap(
+                        &config.keysets(),
+                        self.max_outputs,
+                        input_verification,
+                        input_proofs,
+                        operation.request.outputs(),
+                        federation_operation_uuid(entry.operation_id),
+                        Some(0),
+                    )?;
+                    let input_ys = input_proofs.ys()?;
+                    let blinded_secrets = operation
+                        .request
+                        .outputs()
+                        .iter()
+                        .map(|output| output.blinded_secret)
+                        .collect::<Vec<PublicKey>>();
+                    Ok(PreparedBatchSwap {
+                        swap_plan,
+                        input_ys,
+                        blinded_secrets,
+                        pre_signed_shares: None,
+                    })
+                })();
+                PreparedBatchEntry::Swap(prepared)
+            }
+            FederationOperation::Mint(operation) => {
+                let prepared = (|| {
+                    let input = mint_input_from_federation_request(&operation.request)?;
+                    input.validate()?;
+                    let output_verification = verification::verify_outputs(
+                        &config.keysets(),
+                        self.max_outputs,
+                        input.outputs(),
+                    )?;
+                    let blinded_secrets = input
+                        .outputs()
+                        .iter()
+                        .map(|output| output.blinded_secret)
+                        .collect::<Vec<PublicKey>>();
+                    let quote_ids = input.quote_ids();
+                    Ok(PreparedBatchMint {
+                        input,
+                        outputs_amount: output_verification.amount,
+                        blinded_secrets,
+                        quote_ids,
+                        pre_signed_shares: None,
+                    })
+                })();
+                PreparedBatchEntry::Mint(prepared)
+            }
+            FederationOperation::MintQuote(operation) => {
+                PreparedBatchEntry::MintQuote(mint_quote_from_federation_operation(operation))
+            }
+            FederationOperation::MintQuotePayment(observation) => {
+                let prepared = (|| {
+                    let quote_id = quote_id_from_federation(&observation.quote)?;
+                    let record = payment_observation_record_from_entry(entry)?;
+                    Ok((quote_id, record))
+                })();
+                PreparedBatchEntry::MintQuotePayment(prepared)
+            }
+            FederationOperation::MeltQuote(operation) => {
+                let prepared = (|| {
+                    let quote_id = quote_id_from_federation(&operation.quote)?;
+                    let quote = operation.into_melt_quote(quote_id)?;
+                    ensure_melt_quote_matches_request(&quote, &operation.request)?;
+                    Ok(quote)
+                })();
+                PreparedBatchEntry::MeltQuote(prepared)
+            }
+            FederationOperation::MeltQuotePayment(_) => {
+                PreparedBatchEntry::MeltQuotePayment(payment_observation_record_from_entry(entry))
+            }
+            _ => unreachable!("non-batchable federation operation routed to batch segment"),
+        }
+    }
+
+    async fn federation_history_start(&self) -> Result<Option<u64>, Error> {
+        let transfer_base = self
+            .localstore
+            .get_federation_checkpoint(FederationCheckpointSelector::StateTransferBase)
+            .await?
+            .map(|base| base.journal_next_index);
+        let retention_floor = self
+            .localstore
+            .get_federation_retention_floor()
+            .await?
+            .map(|floor| floor.journal_start);
+        Ok(transfer_base.max(retention_floor))
+    }
+
+    fn apply_prepared_batch_segment<'a>(
+        &'a self,
+        entries: &'a [&'a FederationJournalEntry],
+        record_definitive_rejections: bool,
+    ) -> BatchApplyFuture<'a> {
+        Box::pin(async move {
+            if entries.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let config = self
+                .effective_federation_config()
+                .await?
+                .ok_or(Error::Internal)?;
+            let needs_history_start = entries.iter().any(|entry| {
+                matches!(
+                    entry.envelope.operation,
+                    FederationOperation::Mint(_)
+                        | FederationOperation::MintQuote(_)
+                        | FederationOperation::MintQuotePayment(_)
+                )
+            });
+            let history_start = if needs_history_start {
+                self.federation_history_start().await?
+            } else {
+                None
+            };
+
+            // Run pure CPU verification & planning before acquiring the DB
+            // write transaction so SQLite's write_gate is never held during BLS
+            // proof verification or output checks.
+            let mut prepared_entries = entries
+                .iter()
+                .map(|entry| Some(self.prepare_batch_entry(&config, entry)))
+                .collect::<Vec<_>>();
+
+            // Pre-sign valid Swap and Mint outputs off the async worker threads
+            // and outside the DB write transaction. Shares for entries that
+            // later fail stateful DB checks are dropped without persistence.
+            let mut signing_indices = Vec::new();
+            let mut signing_requests = Vec::new();
+            for (idx, (entry, prepared)) in entries.iter().zip(&prepared_entries).enumerate() {
+                match (&entry.envelope.operation, prepared.as_ref()) {
+                    (
+                        FederationOperation::Swap(operation),
+                        Some(PreparedBatchEntry::Swap(Ok(_))),
+                    ) => {
+                        signing_indices.push(idx);
+                        signing_requests.push((
+                            (*entry).clone(),
+                            operation.request.outputs().to_vec(),
+                            "swap",
+                        ));
+                    }
+                    (
+                        FederationOperation::Mint(_),
+                        Some(PreparedBatchEntry::Mint(Ok(prepared_mint))),
+                    ) => {
+                        signing_indices.push(idx);
+                        signing_requests.push((
+                            (*entry).clone(),
+                            prepared_mint.input.outputs().to_vec(),
+                            "mint",
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            if !signing_requests.is_empty() {
+                let signed_results = config.batch_sign_accepted_outputs(signing_requests).await?;
+                for (idx, signed_result) in signing_indices.into_iter().zip(signed_results) {
+                    match prepared_entries[idx].as_mut() {
+                        Some(PreparedBatchEntry::Swap(Ok(prepared_swap))) => {
+                            prepared_swap.pre_signed_shares = Some(signed_result);
+                        }
+                        Some(PreparedBatchEntry::Mint(Ok(prepared_mint))) => {
+                            prepared_mint.pre_signed_shares = Some(signed_result);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            let mut results = Vec::with_capacity(entries.len());
+            let mut offset = 0usize;
+
+            const FEDERATION_BATCH_APPLY_SAVEPOINT: &str = "fed_apply_entry";
+
+            while offset < entries.len() {
+                let mut tx = self.localstore.begin_transaction().await?;
+                let mut tx_results = Vec::with_capacity(entries.len() - offset);
+                let mut tx_notifications = Vec::new();
+                let mut tx_shares = Vec::new();
+                let mut fallback_index: Option<usize> = None;
+
+                for idx in offset..entries.len() {
+                    let entry = entries[idx];
+                    let Some(prepared) = prepared_entries[idx].take() else {
+                        let _ = tx.rollback().await;
+                        return Err(Error::Internal);
+                    };
+                    if let Err(sp_err) = tx
+                        .begin_federation_apply_savepoint(FEDERATION_BATCH_APPLY_SAVEPOINT)
+                        .await
+                    {
+                        let _ = tx.rollback().await;
+                        return Err(sp_err.into());
+                    }
+
+                    let outcome = self
+                        .apply_prepared_batch_entry_in_tx(
+                            &mut tx,
+                            &config,
+                            entry,
+                            prepared,
+                            history_start,
+                        )
+                        .await;
+
+                    match outcome {
+                        Ok((entry_notifications, entry_shares)) => {
+                            let mark_result = tx
+                                .record_federation_operation_application_state_deferred(
+                                    entry,
+                                    &FederationApplicationState::Applied {},
+                                )
+                                .await;
+                            match mark_result {
+                                Ok(()) => {
+                                    if let Err(rel_err) = tx
+                                        .release_federation_apply_savepoint(
+                                            FEDERATION_BATCH_APPLY_SAVEPOINT,
+                                        )
+                                        .await
+                                    {
+                                        let _ = tx.rollback().await;
+                                        return Err(rel_err.into());
+                                    }
+                                    tx_results.push((
+                                        entry.operation_id,
+                                        true,
+                                        FederationApplicationState::Applied {},
+                                    ));
+                                    tx_notifications.extend(entry_notifications);
+                                    if !entry_shares.is_empty() {
+                                        tx_shares.push((entry.operation_id, entry_shares));
+                                    }
+                                }
+                                Err(db_err) => {
+                                    let _ = tx.rollback().await;
+                                    return Err(db_err.into());
+                                }
+                            }
+                        }
+                        Err(BatchEntryError::NeedsSingleOpFallback) => {
+                            if let Err(rb_err) = tx
+                                .rollback_federation_apply_savepoint(
+                                    FEDERATION_BATCH_APPLY_SAVEPOINT,
+                                )
+                                .await
+                            {
+                                let _ = tx.rollback().await;
+                                return Err(rb_err.into());
+                            }
+                            fallback_index = Some(idx);
+                            break;
+                        }
+                        Err(BatchEntryError::Apply(err))
+                            if is_retryable_federation_batch_apply_error(&err) =>
+                        {
+                            let _ = tx.rollback().await;
+                            return Err(err);
+                        }
+                        Err(BatchEntryError::Apply(err))
+                            if record_definitive_rejections
+                                && super::is_definitive_federation_apply_rejection(&err) =>
+                        {
+                            if let Err(rb_err) = tx
+                                .rollback_federation_apply_savepoint(
+                                    FEDERATION_BATCH_APPLY_SAVEPOINT,
+                                )
+                                .await
+                            {
+                                let _ = tx.rollback().await;
+                                return Err(rb_err.into());
+                            }
+                            let rejection = FederationApplicationState::Rejected {
+                                response: cdk_common::error::ErrorResponse::from(err),
+                            };
+                            if let Err(mark_err) = tx
+                                .record_federation_operation_application_state_deferred(
+                                    entry, &rejection,
+                                )
+                                .await
+                            {
+                                let _ = tx.rollback().await;
+                                return Err(mark_err.into());
+                            }
+                            tx_results.push((entry.operation_id, false, rejection));
+                        }
+                        Err(BatchEntryError::Apply(err)) => {
+                            if let Err(rb_err) = tx
+                                .rollback_federation_apply_savepoint(
+                                    FEDERATION_BATCH_APPLY_SAVEPOINT,
+                                )
+                                .await
+                            {
+                                let _ = tx.rollback().await;
+                                return Err(rb_err.into());
+                            }
+                            if record_definitive_rejections {
+                                if let Err(mark_err) = tx
+                                    .record_federation_operation_application_state_deferred(
+                                        entry,
+                                        &FederationApplicationState::Failed {},
+                                    )
+                                    .await
+                                {
+                                    let _ = tx.rollback().await;
+                                    return Err(mark_err.into());
+                                }
+                                if !tx_results.is_empty() {
+                                    if let Err(frontier_err) =
+                                        tx.advance_federation_application_frontier().await
+                                    {
+                                        let _ = tx.rollback().await;
+                                        return Err(frontier_err.into());
+                                    }
+                                }
+                                tx.commit().await?;
+                                for notification in tx_notifications {
+                                    notification.publish(self);
+                                }
+                                for (operation_id, shares) in tx_shares {
+                                    cache_committed_signature_shares(
+                                        &self.localstore,
+                                        operation_id,
+                                        shares,
+                                    );
+                                }
+                            } else if !tx_results.is_empty() {
+                                if let Err(frontier_err) =
+                                    tx.advance_federation_application_frontier().await
+                                {
+                                    let _ = tx.rollback().await;
+                                    return Err(frontier_err.into());
+                                }
+                                tx.commit().await?;
+                                for notification in tx_notifications {
+                                    notification.publish(self);
+                                }
+                                for (operation_id, shares) in tx_shares {
+                                    cache_committed_signature_shares(
+                                        &self.localstore,
+                                        operation_id,
+                                        shares,
+                                    );
+                                }
+                            } else {
+                                tx.rollback().await?;
+                            }
+                            return Err(err);
+                        }
+                    }
+                }
+
+                if !tx_results.is_empty() {
+                    if let Err(frontier_err) = tx.advance_federation_application_frontier().await {
+                        let _ = tx.rollback().await;
+                        return Err(frontier_err.into());
+                    }
+                    tx.commit().await?;
+                    for notification in tx_notifications {
+                        notification.publish(self);
+                    }
+                    for (operation_id, shares) in tx_shares {
+                        cache_committed_signature_shares(&self.localstore, operation_id, shares);
+                    }
+                    results.extend(tx_results);
+                } else {
+                    tx.rollback().await?;
+                }
+
+                match fallback_index {
+                    Some(idx) => {
+                        results.push(
+                            self.apply_single_entry_for_batch(
+                                entries[idx],
+                                record_definitive_rejections,
+                            )
+                            .await?,
+                        );
+                        offset = idx.saturating_add(1);
+                    }
+                    None => break,
+                }
+            }
+
+            Ok(results)
+        })
+    }
+
+    async fn apply_prepared_batch_entry_in_tx(
+        &self,
+        tx: &mut database::mint::DynMintTransaction,
+        config: &FederationRuntimeConfig,
+        entry: &FederationJournalEntry,
+        prepared: PreparedBatchEntry,
+        history_start: Option<u64>,
+    ) -> Result<
+        (
+            Vec<BatchPostCommitNotification>,
+            Vec<FederationSignatureShareRecord>,
+        ),
+        BatchEntryError,
+    > {
+        match (&entry.envelope.operation, prepared) {
+            (FederationOperation::Swap(operation), PreparedBatchEntry::Swap(prepared)) => {
+                let prepared = prepared?;
+                let input_proofs = operation.request.inputs();
+                let mut proofs = match tx
+                    .add_proofs(input_proofs.clone(), None, &prepared.swap_plan.operation)
+                    .await
+                {
+                    Ok(proofs) => proofs,
+                    Err(database::Error::Duplicate | database::Error::AttemptUpdateSpentProof) => {
+                        tx.get_proofs(&prepared.input_ys).await?
+                    }
+                    Err(err) => return Err(err.into()),
+                };
+
+                let existing_signatures =
+                    tx.get_blind_signatures(&prepared.blinded_secrets).await?;
+                let signatures_present = existing_signatures
+                    .iter()
+                    .filter(|sig| sig.is_some())
+                    .count();
+
+                match proofs.state {
+                    State::Unspent if signatures_present == 0 => {}
+                    State::Unspent if signatures_present == existing_signatures.len() => {
+                        return Err(Error::BlindedMessageAlreadySigned.into());
+                    }
+                    State::Unspent => {
+                        return Err(Error::Custom(
+                            "federation swap found partially persisted signatures for fresh inputs"
+                                .to_string(),
+                        )
+                        .into());
+                    }
+                    State::Spent
+                        if signatures_present == existing_signatures.len()
+                            && signatures_present > 0 =>
+                    {
+                        return Err(BatchEntryError::NeedsSingleOpFallback);
+                    }
+                    State::Spent => {
+                        return Err(Error::TokenAlreadySpent.into());
+                    }
+                    State::Pending | State::Reserved | State::PendingSpent => {
+                        return Err(Error::TokenPending.into());
+                    }
+                }
+
+                Mint::update_proofs_state(tx, &mut proofs, State::Spent).await?;
+
+                let mut signature_share_records = Vec::new();
+                if signatures_present == 0 {
+                    let share_set = match prepared.pre_signed_shares {
+                        Some(share_set) => share_set?,
+                        None => config.swap_signature_shares(entry, &operation.request)?,
+                    };
+                    signature_share_records =
+                        FederationSignatureShareRecord::from_accepted_journal_entry(
+                            &share_set, entry,
+                        )?;
+                    let signatures = federation_share_signatures(share_set);
+                    tx.add_federation_signature_shares(&signature_share_records)
+                        .await?;
+                    tx.add_blinded_messages(
+                        None,
+                        operation.request.outputs(),
+                        &prepared.swap_plan.operation,
+                    )
+                    .await?;
+                    tx.add_blind_signatures(&prepared.blinded_secrets, &signatures, None)
+                        .await?;
+                    tx.add_completed_operation(
+                        &prepared.swap_plan.operation,
+                        &prepared.swap_plan.fee_breakdown.per_keyset,
+                    )
+                    .await?;
+                }
+
+                #[cfg(test)]
+                if crate::test_helpers::mint::should_fail_for("FEDERATION_SWAP_APPLY_BEFORE_STATUS")
+                {
+                    return Err(Error::Internal.into());
+                }
+
+                Ok((
+                    vec![BatchPostCommitNotification::ProofsSpent(prepared.input_ys)],
+                    signature_share_records,
+                ))
+            }
+            (FederationOperation::Mint(_), PreparedBatchEntry::Mint(prepared)) => {
+                let prepared = prepared?;
+                for quote_id in &prepared.quote_ids {
+                    Self::require_prior_applied_quote_operation_in_tx(
+                        tx,
+                        FederationOperationConflictKey::MintQuote {
+                            quote: quote_id.to_string(),
+                        },
+                        entry.index,
+                        history_start,
+                    )
+                    .await?;
+                }
+
+                let mut quotes = Vec::with_capacity(prepared.quote_ids.len());
+                for quote_id in &prepared.quote_ids {
+                    quotes.push(
+                        tx.get_mint_quote(quote_id)
+                            .await?
+                            .ok_or(Error::UnknownQuote)?,
+                    );
+                }
+
+                let (payment_method, unit) = crate::mint::issue::uniform_method_and_unit(
+                    quotes.iter().map(|quote| &**quote),
+                )?;
+                if prepared.outputs_amount.unit() != &unit {
+                    return Err(Error::UnsupportedUnit.into());
+                }
+                let expected_amounts = expected_federation_mint_amounts(
+                    &prepared.input,
+                    &quotes,
+                    prepared.outputs_amount.clone(),
+                )?;
+                let total_expected = expected_amounts.iter().try_fold(0_u64, |total, amount| {
+                    total
+                        .checked_add(amount.value())
+                        .ok_or(Error::AmountOverflow)
+                })?;
+                if prepared.outputs_amount.value() != total_expected {
+                    return Err(Error::TransactionUnbalanced(
+                        total_expected,
+                        prepared.outputs_amount.value(),
+                        0,
+                    )
+                    .into());
+                }
+
+                prepared
+                    .input
+                    .verify_quote_signatures(quotes.iter().map(|quote| &**quote))?;
+
+                let existing_signatures =
+                    tx.get_blind_signatures(&prepared.blinded_secrets).await?;
+                let signatures_present = existing_signatures
+                    .iter()
+                    .filter(|sig| sig.is_some())
+                    .count();
+                if signatures_present != 0 && signatures_present != existing_signatures.len() {
+                    return Err(Error::Custom(
+                        "federation mint replay found partially persisted signatures".to_string(),
+                    )
+                    .into());
+                }
+                validate_federation_mint_quote_states_for_signing(
+                    &quotes,
+                    &expected_amounts,
+                    signatures_present,
+                    existing_signatures.len(),
+                )?;
+
+                for (quote, amount_issued) in quotes.iter().zip(&expected_amounts) {
+                    let required_amount = quote
+                        .amount_issued()
+                        .checked_add(amount_issued)
+                        .map_err(|_| Error::AmountOverflow)?;
+                    let observations = tx
+                        .get_federation_payment_observations(
+                            FederationPaymentObservationSelection::Live {
+                                context: FederationPaymentObservationContext::MintQuote,
+                                quote: &quote.id.to_string(),
+                            },
+                        )
+                        .await?
+                        .into_iter()
+                        .map(|observation| observation.record)
+                        .collect::<Vec<_>>();
+                    if !self
+                        .federation_mint_payment_evidence_covers_amount_with_history_start(
+                            tx,
+                            quote,
+                            &required_amount,
+                            &observations,
+                            entry.index,
+                            history_start,
+                        )
+                        .await?
+                    {
+                        return Err(Error::UnpaidQuote.into());
+                    }
+                }
+
+                // Consensus orders completion but does not attest its wall-clock time.
+                let completed_at = Some(0);
+                let operation_record = if prepared.input.is_batch() {
+                    Operation::new(
+                        federation_operation_uuid(entry.operation_id),
+                        OperationKind::BatchMint,
+                        prepared.outputs_amount.clone().into(),
+                        Amount::ZERO,
+                        Amount::ZERO,
+                        completed_at,
+                        Some(payment_method.clone()),
+                    )
+                } else {
+                    Operation::new(
+                        federation_operation_uuid(entry.operation_id),
+                        OperationKind::Mint,
+                        prepared.outputs_amount.clone().into(),
+                        Amount::ZERO,
+                        Amount::ZERO,
+                        completed_at,
+                        Some(payment_method.clone()),
+                    )
+                };
+
+                let share_set = match prepared.pre_signed_shares {
+                    Some(share_set) => share_set?,
+                    None => config.mint_signature_shares(entry, &prepared.input)?,
+                };
+                let signature_share_records =
+                    FederationSignatureShareRecord::from_accepted_journal_entry(&share_set, entry)?;
+                tx.add_federation_signature_shares(&signature_share_records)
+                    .await?;
+                let mut notifications = Vec::new();
+
+                if signatures_present == 0 {
+                    let signatures = federation_share_signatures(share_set);
+                    let quote_id = match prepared.input.is_batch() {
+                        true => None,
+                        false => prepared.quote_ids.first().cloned(),
+                    };
+                    tx.add_blinded_messages(
+                        quote_id.as_ref(),
+                        prepared.input.outputs(),
+                        &operation_record,
+                    )
+                    .await?;
+                    tx.add_blind_signatures(&prepared.blinded_secrets, &signatures, quote_id)
+                        .await?;
+                    let fee_by_keyset = HashMap::new();
+                    tx.add_completed_operation(&operation_record, &fee_by_keyset)
+                        .await?;
+                }
+
+                for (quote, amount_issued) in quotes.iter_mut().zip(expected_amounts) {
+                    match quote.state() {
+                        MintQuoteState::Paid => {
+                            quote.add_issuance(amount_issued)?;
+                            tx.update_mint_quote(quote).await?;
+                            notifications.push(BatchPostCommitNotification::MintQuoteIssue(
+                                (**quote).clone(),
+                                quote.amount_issued(),
+                            ));
+                        }
+                        MintQuoteState::Issued => {
+                            if quote.amount_issued() < amount_issued {
+                                return Err(Error::IssuedQuote.into());
+                            }
+                        }
+                        MintQuoteState::Unpaid => {
+                            return Err(Error::UnpaidQuote.into());
+                        }
+                    }
+                    retire_final_mint_quote_observations(tx, quote, entry.index).await?;
+                }
+
+                #[cfg(test)]
+                if crate::test_helpers::mint::should_fail_for("FEDERATION_MINT_APPLY_BEFORE_STATUS")
+                {
+                    return Err(Error::Internal.into());
+                }
+
+                Ok((notifications, signature_share_records))
+            }
+            (
+                FederationOperation::MintQuote(operation),
+                PreparedBatchEntry::MintQuote(prepared),
+            ) => {
+                self.validate_federation_onchain_mint_quote_allocation_in_tx(tx, operation)
+                    .await?;
+                let proposed_quote = prepared?;
+                let mut quote = match tx.get_mint_quote(&proposed_quote.id).await? {
+                    Some(existing) => {
+                        ensure_mint_quote_matches(&existing, &proposed_quote)?;
+                        existing
+                    }
+                    None => {
+                        tx.add_mint_quote(proposed_quote.clone()).await?;
+                        database::mint::Acquired::from(proposed_quote)
+                    }
+                };
+                let observations = tx
+                    .get_federation_payment_observations(
+                        FederationPaymentObservationSelection::Live {
+                            context: FederationPaymentObservationContext::MintQuote,
+                            quote: &operation.quote,
+                        },
+                    )
+                    .await?
+                    .into_iter()
+                    .map(|observation| observation.record)
+                    .collect::<Vec<_>>();
+                let paid_notification = self
+                    .apply_mint_payment_observations_to_quote_with_history_start(
+                        tx,
+                        &mut quote,
+                        &observations,
+                        history_start,
+                    )
+                    .await?
+                    .map(|amount_paid| ((*quote).clone(), amount_paid));
+                let mut notifications = vec![BatchPostCommitNotification::MintQuoteCreated(
+                    (*quote).clone(),
+                )];
+                if let Some((paid_quote, amount_paid)) = paid_notification {
+                    notifications.push(BatchPostCommitNotification::MintQuotePayment(
+                        paid_quote,
+                        amount_paid,
+                    ));
+                }
+                Ok((notifications, Vec::new()))
+            }
+            (
+                FederationOperation::MintQuotePayment(observation),
+                PreparedBatchEntry::MintQuotePayment(prepared),
+            ) => {
+                let (quote_id, record) = prepared?;
+                Self::require_prior_applied_quote_operation_in_tx(
+                    tx,
+                    FederationOperationConflictKey::MintQuote {
+                        quote: quote_id.to_string(),
+                    },
+                    entry.index,
+                    history_start,
+                )
+                .await?;
+                let mut quote = tx.get_mint_quote(&quote_id).await?;
+                if quote.is_none()
+                    && observation.method.is_onchain()
+                    && self
+                        .federation_config()
+                        .is_some_and(|runtime| runtime.public_config().frost_wallet.is_some())
+                {
+                    return Err(Error::UnknownQuote.into());
+                }
+                if let Some(quote) = quote.as_deref() {
+                    self.validate_federation_onchain_payment_observation(
+                        tx,
+                        quote,
+                        observation,
+                        record.operation_index,
+                        false,
+                    )
+                    .await?;
+                }
+                if quote.as_deref().is_some_and(mint_quote_payments_are_final) {
+                    return Ok((Vec::new(), Vec::new()));
+                }
+                tx.add_federation_payment_observation(&record, None).await?;
+                let observations = tx
+                    .get_federation_payment_observations(
+                        FederationPaymentObservationSelection::Live {
+                            context: FederationPaymentObservationContext::MintQuote,
+                            quote: &observation.quote,
+                        },
+                    )
+                    .await?
+                    .into_iter()
+                    .map(|observation| observation.record)
+                    .collect::<Vec<_>>();
+                let mut notifications = Vec::new();
+                if let Some(mut quote) = quote.take() {
+                    if let Some(amount_paid) = self
+                        .apply_mint_payment_observations_to_quote_with_history_start(
+                            tx,
+                            &mut quote,
+                            &observations,
+                            history_start,
+                        )
+                        .await?
+                    {
+                        notifications.push(BatchPostCommitNotification::MintQuotePayment(
+                            (*quote).clone(),
+                            amount_paid,
+                        ));
+                    }
+                    settle_paid_mint_quote_application(tx, &quote, entry.index).await?;
+                }
+                Ok((notifications, Vec::new()))
+            }
+            (
+                FederationOperation::MeltQuote(operation),
+                PreparedBatchEntry::MeltQuote(prepared),
+            ) => {
+                let quote = prepared?;
+                if let Some(existing) = tx.get_melt_quote(&quote.id).await? {
+                    ensure_melt_quote_matches_request(&existing, &operation.request)?;
+                    if !federation_melt_quote_immutable_terms_match(&existing, &quote) {
+                        return Err(Error::InvalidPaymentRequest.into());
+                    }
+                } else {
+                    tx.add_melt_quote(quote).await?;
+                }
+                Ok((Vec::new(), Vec::new()))
+            }
+            (
+                FederationOperation::MeltQuotePayment(observation),
+                PreparedBatchEntry::MeltQuotePayment(prepared),
+            ) => {
+                let record = prepared?;
+                let notifications = self
+                    .apply_federation_melt_quote_payment_record_in_transaction(
+                        tx,
+                        config,
+                        entry,
+                        observation,
+                        &record,
+                    )
+                    .await?;
+                Ok((
+                    vec![BatchPostCommitNotification::Melt(notifications)],
+                    Vec::new(),
+                ))
+            }
+            _ => unreachable!("prepared batch entry must match operation variant"),
+        }
     }
 
     /// Apply one accepted federation operation to this member's local mint database.
@@ -1836,6 +3144,47 @@ impl Mint {
         Ok(())
     }
 
+    async fn require_prior_applied_quote_operation_in_tx(
+        tx: &mut database::mint::DynMintTransaction,
+        quote_key: FederationOperationConflictKey,
+        max_operation_index: u64,
+        history_start: Option<u64>,
+    ) -> Result<(), Error> {
+        let applied_before = tx
+            .get_federation_journal_entry(FederationJournalEntryKey::ConflictKey(&quote_key), None)
+            .await?
+            .is_some_and(|entry| {
+                entry.index < max_operation_index
+                    && entry.status() == FederationOperationStatus::Applied
+            });
+
+        if applied_before {
+            return Ok(());
+        }
+        let Some(history_start) = history_start else {
+            return Err(Error::UnknownQuote);
+        };
+        if history_start > max_operation_index {
+            return Err(Error::UnknownQuote);
+        }
+        let installed = match &quote_key {
+            FederationOperationConflictKey::MintQuote { quote } => tx
+                .get_mint_quote(&quote_id_from_federation(quote)?)
+                .await?
+                .is_some(),
+            FederationOperationConflictKey::MeltQuote { quote } => tx
+                .get_melt_quote(&quote_id_from_federation(quote)?)
+                .await?
+                .is_some(),
+            _ => false,
+        };
+        if installed {
+            Ok(())
+        } else {
+            Err(Error::UnknownQuote)
+        }
+    }
+
     /// Requires that the operation creating a quote was applied before
     /// `max_operation_index`.
     ///
@@ -1964,6 +3313,22 @@ impl Mint {
         quote: &MintQuote,
         before_operation_index: u64,
     ) -> Result<Amount<CurrencyUnit>, Error> {
+        self.federation_internal_settlement_amount_before_with_history_start(
+            tx,
+            quote,
+            before_operation_index,
+            None,
+        )
+        .await
+    }
+
+    async fn federation_internal_settlement_amount_before_with_history_start(
+        &self,
+        tx: &mut database::mint::DynMintTransaction,
+        quote: &MintQuote,
+        before_operation_index: u64,
+        preloaded_history_start: Option<Option<u64>>,
+    ) -> Result<Amount<CurrencyUnit>, Error> {
         let mut total = Amount::new(0, quote.unit.clone());
         let mut counted = HashSet::new();
         for payment in &quote.payments {
@@ -1985,7 +3350,12 @@ impl Mint {
                 continue;
             }
             if !self
-                .federation_melt_applied_before(tx, &melt_quote_id, before_operation_index)
+                .federation_melt_applied_before_with_history_start(
+                    tx,
+                    &melt_quote_id,
+                    before_operation_index,
+                    preloaded_history_start,
+                )
                 .await?
             {
                 continue;
@@ -1999,11 +3369,12 @@ impl Mint {
 
     /// Whether the accepted melt of `melt_quote` applied before
     /// `before_operation_index`.
-    async fn federation_melt_applied_before(
+    async fn federation_melt_applied_before_with_history_start(
         &self,
         tx: &mut database::mint::DynMintTransaction,
         melt_quote: &QuoteId,
         before_operation_index: u64,
+        preloaded_history_start: Option<Option<u64>>,
     ) -> Result<bool, Error> {
         let key = FederationOperationConflictKey::Melt {
             quote: melt_quote.to_string(),
@@ -2039,19 +3410,11 @@ impl Mint {
         {
             return Ok(false);
         }
-        let transfer_base = self
-            .localstore
-            .get_federation_checkpoint(FederationCheckpointSelector::StateTransferBase)
-            .await?
-            .map(|base| base.journal_next_index);
-        let retention_floor = self
-            .localstore
-            .get_federation_retention_floor()
-            .await?
-            .map(|floor| floor.journal_start);
-        Ok(transfer_base
-            .max(retention_floor)
-            .is_some_and(|history_start| history_start <= before_operation_index))
+        let history_start = match preloaded_history_start {
+            Some(history_start) => history_start,
+            None => self.federation_history_start().await?,
+        };
+        Ok(history_start.is_some_and(|history_start| history_start <= before_operation_index))
     }
 
     /// Whether consensus evidence covers `required_amount` paid to `quote`
@@ -2071,8 +3434,33 @@ impl Mint {
         observations: &[FederationPaymentObservationRecord],
         before_operation_index: u64,
     ) -> Result<bool, Error> {
+        self.federation_mint_payment_evidence_covers_amount_with_history_start(
+            tx,
+            quote,
+            required_amount,
+            observations,
+            before_operation_index,
+            None,
+        )
+        .await
+    }
+
+    async fn federation_mint_payment_evidence_covers_amount_with_history_start(
+        &self,
+        tx: &mut database::mint::DynMintTransaction,
+        quote: &MintQuote,
+        required_amount: &Amount<CurrencyUnit>,
+        observations: &[FederationPaymentObservationRecord],
+        before_operation_index: u64,
+        history_start: Option<u64>,
+    ) -> Result<bool, Error> {
         let internal = self
-            .federation_internal_settlement_amount_before(tx, quote, before_operation_index)
+            .federation_internal_settlement_amount_before_with_history_start(
+                tx,
+                quote,
+                before_operation_index,
+                Some(history_start),
+            )
             .await?;
         if &internal >= required_amount {
             return Ok(true);
@@ -2171,6 +3559,83 @@ impl Mint {
             self.pubsub_manager.mint_quote_payment(&quote, amount_paid);
         }
 
+        Ok(())
+    }
+
+    async fn validate_federation_onchain_mint_quote_allocation_in_tx(
+        &self,
+        tx: &mut database::mint::DynMintTransaction,
+        operation: &FederationMintQuoteOperation,
+    ) -> Result<(), Error> {
+        let Some(runtime) = self.federation_config() else {
+            return Ok(());
+        };
+        if runtime.public_config().frost_wallet.is_none()
+            || !matches!(operation.request, MintQuoteRequest::Onchain(_))
+        {
+            return Ok(());
+        }
+        let (MintQuoteRequest::Onchain(request), MintQuoteResponse::Onchain(response)) =
+            (&operation.request, &operation.response)
+        else {
+            return Err(Error::InvalidPaymentMethod);
+        };
+        let quote_id = quote_id_from_federation(&operation.quote)?;
+        if operation.request_lookup_id != PaymentIdentifier::QuoteId(quote_id)
+            || response.unit != request.unit
+            || response.pubkey != request.pubkey
+            || response.expiry.is_some()
+            || response.amount_paid != Amount::ZERO
+            || response.amount_issued != Amount::ZERO
+        {
+            return Err(FederationError::OperationStateInvalid {
+                reason: "federated on-chain mint quote response does not match its request",
+            }
+            .into());
+        }
+
+        let application = runtime.cdk_onchain_application()?;
+        let state = FederationStoredState::<FederationAddressAllocationState>::load(tx).await?;
+        let allocation = state
+            .allocation(
+                FederationAddressAllocationScope {
+                    application_id: application.application_id,
+                    application_key_epoch: application.application_key_epoch,
+                },
+                &operation.quote,
+            )
+            .ok_or(FederationError::AddressAllocationInvalid {
+                reason: "federated on-chain mint quote has no accepted address allocation",
+            })?;
+        if allocation.keychain != FederationAddressKeychain::External {
+            return Err(FederationError::AddressAllocationInvalid {
+                reason: "federated on-chain mint quote requires an external address allocation",
+            }
+            .into());
+        }
+        let wallet = runtime
+            .public_config()
+            .frost_wallet
+            .as_ref()
+            .ok_or(Error::Internal)?;
+        let script = wallet.derive_cdk_onchain_script(
+            runtime.public_config(),
+            application.application_id,
+            application.application_key_epoch,
+            allocation.keychain,
+            allocation.derivation_index,
+        )?;
+        let expected_address =
+            cdk_common::bitcoin::Address::from_script(script.as_script(), application.network)
+                .map_err(|_| FederationError::OperationStateInvalid {
+                    reason: "federated on-chain mint quote address is not representable",
+                })?;
+        if response.request != expected_address.to_string() {
+            return Err(FederationError::OperationStateInvalid {
+                reason: "federated on-chain mint quote address does not match the derived address",
+            }
+            .into());
+        }
         Ok(())
     }
 
@@ -2368,14 +3833,35 @@ impl Mint {
         quote: &mut database::mint::Acquired<MintQuote>,
         observations: &[FederationPaymentObservationRecord],
     ) -> Result<Option<Amount<CurrencyUnit>>, Error> {
+        self.apply_mint_payment_observations_to_quote_with_history_start(
+            tx,
+            quote,
+            observations,
+            None,
+        )
+        .await
+    }
+
+    async fn apply_mint_payment_observations_to_quote_with_history_start(
+        &self,
+        tx: &mut database::mint::DynMintTransaction,
+        quote: &mut database::mint::Acquired<MintQuote>,
+        observations: &[FederationPaymentObservationRecord],
+        preloaded_history_start: Option<u64>,
+    ) -> Result<Option<Amount<CurrencyUnit>>, Error> {
         let mut paid_notification = None;
         // On-chain observations report only accepted chain outputs. An
         // internal settlement credits the quote apart from them, so it is
         // left out when comparing; other methods report the quote's
         // cumulative paid amount.
         let internally_settled = if quote.payment_method.is_onchain() {
-            self.federation_internal_settlement_amount_before(tx, quote, u64::MAX)
-                .await?
+            self.federation_internal_settlement_amount_before_with_history_start(
+                tx,
+                quote,
+                u64::MAX,
+                Some(preloaded_history_start),
+            )
+            .await?
         } else {
             Amount::new(0, quote.unit.clone())
         };
@@ -2656,11 +4142,13 @@ impl Mint {
                 return Err(Error::Internal);
             }
 
-            Ok(issued_notifications)
+            Ok((issued_notifications, signature_share_records))
         }
         .await;
-        let issued_notifications = finish_federation_apply_transaction(tx, entry, outcome).await?;
+        let (issued_notifications, signature_share_records) =
+            finish_federation_apply_transaction(tx, entry, outcome).await?;
 
+        cache_committed_signature_shares(&self.localstore, operation_id, signature_share_records);
         for (quote, amount_issued) in issued_notifications {
             self.pubsub_manager.mint_quote_issue(&quote, amount_issued);
         }
@@ -2689,6 +4177,7 @@ impl Mint {
 
         let input_verification = self.verify_federation_inputs_with_config_and_context(
             &config,
+            operation_id,
             input_proofs,
             FederationProofVerificationContext::SwapApply,
         )?;
@@ -2761,7 +4250,7 @@ impl Mint {
                         )?;
                     tx.add_federation_signature_shares(&signature_share_records)
                         .await?;
-                    return Ok(false);
+                    return Ok((false, signature_share_records));
                 }
                 State::Spent => {
                     return Err(Error::TokenAlreadySpent);
@@ -2773,9 +4262,10 @@ impl Mint {
 
             Mint::update_proofs_state(&mut tx, &mut proofs, State::Spent).await?;
 
+            let mut signature_share_records = Vec::new();
             if signatures_present == 0 {
                 let share_set = config.swap_signature_shares(entry, &operation.request)?;
-                let signature_share_records =
+                signature_share_records =
                     FederationSignatureShareRecord::from_accepted_journal_entry(&share_set, entry)?;
                 let signatures = federation_share_signatures(share_set);
                 tx.add_federation_signature_shares(&signature_share_records)
@@ -2793,11 +4283,13 @@ impl Mint {
                 return Err(Error::Internal);
             }
 
-            Ok(true)
+            Ok((true, signature_share_records))
         }
         .await;
-        let notify_spent = finish_federation_apply_transaction(tx, entry, outcome).await?;
+        let (notify_spent, signature_share_records) =
+            finish_federation_apply_transaction(tx, entry, outcome).await?;
 
+        cache_committed_signature_shares(&self.localstore, operation_id, signature_share_records);
         if notify_spent {
             for y in input_ys {
                 self.pubsub_manager.proof_state((y, State::Spent));
@@ -3264,6 +4756,7 @@ impl Mint {
 
     pub(in crate::mint) async fn verify_federation_inputs_with_context(
         &self,
+        operation_id: FederationOperationId,
         inputs: &Proofs,
         context: FederationProofVerificationContext,
     ) -> Result<Verification, Error> {
@@ -3271,7 +4764,12 @@ impl Mint {
             .effective_federation_config()
             .await?
             .ok_or(Error::Internal)?;
-        self.verify_federation_inputs_with_config_and_context(&config, inputs, context)
+        self.verify_federation_inputs_with_config_and_context(
+            &config,
+            operation_id,
+            inputs,
+            context,
+        )
     }
 
     #[cfg(test)]
@@ -3280,29 +4778,47 @@ impl Mint {
         config: &FederationRuntimeConfig,
         inputs: &Proofs,
     ) -> Result<Verification, Error> {
-        self.verify_federation_inputs_with_config_inner(config, inputs, None)
+        self.verify_federation_inputs_with_config_inner(config, None, inputs, None)
     }
 
     fn verify_federation_inputs_with_config_and_context(
         &self,
         config: &FederationRuntimeConfig,
+        operation_id: FederationOperationId,
         inputs: &Proofs,
         context: FederationProofVerificationContext,
     ) -> Result<Verification, Error> {
-        self.verify_federation_inputs_with_config_inner(config, inputs, Some(context))
+        self.verify_federation_inputs_with_config_inner(
+            config,
+            Some(operation_id),
+            inputs,
+            Some(context),
+        )
     }
 
     fn verify_federation_inputs_with_config_inner(
         &self,
         config: &FederationRuntimeConfig,
+        operation_id: Option<FederationOperationId>,
         inputs: &Proofs,
         context: Option<FederationProofVerificationContext>,
     ) -> Result<Verification, Error> {
         verification::verify_inputs_bounds(self.max_inputs, inputs)?;
 
-        match context {
-            Some(context) => config.verify_proofs_with_performance_context(inputs, context)?,
-            None => config.verify_proofs(inputs)?,
+        match (operation_id, context) {
+            (Some(operation_id), Some(context)) => config
+                .verify_proofs_for_operation_with_performance_context(
+                    operation_id,
+                    inputs,
+                    context,
+                )?,
+            (Some(operation_id), None) => {
+                config.verify_proofs_for_operation(operation_id, inputs)?
+            }
+            (None, Some(context)) => {
+                config.verify_proofs_with_performance_context(inputs, context)?
+            }
+            (None, None) => config.verify_proofs(inputs)?,
         }
 
         verification::verify_inputs_amount(&config.keysets(), inputs)

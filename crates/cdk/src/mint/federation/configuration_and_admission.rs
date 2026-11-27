@@ -1,12 +1,12 @@
-use super::helpers::{
-    federation_share_signatures, melt_quote_request_string, mint_input_from_federation_request,
-    mint_request_from_input, quote_id_from_federation, validate_payment_method_name,
-};
-use crate::mint::keysets::federated_keyset_to_mint_keyset_info;
-use crate::mint::melt::ensure_melt_quote_matches_request;
-use crate::mint::verification::{validate_proof_content_bounds, KeysetView};
-use crate::mint::Mint;
-use crate::mint::MintInput;
+use core::fmt;
+use std::collections::{HashMap, VecDeque};
+use std::str::FromStr;
+use std::sync::{Arc, Mutex};
+#[cfg(feature = "prometheus")]
+use std::time::Instant;
+
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
+use bitcoin::hashes::{Hash, HashEngine};
 use cdk_common::error::Error;
 use cdk_common::federation::{
     FederationAcceptedSigningRequest, FederationAddressAllocationOperation,
@@ -16,25 +16,32 @@ use cdk_common::federation::{
     FederationMeltOperation, FederationMeltQuoteMetadata, FederationMeltQuoteOperation,
     FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
-    FederationPaymentObservationContext, FederationSignedTransaction, FederationSwapOperation,
-    FederationTransactionBroadcastIntent, FederationTransactionBroadcastObservation,
-    FederationTransactionProposal, FederationTransactionScope,
-    FederationTransactionSettlementPolicy, MemberConfigPrivate, MemberId,
+    FederationOperationId, FederationPaymentObservationContext, FederationSignedTransaction,
+    FederationSwapOperation, FederationTransactionBroadcastIntent,
+    FederationTransactionBroadcastObservation, FederationTransactionProposal,
+    FederationTransactionScope, FederationTransactionSettlementPolicy, MemberConfigPrivate,
+    MemberId,
 };
 use cdk_common::payment::PaymentIdentifier;
 use cdk_common::SpendingConditionVerification;
 use cdk_common::{
     Amount, BlindedMessage, CurrencyUnit, MeltQuoteCreateResponse, MeltQuoteRequest, MeltRequest,
-    MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintResponse, PaymentMethod, Proofs,
-    PublicKey, QuoteId, RestoreRequest, SwapRequest, SwapResponse,
+    MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintResponse, PaymentMethod, Proof,
+    Proofs, PublicKey, QuoteId, RestoreRequest, SwapRequest, SwapResponse,
 };
 #[cfg(feature = "federation-bark")]
 use cdk_federation_bark::{
     validate_federation_bark_operation, FederationBarkEvidenceCertificate, FederationBarkOperation,
 };
-use std::str::FromStr;
-#[cfg(feature = "prometheus")]
-use std::time::Instant;
+
+use super::helpers::{
+    federation_share_signatures, melt_quote_request_string, mint_input_from_federation_request,
+    mint_request_from_input, quote_id_from_federation, validate_payment_method_name,
+};
+use crate::mint::keysets::federated_keyset_to_mint_keyset_info;
+use crate::mint::melt::ensure_melt_quote_matches_request;
+use crate::mint::verification::{validate_proof_content_bounds, KeysetView};
+use crate::mint::{Mint, MintInput};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::mint) enum FederationProofVerificationContext {
@@ -85,7 +92,152 @@ impl FederationProofVerificationContext {
     }
 }
 
-pub(super) const FEDERATION_BLS_PROOF_BATCH_MIN: usize = 8;
+pub(super) const FEDERATION_BLS_PROOF_BATCH_MIN: usize = 2;
+
+/// Default maximum number of locally verified operations remembered per runtime config.
+pub const FEDERATION_VERIFIED_OPERATION_CACHE_CAPACITY: usize = 8192;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct VerifiedOperationCacheKey {
+    operation_id: FederationOperationId,
+    config_digest: FederationConfigDigest,
+    proofs_digest: [u8; 32],
+}
+
+#[derive(Default)]
+struct VerifiedOperationCacheInner {
+    /// Maps `(operation_id, config_digest, proofs_digest)` to `admission_verified`.
+    entries: HashMap<VerifiedOperationCacheKey, bool>,
+    order: VecDeque<VerifiedOperationCacheKey>,
+    capacity: usize,
+}
+
+struct FederationVerifiedOperationCache {
+    inner: Mutex<VerifiedOperationCacheInner>,
+}
+
+impl fmt::Debug for FederationVerifiedOperationCache {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let len = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entries
+            .len();
+        f.debug_struct("FederationVerifiedOperationCache")
+            .field("len", &len)
+            .finish()
+    }
+}
+
+impl FederationVerifiedOperationCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            inner: Mutex::new(VerifiedOperationCacheInner {
+                entries: HashMap::new(),
+                order: VecDeque::new(),
+                capacity,
+            }),
+        }
+    }
+
+    fn is_proofs_verified(&self, key: VerifiedOperationCacheKey) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entries
+            .contains_key(&key)
+    }
+
+    fn is_admission_verified(&self, key: VerifiedOperationCacheKey) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entries
+            .get(&key)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    fn insert(&self, key: VerifiedOperationCacheKey, admission_verified: bool) {
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.capacity == 0 {
+            return;
+        }
+        if let Some(existing) = guard.entries.get_mut(&key) {
+            *existing |= admission_verified;
+            return;
+        }
+        guard.entries.insert(key, admission_verified);
+        guard.order.push_back(key);
+        while guard.order.len() > guard.capacity {
+            if let Some(evicted) = guard.order.pop_front() {
+                guard.entries.remove(&evicted);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn clear(&self) {
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.entries.clear();
+        guard.order.clear();
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entries
+            .len()
+    }
+}
+
+fn proofs_verification_digest(proofs: &[Proof]) -> [u8; 32] {
+    let mut engine = Sha256Hash::engine();
+    engine.input(b"cdk-federation-verified-proofs-v1");
+    engine.input(&(proofs.len() as u64).to_be_bytes());
+    for proof in proofs {
+        engine.input(&proof.amount.to_u64().to_be_bytes());
+        let keyset_bytes = proof.keyset_id.to_bytes();
+        engine.input(&(keyset_bytes.len() as u32).to_be_bytes());
+        engine.input(&keyset_bytes);
+        let secret_bytes = proof.secret.as_bytes();
+        engine.input(&(secret_bytes.len() as u32).to_be_bytes());
+        engine.input(secret_bytes);
+        let c_bytes = proof.c.to_bytes();
+        engine.input(&(c_bytes.len() as u32).to_be_bytes());
+        engine.input(&c_bytes);
+        engine.input(&[u8::from(proof.dleq.is_some())]);
+    }
+    Sha256Hash::from_engine(engine).to_byte_array()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn run_blocking<T, F>(f: F) -> Result<T, Error>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, Error> + Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|_| Error::Internal)?
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn run_blocking<T, F>(f: F) -> Result<T, Error>
+where
+    F: FnOnce() -> Result<T, Error>,
+{
+    f()
+}
 
 /// Number of accepted journal items for which the accepted melt author holds
 /// exclusive payment-attempt authority before it rotates to the next roster
@@ -162,12 +314,23 @@ impl KeysetView for FederationKeysets<'_> {
 }
 
 /// Validated federation config held by a mint member at runtime.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct FederationRuntimeConfig {
     public_config: FederationConfig,
     config_digest: FederationConfigDigest,
     private_config: MemberConfigPrivate,
+    verified_operations: Arc<FederationVerifiedOperationCache>,
 }
+
+impl PartialEq for FederationRuntimeConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.public_config == other.public_config
+            && self.config_digest == other.config_digest
+            && self.private_config == other.private_config
+    }
+}
+
+impl Eq for FederationRuntimeConfig {}
 
 impl FederationRuntimeConfig {
     #[cfg(test)]
@@ -177,7 +340,23 @@ impl FederationRuntimeConfig {
 
     #[cfg(test)]
     pub(super) fn public_config_mut(&mut self) -> &mut FederationConfig {
+        self.verified_operations.clear();
         &mut self.public_config
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_verified_operation_cache_capacity(&self, capacity: usize) -> Self {
+        Self {
+            public_config: self.public_config.clone(),
+            config_digest: self.config_digest,
+            private_config: self.private_config.clone(),
+            verified_operations: Arc::new(FederationVerifiedOperationCache::new(capacity)),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn verified_operation_cache_len(&self) -> usize {
+        self.verified_operations.len()
     }
 
     /// Create a runtime federation config from public and local private config.
@@ -193,6 +372,9 @@ impl FederationRuntimeConfig {
             public_config,
             config_digest,
             private_config,
+            verified_operations: Arc::new(FederationVerifiedOperationCache::new(
+                FEDERATION_VERIFIED_OPERATION_CACHE_CAPACITY,
+            )),
         })
     }
 
@@ -942,6 +1124,179 @@ impl FederationRuntimeConfig {
         self.validate_federated_mint_submission(&input)
     }
 
+    fn verified_operation_cache_key(
+        &self,
+        operation_id: FederationOperationId,
+        proofs: &[Proof],
+    ) -> VerifiedOperationCacheKey {
+        VerifiedOperationCacheKey {
+            operation_id,
+            config_digest: self.config_digest,
+            proofs_digest: proofs_verification_digest(proofs),
+        }
+    }
+
+    /// Return true when `proofs` for `operation_id` were already cryptographically
+    /// verified by this member against this exact `config_digest`.
+    #[must_use]
+    pub fn is_operation_proofs_verified(
+        &self,
+        operation_id: FederationOperationId,
+        proofs: &[Proof],
+    ) -> bool {
+        self.verified_operations
+            .is_proofs_verified(self.verified_operation_cache_key(operation_id, proofs))
+    }
+
+    /// Return true when static admission (outputs, bounds, uniqueness, BLS proofs,
+    /// and spending conditions) for `operation_id` already succeeded against this
+    /// exact `config_digest`.
+    #[must_use]
+    pub fn is_operation_admission_verified(
+        &self,
+        operation_id: FederationOperationId,
+        proofs: &[Proof],
+    ) -> bool {
+        self.verified_operations
+            .is_admission_verified(self.verified_operation_cache_key(operation_id, proofs))
+    }
+
+    /// Record that `proofs` for `operation_id` were cryptographically verified
+    /// by this member against this exact `config_digest`.
+    pub fn record_verified_operation_proofs(
+        &self,
+        operation_id: FederationOperationId,
+        proofs: &[Proof],
+    ) {
+        self.verified_operations.insert(
+            self.verified_operation_cache_key(operation_id, proofs),
+            false,
+        );
+    }
+
+    /// Record that full static admission (including BLS proof verification) for
+    /// `operation_id` succeeded on this member against this exact `config_digest`.
+    pub fn record_verified_operation_admission(
+        &self,
+        operation_id: FederationOperationId,
+        proofs: &[Proof],
+    ) {
+        self.verified_operations.insert(
+            self.verified_operation_cache_key(operation_id, proofs),
+            true,
+        );
+    }
+
+    /// Verify spent proofs for `operation_id`, skipping BLS pairings when this
+    /// member already verified the exact `(operation_id, config_digest, proofs)`.
+    pub fn verify_proofs_for_operation(
+        &self,
+        operation_id: FederationOperationId,
+        proofs: &Proofs,
+    ) -> Result<(), Error> {
+        if self.is_operation_proofs_verified(operation_id, proofs) {
+            return Ok(());
+        }
+        self.verify_proofs(proofs)?;
+        self.record_verified_operation_proofs(operation_id, proofs);
+        Ok(())
+    }
+
+    pub(in crate::mint) fn verify_proofs_for_operation_with_performance_context(
+        &self,
+        operation_id: FederationOperationId,
+        proofs: &Proofs,
+        context: FederationProofVerificationContext,
+    ) -> Result<(), Error> {
+        if self.is_operation_proofs_verified(operation_id, proofs) {
+            return Ok(());
+        }
+        self.verify_proofs_with_performance_context(proofs, context)?;
+        self.record_verified_operation_proofs(operation_id, proofs);
+        Ok(())
+    }
+
+    /// Pre-verify all uncached Swap/Melt input proofs across a finalized unit off
+    /// the async worker threads using one unit-wide batched BLS pairing check.
+    ///
+    /// Valid operations are recorded in the per-config verified-operation cache
+    /// so subsequent apply-loop calls avoid redundant BLS verification. If any
+    /// proof in the unit is invalid, this falls back to per-operation verification
+    /// so valid sibling operations still cache while invalid operations remain
+    /// uncached and fail deterministically during apply.
+    pub async fn preverify_journal_entries(
+        self: &Arc<Self>,
+        entries: &[FederationJournalEntry],
+    ) -> Result<(), Error> {
+        let mut uncached: Vec<(FederationOperationId, Proofs)> = Vec::new();
+        for entry in entries {
+            let proofs = match &entry.envelope.operation {
+                FederationOperation::Swap(operation) => operation.request.inputs(),
+                FederationOperation::Melt(operation) => operation.request.inputs(),
+                _ => continue,
+            };
+            if proofs.is_empty() || self.is_operation_proofs_verified(entry.operation_id, proofs) {
+                continue;
+            }
+            uncached.push((entry.operation_id, proofs.clone()));
+        }
+        if uncached.is_empty() {
+            return Ok(());
+        }
+
+        let config = Arc::clone(self);
+        run_blocking(move || {
+            let total_proofs: usize = uncached.iter().map(|(_, proofs)| proofs.len()).sum();
+            let batch_verified = if total_proofs >= FEDERATION_BLS_PROOF_BATCH_MIN {
+                let mut mint_pubkeys = Vec::with_capacity(total_proofs);
+                let mut signatures = Vec::with_capacity(total_proofs);
+                let mut messages = Vec::with_capacity(total_proofs);
+                let mut all_keys_resolved = true;
+                'collect: for (_, proofs) in &uncached {
+                    for proof in proofs {
+                        match config.aggregate_public_key_for_proof(proof) {
+                            Ok(pubkey) => {
+                                mint_pubkeys.push(pubkey);
+                                signatures.push(proof.c);
+                                messages.push(proof.secret.as_bytes());
+                            }
+                            Err(_) => {
+                                all_keys_resolved = false;
+                                break 'collect;
+                            }
+                        }
+                    }
+                }
+                all_keys_resolved
+                    && cdk_common::dhke::batch_verify_bls_messages(
+                        &mint_pubkeys,
+                        &signatures,
+                        &messages,
+                    )
+                    .is_ok()
+            } else {
+                false
+            };
+
+            if batch_verified {
+                for (operation_id, proofs) in &uncached {
+                    config.record_verified_operation_proofs(*operation_id, proofs);
+                }
+                return Ok(());
+            }
+
+            // Per-operation fallback isolates any invalid proof so valid
+            // sibling operations in the same unit still benefit from caching.
+            for (operation_id, proofs) in &uncached {
+                if config.verify_proofs(proofs).is_ok() {
+                    config.record_verified_operation_proofs(*operation_id, proofs);
+                }
+            }
+            Ok(())
+        })
+        .await
+    }
+
     /// Sign the outputs of an accepted operation into local threshold BLS signature shares.
     ///
     /// The journal entry is the signing authority: outputs that the accepted
@@ -955,14 +1310,18 @@ impl FederationRuntimeConfig {
     ) -> Result<FederationBlindSignatureShareSet, Error> {
         #[cfg(feature = "prometheus")]
         let started = Instant::now();
-        let request = FederationAcceptedSigningRequest::from_journal_entry(
-            &self.public_config,
+        let request = FederationAcceptedSigningRequest::from_journal_entry_with_config_digest(
+            self.config_digest,
             entry,
             outputs,
         )?;
         let result = self
             .private_config
-            .sign_accepted_blinded_messages(&self.public_config, &request);
+            .sign_accepted_blinded_messages_with_config_digest(
+                &self.public_config,
+                self.config_digest,
+                &request,
+            );
         #[cfg(feature = "prometheus")]
         cdk_prometheus::METRICS.record_federation_signing_share_latency(
             &self.member_id().to_string(),
@@ -972,6 +1331,40 @@ impl FederationRuntimeConfig {
         #[cfg(not(feature = "prometheus"))]
         let _ = operation;
         Ok(result?)
+    }
+
+    /// Sign accepted outputs off the async worker threads.
+    pub async fn sign_accepted_outputs_async(
+        self: &Arc<Self>,
+        entry: FederationJournalEntry,
+        outputs: Vec<BlindedMessage>,
+        operation: &'static str,
+    ) -> Result<FederationBlindSignatureShareSet, Error> {
+        let config = Arc::clone(self);
+        run_blocking(move || config.sign_accepted_outputs(&entry, &outputs, operation)).await
+    }
+
+    /// Sign a batch of accepted operations off the async worker threads.
+    ///
+    /// Intended for pre-signing accepted outputs of a finalized unit outside
+    /// the database write transaction while preserving per-operation error
+    /// isolation.
+    pub async fn batch_sign_accepted_outputs(
+        self: &Arc<Self>,
+        requests: Vec<(FederationJournalEntry, Vec<BlindedMessage>, &'static str)>,
+    ) -> Result<Vec<Result<FederationBlindSignatureShareSet, Error>>, Error> {
+        if requests.is_empty() {
+            return Ok(Vec::new());
+        }
+        let config = Arc::clone(self);
+        run_blocking(move || {
+            let mut results = Vec::with_capacity(requests.len());
+            for (entry, outputs, operation) in requests {
+                results.push(config.sign_accepted_outputs(&entry, &outputs, operation));
+            }
+            Ok(results)
+        })
+        .await
     }
 
     /// Sign an accepted mint operation into local threshold BLS signature shares.
@@ -1014,11 +1407,24 @@ impl FederationRuntimeConfig {
             consensus_request = consensus_request.fee_index(fee_index);
         }
 
-        Ok(
+        let envelope =
             self.operation_envelope(FederationOperation::Melt(FederationMeltOperation {
                 request: consensus_request,
-            })),
-        )
+            }));
+        let operation_id = envelope.operation_id()?;
+        if let FederationOperation::Melt(ref melt) = envelope.operation {
+            self.record_verified_operation_admission(operation_id, melt.request.inputs());
+        }
+        Ok(envelope)
+    }
+
+    /// Build the consensus melt operation off the async worker threads.
+    pub async fn melt_operation_async(
+        self: &Arc<Self>,
+        request: MeltRequest<QuoteId>,
+    ) -> Result<FederationOperationEnvelope, Error> {
+        let config = Arc::clone(self);
+        run_blocking(move || config.melt_operation(request)).await
     }
 
     /// Build an authorized consensus operation for a validated on-chain proposal.
@@ -1110,6 +1516,15 @@ impl FederationRuntimeConfig {
         self.validate_federated_melt_submission(&request)
     }
 
+    /// Validate a federated melt operation envelope off the async worker threads.
+    pub async fn validate_federated_melt_operation_submission_async(
+        self: &Arc<Self>,
+        operation: FederationMeltOperation,
+    ) -> Result<(), Error> {
+        let config = Arc::clone(self);
+        run_blocking(move || config.validate_federated_melt_operation_submission(&operation)).await
+    }
+
     /// Build the consensus operation for signing swap outputs.
     pub fn swap_operation(
         &self,
@@ -1119,11 +1534,24 @@ impl FederationRuntimeConfig {
             &request,
             FederationProofVerificationContext::SwapBuilder,
         )?;
-        Ok(
+        let envelope =
             self.operation_envelope(FederationOperation::Swap(FederationSwapOperation {
                 request,
-            })),
-        )
+            }));
+        let operation_id = envelope.operation_id()?;
+        if let FederationOperation::Swap(ref swap) = envelope.operation {
+            self.record_verified_operation_admission(operation_id, swap.request.inputs());
+        }
+        Ok(envelope)
+    }
+
+    /// Build the consensus swap operation off the async worker threads.
+    pub async fn swap_operation_async(
+        self: &Arc<Self>,
+        request: SwapRequest,
+    ) -> Result<FederationOperationEnvelope, Error> {
+        let config = Arc::clone(self);
+        run_blocking(move || config.swap_operation(request)).await
     }
 
     /// Validate a federated swap submission before consensus admission.
@@ -1135,6 +1563,15 @@ impl FederationRuntimeConfig {
             request,
             FederationProofVerificationContext::SwapAdmission,
         )
+    }
+
+    /// Validate a federated swap submission off the async worker threads.
+    pub async fn validate_federated_swap_submission_async(
+        self: &Arc<Self>,
+        request: SwapRequest,
+    ) -> Result<(), Error> {
+        let config = Arc::clone(self);
+        run_blocking(move || config.validate_federated_swap_submission(&request)).await
     }
 
     fn validate_federated_swap_submission_with_context(

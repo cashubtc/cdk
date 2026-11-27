@@ -83,6 +83,26 @@ where
     .and_then(sql_row_to_federation_checkpoint_frontier)
 }
 
+const FEDERATION_FRONTIER_ADVANCE_BATCH_LIMIT: i64 = 1000;
+const FEDERATION_SQL_IN_CLAUSE_CHUNK_SIZE: usize = 200;
+
+fn ensure_valid_federation_savepoint_name(name: &str) -> Result<(), Error> {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return Err(Error::Internal(
+            "Federation savepoint name cannot be empty".to_string(),
+        ));
+    };
+    if !(first.is_ascii_alphabetic() || first == '_')
+        || !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return Err(Error::Internal(format!(
+            "Invalid federation savepoint name: {name}"
+        )));
+    }
+    Ok(())
+}
+
 async fn advance_federation_journal_frontier<RM>(
     transaction: &SQLTransaction<RM>,
 ) -> Result<(), Error>
@@ -90,38 +110,60 @@ where
     RM: DatabasePool + 'static,
 {
     let mut frontier = federation_checkpoint_frontier_for_update(transaction).await?;
+    let initial_next_index = frontier.journal_next_index;
     loop {
-        let Some(row) = query(
+        let rows = query(
             r#"
-            SELECT previous_order_digest, order_digest
+            SELECT operation_index, previous_order_digest, order_digest
             FROM federation_journal_entries
-            WHERE operation_index = :operation_index
+            WHERE operation_index >= :start_index
+            ORDER BY operation_index ASC
+            LIMIT :limit
             FOR UPDATE
             "#,
         )?
-        .bind("operation_index", frontier.journal_next_index as i64)
-        .fetch_one(&transaction.inner)
-        .await?
-        else {
+        .bind("start_index", frontier.journal_next_index as i64)
+        .bind("limit", FEDERATION_FRONTIER_ADVANCE_BATCH_LIMIT)
+        .fetch_all(&transaction.inner)
+        .await?;
+        let fetched = rows.len();
+        if fetched == 0 {
             break;
-        };
-        unpack_into!(let (previous_order_digest, order_digest) = row);
-        let previous_order_digest =
-            FederationJournalDigest::from_hex(column_as_string!(&previous_order_digest))
-                .map_err(|e| Error::Internal(format!("Invalid federation journal digest: {e}")))?;
-        let order_digest = FederationJournalDigest::from_hex(column_as_string!(&order_digest))
-            .map_err(|e| Error::Internal(format!("Invalid federation journal digest: {e}")))?;
-        if previous_order_digest != frontier.journal_order_digest {
-            return Err(Error::Internal(format!(
-                "Federation journal frontier digest mismatch at index {}",
-                frontier.journal_next_index
-            )));
         }
-        frontier.journal_next_index = frontier
-            .journal_next_index
-            .checked_add(1)
-            .ok_or_else(|| Error::Internal("Federation journal cursor overflow".to_string()))?;
-        frontier.journal_order_digest = order_digest;
+        let mut hit_gap = false;
+        for row in rows {
+            unpack_into!(let (operation_index, previous_order_digest, order_digest) = row);
+            let operation_index: u64 = column_as_number!(operation_index);
+            if operation_index != frontier.journal_next_index {
+                hit_gap = true;
+                break;
+            }
+            let previous_order_digest =
+                FederationJournalDigest::from_hex(column_as_string!(&previous_order_digest))
+                    .map_err(|e| {
+                        Error::Internal(format!("Invalid federation journal digest: {e}"))
+                    })?;
+            let order_digest = FederationJournalDigest::from_hex(column_as_string!(&order_digest))
+                .map_err(|e| Error::Internal(format!("Invalid federation journal digest: {e}")))?;
+            if previous_order_digest != frontier.journal_order_digest {
+                return Err(Error::Internal(format!(
+                    "Federation journal frontier digest mismatch at index {}",
+                    frontier.journal_next_index
+                )));
+            }
+            frontier.journal_next_index = frontier
+                .journal_next_index
+                .checked_add(1)
+                .ok_or_else(|| Error::Internal("Federation journal cursor overflow".to_string()))?;
+            frontier.journal_order_digest = order_digest;
+        }
+        if hit_gap || (fetched as i64) < FEDERATION_FRONTIER_ADVANCE_BATCH_LIMIT {
+            break;
+        }
+    }
+
+    if frontier.journal_next_index == initial_next_index {
+        return Ok(());
     }
 
     query(
@@ -151,57 +193,87 @@ where
     RM: DatabasePool + 'static,
 {
     let mut frontier = federation_checkpoint_frontier_for_update(transaction).await?;
-    loop {
-        if frontier.application_next_index >= frontier.journal_next_index {
-            break;
-        }
-        let Some(entry) = query(federation_journal_entry_select!(
-            "WHERE operation_index = :operation_index FOR UPDATE"
-        ))?
-        .bind("operation_index", frontier.application_next_index as i64)
-        .fetch_one(&transaction.inner)
-        .await?
-        .map(sql_row_to_federation_journal_entry)
-        .transpose()?
-        else {
+    let initial_next_index = frontier.application_next_index;
+    'outer: while frontier.application_next_index < frontier.journal_next_index {
+        let rows = query(
+            r#"
+            SELECT operation_index, operation_id, status, rejection_json
+            FROM federation_journal_entries
+            WHERE operation_index >= :start_index
+              AND operation_index < :end_index
+            ORDER BY operation_index ASC
+            LIMIT :limit
+            FOR UPDATE
+            "#,
+        )?
+        .bind("start_index", frontier.application_next_index as i64)
+        .bind("end_index", frontier.journal_next_index as i64)
+        .bind("limit", FEDERATION_FRONTIER_ADVANCE_BATCH_LIMIT)
+        .fetch_all(&transaction.inner)
+        .await?;
+        if rows.is_empty() {
             return Err(Error::Internal(format!(
                 "Federation application frontier is missing journal index {}",
                 frontier.application_next_index
             )));
-        };
-        if !entry.application.is_terminal() {
-            break;
         }
-        let next_digest = frontier
-            .application_digest
-            .append_terminal(entry.index, entry.operation_id, &entry.application)
-            .map_err(|e| Error::Internal(format!("Invalid terminal application state: {e}")))?;
-        let rows_affected = query(
-            r#"
-            UPDATE federation_journal_entries
-            SET application_digest = :application_digest
-            WHERE operation_index = :operation_index
-              AND (
-                    application_digest IS NULL
-                    OR application_digest = :application_digest
-                  )
-            "#,
-        )?
-        .bind("operation_index", entry.index as i64)
-        .bind("application_digest", next_digest.to_string())
-        .execute(&transaction.inner)
-        .await?;
-        if rows_affected == 0 {
-            return Err(Error::Internal(format!(
-                "Conflicting federation application digest at index {}",
-                entry.index
-            )));
+        for row in rows {
+            unpack_into!(let (operation_index, operation_id, status, rejection_json) = row);
+            let operation_index: u64 = column_as_number!(operation_index);
+            if operation_index != frontier.application_next_index {
+                return Err(Error::Internal(format!(
+                    "Federation application frontier is missing journal index {}",
+                    frontier.application_next_index
+                )));
+            }
+            let operation_id = FederationOperationId::from_hex(column_as_string!(&operation_id))
+                .map_err(|e| Error::Internal(format!("Invalid federation operation id: {e}")))?;
+            let application = FederationApplicationState::from_parts(
+                operation_index,
+                status_from_str(&column_as_string!(&status))?,
+                optional_json(&rejection_json, "journal rejection")?,
+            )
+            .map_err(|e| Error::Internal(format!("Invalid federation application state: {e}")))?;
+            if !application.is_terminal() {
+                break 'outer;
+            }
+            let next_digest = frontier
+                .application_digest
+                .append_terminal(operation_index, operation_id, &application)
+                .map_err(|e| Error::Internal(format!("Invalid terminal application state: {e}")))?;
+            let rows_affected = query(
+                r#"
+                UPDATE federation_journal_entries
+                SET application_digest = :application_digest
+                WHERE operation_index = :operation_index
+                  AND (
+                        application_digest IS NULL
+                        OR application_digest = :application_digest
+                      )
+                "#,
+            )?
+            .bind("operation_index", operation_index as i64)
+            .bind("application_digest", next_digest.to_string())
+            .execute(&transaction.inner)
+            .await?;
+            if rows_affected == 0 {
+                return Err(Error::Internal(format!(
+                    "Conflicting federation application digest at index {}",
+                    operation_index
+                )));
+            }
+            frontier.application_next_index = frontier
+                .application_next_index
+                .checked_add(1)
+                .ok_or_else(|| {
+                    Error::Internal("Federation application cursor overflow".to_string())
+                })?;
+            frontier.application_digest = next_digest;
         }
-        frontier.application_next_index = frontier
-            .application_next_index
-            .checked_add(1)
-            .ok_or_else(|| Error::Internal("Federation application cursor overflow".to_string()))?;
-        frontier.application_digest = next_digest;
+    }
+
+    if frontier.application_next_index == initial_next_index {
+        return Ok(());
     }
 
     query(
@@ -272,53 +344,69 @@ where
     RM: DatabasePool + 'static,
 {
     let mut frontier = federation_checkpoint_frontier_for_update(transaction).await?;
+    let initial_next_index = frontier.finalized_next_item_index;
     loop {
-        let Some(item) = query(federation_aleph_bft_finalized_item_select!(
-            "WHERE accepted_item_index = :accepted_item_index FOR UPDATE"
+        let rows = query(federation_aleph_bft_finalized_item_select!(
+            "WHERE accepted_item_index >= :start_index
+             ORDER BY accepted_item_index ASC
+             LIMIT :limit
+             FOR UPDATE"
         ))?
-        .bind(
-            "accepted_item_index",
-            frontier.finalized_next_item_index as i64,
-        )
-        .fetch_one(&transaction.inner)
-        .await?
-        .map(sql_row_to_federation_aleph_bft_finalized_item)
-        .transpose()?
-        else {
-            break;
-        };
-        let next_digest = frontier
-            .finalized_item_digest
-            .append(&item)
-            .map_err(|e| Error::Internal(format!("Invalid finalized item: {e}")))?;
-        let rows_affected = query(
-            r#"
-            UPDATE federation_aleph_bft_finalized_items
-            SET finalized_item_digest = :finalized_item_digest
-            WHERE accepted_item_index = :accepted_item_index
-              AND (
-                    finalized_item_digest IS NULL
-                    OR finalized_item_digest = :finalized_item_digest
-                  )
-            "#,
-        )?
-        .bind("accepted_item_index", item.accepted_item_index as i64)
-        .bind("finalized_item_digest", next_digest.to_string())
-        .execute(&transaction.inner)
+        .bind("start_index", frontier.finalized_next_item_index as i64)
+        .bind("limit", FEDERATION_FRONTIER_ADVANCE_BATCH_LIMIT)
+        .fetch_all(&transaction.inner)
         .await?;
-        if rows_affected == 0 {
-            return Err(Error::Internal(format!(
-                "Conflicting federation finalized-item digest at index {}",
-                item.accepted_item_index
-            )));
+        let fetched = rows.len();
+        if fetched == 0 {
+            break;
         }
-        frontier.finalized_next_item_index = frontier
-            .finalized_next_item_index
-            .checked_add(1)
-            .ok_or_else(|| {
-                Error::Internal("Federation finalized-item cursor overflow".to_string())
-            })?;
-        frontier.finalized_item_digest = next_digest;
+        let mut hit_gap = false;
+        for row in rows {
+            let item = sql_row_to_federation_aleph_bft_finalized_item(row)?;
+            if item.accepted_item_index != frontier.finalized_next_item_index {
+                hit_gap = true;
+                break;
+            }
+            let next_digest = frontier
+                .finalized_item_digest
+                .append(&item)
+                .map_err(|e| Error::Internal(format!("Invalid finalized item: {e}")))?;
+            let rows_affected = query(
+                r#"
+                UPDATE federation_aleph_bft_finalized_items
+                SET finalized_item_digest = :finalized_item_digest
+                WHERE accepted_item_index = :accepted_item_index
+                  AND (
+                        finalized_item_digest IS NULL
+                        OR finalized_item_digest = :finalized_item_digest
+                      )
+                "#,
+            )?
+            .bind("accepted_item_index", item.accepted_item_index as i64)
+            .bind("finalized_item_digest", next_digest.to_string())
+            .execute(&transaction.inner)
+            .await?;
+            if rows_affected == 0 {
+                return Err(Error::Internal(format!(
+                    "Conflicting federation finalized-item digest at index {}",
+                    item.accepted_item_index
+                )));
+            }
+            frontier.finalized_next_item_index = frontier
+                .finalized_next_item_index
+                .checked_add(1)
+                .ok_or_else(|| {
+                    Error::Internal("Federation finalized-item cursor overflow".to_string())
+                })?;
+            frontier.finalized_item_digest = next_digest;
+        }
+        if hit_gap || (fetched as i64) < FEDERATION_FRONTIER_ADVANCE_BATCH_LIMIT {
+            break;
+        }
+    }
+
+    if frontier.finalized_next_item_index == initial_next_index {
+        return Ok(());
     }
 
     query(
@@ -1687,8 +1775,8 @@ where
     Ok(pruned)
 }
 
-/// Store one finalized item and advance the finalized-item frontier.
-async fn insert_federation_aleph_bft_finalized_item<RM>(
+/// Store one finalized item without advancing the finalized-item frontier yet.
+async fn insert_federation_aleph_bft_finalized_item_without_frontier_advance<RM>(
     transaction: &mut SQLTransaction<RM>,
     item: &FederationAlephBftFinalizedItem,
 ) -> Result<(), Error>
@@ -1776,7 +1864,217 @@ where
         return Err(federation_aleph_bft_finalized_item_conflict_error(item));
     }
 
-    advance_federation_finalized_item_frontier(transaction).await?;
+    Ok(())
+}
+
+/// Insert one accepted journal entry row and its reserved conflict keys without
+/// advancing durable frontiers yet.
+async fn insert_federation_journal_entry_without_frontier_advance<RM>(
+    transaction: &SQLTransaction<RM>,
+    entry: &FederationJournalEntry,
+) -> Result<(), Error>
+where
+    RM: DatabasePool + 'static,
+{
+    query(
+        r#"
+        INSERT INTO federation_journal_entries
+        (operation_index, operation_id, envelope_json, conflict_keys_json, previous_order_digest, order_digest, consensus_evidence_json, ordered_session, ordered_item_index, rejection_json, application_digest, status)
+        VALUES
+        (:operation_index, :operation_id, :envelope_json, :conflict_keys_json, :previous_order_digest, :order_digest, :consensus_evidence_json, :ordered_session, :ordered_item_index, :rejection_json, NULL, :status)
+        "#,
+    )?
+    .bind("operation_index", entry.index as i64)
+    .bind(
+        "ordered_session",
+        entry
+            .consensus_evidence
+            .map(|evidence| evidence.session as i64),
+    )
+    .bind(
+        "ordered_item_index",
+        entry
+            .consensus_evidence
+            .map(|evidence| evidence.item_index as i64),
+    )
+    .bind("operation_id", entry.operation_id.to_string())
+    .bind("envelope_json", serde_json::to_string(&entry.envelope)?)
+    .bind(
+        "conflict_keys_json",
+        serde_json::to_string(&entry.conflict_keys)?,
+    )
+    .bind(
+        "previous_order_digest",
+        entry.previous_order_digest.to_string(),
+    )
+    .bind("order_digest", entry.order_digest.to_string())
+    .bind(
+        "consensus_evidence_json",
+        entry
+            .consensus_evidence
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?,
+    )
+    .bind(
+        "rejection_json",
+        entry
+            .rejection()
+            .map(serde_json::to_string)
+            .transpose()?,
+    )
+    .bind("status", status_to_str(entry.status()))
+    .execute(&transaction.inner)
+    .await?;
+
+    if entry.reserves_conflict_keys() {
+        for conflict_key in &entry.conflict_keys {
+            query(
+                r#"
+                INSERT INTO federation_journal_conflict_keys
+                (conflict_key_json, operation_index, operation_id)
+                VALUES (:conflict_key_json, :operation_index, :operation_id)
+                ON CONFLICT (conflict_key_json, operation_index) DO NOTHING
+                "#,
+            )?
+            .bind("conflict_key_json", serde_json::to_string(conflict_key)?)
+            .bind("operation_index", entry.index as i64)
+            .bind("operation_id", entry.operation_id.to_string())
+            .execute(&transaction.inner)
+            .await?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Update one operation's application state without advancing the application
+/// frontier. When `preloaded_entry` matches the target row's index, materialized
+/// state keys are derived directly from it without re-fetching `envelope_json`.
+async fn update_federation_operation_application_state_without_frontier_advance<RM>(
+    transaction: &SQLTransaction<RM>,
+    operation_id: FederationOperationId,
+    preloaded_entry: Option<&FederationJournalEntry>,
+    application: &FederationApplicationState,
+) -> Result<(), Error>
+where
+    RM: DatabasePool + 'static,
+{
+    let existing = match preloaded_entry {
+        Some(entry) => {
+            match query(
+                r#"
+                SELECT operation_index, status, rejection_json, application_digest
+                FROM federation_journal_entries
+                WHERE operation_index = :operation_index
+                  AND operation_id = :operation_id
+                FOR UPDATE
+                "#,
+            )?
+            .bind("operation_index", entry.index as i64)
+            .bind("operation_id", operation_id.to_string())
+            .fetch_one(&transaction.inner)
+            .await?
+            {
+                Some(row) => Some(row),
+                None => {
+                    query(
+                        r#"
+                        SELECT operation_index, status, rejection_json, application_digest
+                        FROM federation_journal_entries
+                        WHERE operation_id = :operation_id
+                        ORDER BY operation_index DESC
+                        LIMIT 1
+                        FOR UPDATE
+                        "#,
+                    )?
+                    .bind("operation_id", operation_id.to_string())
+                    .fetch_one(&transaction.inner)
+                    .await?
+                }
+            }
+        }
+        None => {
+            query(
+                r#"
+                SELECT operation_index, status, rejection_json, application_digest
+                FROM federation_journal_entries
+                WHERE operation_id = :operation_id
+                ORDER BY operation_index DESC
+                LIMIT 1
+                FOR UPDATE
+                "#,
+            )?
+            .bind("operation_id", operation_id.to_string())
+            .fetch_one(&transaction.inner)
+            .await?
+        }
+    }
+    .ok_or_else(|| {
+        Error::Internal(format!(
+            "Cannot update missing federation operation {operation_id}"
+        ))
+    })?;
+
+    unpack_into!(let (operation_index, status, rejection_json, application_digest) = existing);
+    let operation_index: u64 = column_as_number!(operation_index);
+    let existing_application = FederationApplicationState::from_parts(
+        operation_index,
+        status_from_str(&column_as_string!(&status))?,
+        optional_json(&rejection_json, "journal rejection")?,
+    )
+    .map_err(|e| Error::Internal(format!("Invalid federation application state: {e}")))?;
+    let already_digest_committed = column_as_nullable_string!(&application_digest).is_some();
+    if (already_digest_committed || existing_application.is_terminal())
+        && existing_application != *application
+    {
+        return Err(Error::Internal(format!(
+            "Cannot change terminal federation application state at index {operation_index}"
+        )));
+    }
+
+    if matches!(application, FederationApplicationState::Applied {}) {
+        match preloaded_entry {
+            Some(entry) if entry.index == operation_index && entry.operation_id == operation_id => {
+                record_federation_materialized_state_keys(transaction, entry).await?;
+            }
+            _ => {
+                let entry = query(federation_journal_entry_select!(
+                    "WHERE operation_index = :operation_index FOR UPDATE"
+                ))?
+                .bind("operation_index", operation_index as i64)
+                .fetch_one(&transaction.inner)
+                .await?
+                .map(sql_row_to_federation_journal_entry)
+                .transpose()?
+                .ok_or_else(|| {
+                    Error::Internal(format!(
+                        "Cannot index missing federation operation {operation_id}"
+                    ))
+                })?;
+                record_federation_materialized_state_keys(transaction, &entry).await?;
+            }
+        }
+    }
+
+    query(
+        r#"
+        UPDATE federation_journal_entries
+        SET status = :status, rejection_json = :rejection_json
+        WHERE operation_index = :operation_index
+        "#,
+    )?
+    .bind("operation_index", operation_index as i64)
+    .bind("status", status_to_str(application.status()))
+    .bind(
+        "rejection_json",
+        application
+            .rejection()
+            .map(serde_json::to_string)
+            .transpose()?,
+    )
+    .execute(&transaction.inner)
+    .await?;
 
     Ok(())
 }
@@ -1870,78 +2168,28 @@ where
         &mut self,
         entry: &FederationJournalEntry,
     ) -> Result<(), Self::Err> {
-        query(
-            r#"
-            INSERT INTO federation_journal_entries
-            (operation_index, operation_id, envelope_json, conflict_keys_json, previous_order_digest, order_digest, consensus_evidence_json, ordered_session, ordered_item_index, rejection_json, application_digest, status)
-            VALUES
-            (:operation_index, :operation_id, :envelope_json, :conflict_keys_json, :previous_order_digest, :order_digest, :consensus_evidence_json, :ordered_session, :ordered_item_index, :rejection_json, NULL, :status)
-            "#,
-        )?
-        .bind("operation_index", entry.index as i64)
-        .bind(
-            "ordered_session",
-            entry
-                .consensus_evidence
-                .map(|evidence| evidence.session as i64),
-        )
-        .bind(
-            "ordered_item_index",
-            entry
-                .consensus_evidence
-                .map(|evidence| evidence.item_index as i64),
-        )
-        .bind("operation_id", entry.operation_id.to_string())
-        .bind("envelope_json", serde_json::to_string(&entry.envelope)?)
-        .bind(
-            "conflict_keys_json",
-            serde_json::to_string(&entry.conflict_keys)?,
-        )
-        .bind(
-            "previous_order_digest",
-            entry.previous_order_digest.to_string(),
-        )
-        .bind("order_digest", entry.order_digest.to_string())
-        .bind(
-            "consensus_evidence_json",
-            entry
-                .consensus_evidence
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()?,
-        )
-        .bind(
-            "rejection_json",
-            entry
-                .rejection()
-                .map(serde_json::to_string)
-                .transpose()?,
-        )
-        .bind("status", status_to_str(entry.status()))
-        .execute(&self.inner)
-        .await?;
-
-        if entry.reserves_conflict_keys() {
-            for conflict_key in &entry.conflict_keys {
-                query(
-                    r#"
-                    INSERT INTO federation_journal_conflict_keys
-                    (conflict_key_json, operation_index, operation_id)
-                    VALUES (:conflict_key_json, :operation_index, :operation_id)
-                    ON CONFLICT (conflict_key_json, operation_index) DO NOTHING
-                    "#,
-                )?
-                .bind("conflict_key_json", serde_json::to_string(conflict_key)?)
-                .bind("operation_index", entry.index as i64)
-                .bind("operation_id", entry.operation_id.to_string())
-                .execute(&self.inner)
-                .await?;
-            }
-        }
-
+        insert_federation_journal_entry_without_frontier_advance(self, entry).await?;
         advance_federation_journal_frontier(self).await?;
         advance_federation_application_frontier(self).await?;
+        Ok(())
+    }
 
+    async fn add_federation_journal_entries(
+        &mut self,
+        entries: &[FederationJournalEntry],
+    ) -> Result<(), Self::Err> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let mut any_terminal = false;
+        for entry in entries {
+            any_terminal |= entry.application.is_terminal();
+            insert_federation_journal_entry_without_frontier_advance(self, entry).await?;
+        }
+        advance_federation_journal_frontier(self).await?;
+        if any_terminal {
+            advance_federation_application_frontier(self).await?;
+        }
         Ok(())
     }
 
@@ -1950,80 +2198,57 @@ where
         operation_id: FederationOperationId,
         application: &FederationApplicationState,
     ) -> Result<(), Self::Err> {
-        let existing = query(
-            r#"
-            SELECT operation_index, status, rejection_json, application_digest
-            FROM federation_journal_entries
-            WHERE operation_id = :operation_id
-            ORDER BY operation_index DESC
-            LIMIT 1
-            FOR UPDATE
-            "#,
-        )?
-        .bind("operation_id", operation_id.to_string())
-        .fetch_one(&self.inner)
-        .await?
-        .ok_or_else(|| {
-            Error::Internal(format!(
-                "Cannot update missing federation operation {operation_id}"
-            ))
-        })?;
-        unpack_into!(let (operation_index, status, rejection_json, application_digest) = existing);
-        let operation_index: u64 = column_as_number!(operation_index);
-        let existing_application = FederationApplicationState::from_parts(
-            operation_index,
-            status_from_str(&column_as_string!(&status))?,
-            optional_json(&rejection_json, "journal rejection")?,
+        update_federation_operation_application_state_without_frontier_advance(
+            self,
+            operation_id,
+            None,
+            application,
         )
-        .map_err(|e| Error::Internal(format!("Invalid federation application state: {e}")))?;
-        let already_digest_committed = column_as_nullable_string!(&application_digest).is_some();
-        if (already_digest_committed || existing_application.is_terminal())
-            && existing_application != *application
-        {
-            return Err(Error::Internal(format!(
-                "Cannot change terminal federation application state at index {operation_index}"
-            )));
-        }
-
-        if matches!(application, FederationApplicationState::Applied {}) {
-            let entry = query(federation_journal_entry_select!(
-                "WHERE operation_index = :operation_index FOR UPDATE"
-            ))?
-            .bind("operation_index", operation_index as i64)
-            .fetch_one(&self.inner)
-            .await?
-            .map(sql_row_to_federation_journal_entry)
-            .transpose()?
-            .ok_or_else(|| {
-                Error::Internal(format!(
-                    "Cannot index missing federation operation {operation_id}"
-                ))
-            })?;
-            record_federation_materialized_state_keys(self, &entry).await?;
-        }
-
-        query(
-            r#"
-            UPDATE federation_journal_entries
-            SET status = :status, rejection_json = :rejection_json
-            WHERE operation_index = :operation_index
-            "#,
-        )?
-        .bind("operation_index", operation_index as i64)
-        .bind("status", status_to_str(application.status()))
-        .bind(
-            "rejection_json",
-            application
-                .rejection()
-                .map(serde_json::to_string)
-                .transpose()?,
-        )
-        .execute(&self.inner)
         .await?;
-
         advance_federation_application_frontier(self).await?;
-
         Ok(())
+    }
+
+    async fn record_federation_operation_application_state_deferred(
+        &mut self,
+        entry: &FederationJournalEntry,
+        application: &FederationApplicationState,
+    ) -> Result<(), Self::Err> {
+        update_federation_operation_application_state_without_frontier_advance(
+            self,
+            entry.operation_id,
+            Some(entry),
+            application,
+        )
+        .await
+    }
+
+    async fn advance_federation_application_frontier(&mut self) -> Result<(), Self::Err> {
+        advance_federation_application_frontier(self).await
+    }
+
+    async fn begin_federation_apply_savepoint(&mut self, name: &str) -> Result<(), Self::Err> {
+        ensure_valid_federation_savepoint_name(name)?;
+        query(&format!("SAVEPOINT {name}"))?
+            .batch(&self.inner)
+            .await
+    }
+
+    async fn release_federation_apply_savepoint(&mut self, name: &str) -> Result<(), Self::Err> {
+        ensure_valid_federation_savepoint_name(name)?;
+        query(&format!("RELEASE SAVEPOINT {name}"))?
+            .batch(&self.inner)
+            .await
+    }
+
+    async fn rollback_federation_apply_savepoint(&mut self, name: &str) -> Result<(), Self::Err> {
+        ensure_valid_federation_savepoint_name(name)?;
+        query(&format!("ROLLBACK TO SAVEPOINT {name}"))?
+            .batch(&self.inner)
+            .await?;
+        query(&format!("RELEASE SAVEPOINT {name}"))?
+            .batch(&self.inner)
+            .await
     }
 
     async fn set_federation_dkg_member_sequence(
@@ -2479,9 +2704,13 @@ where
         &mut self,
         items: &[FederationAlephBftFinalizedItem],
     ) -> Result<(), Self::Err> {
-        for item in items {
-            insert_federation_aleph_bft_finalized_item(self, item).await?;
+        if items.is_empty() {
+            return Ok(());
         }
+        for item in items {
+            insert_federation_aleph_bft_finalized_item_without_frontier_advance(self, item).await?;
+        }
+        advance_federation_finalized_item_frontier(self).await?;
 
         Ok(())
     }
@@ -2750,6 +2979,33 @@ where
         .execute(&self.inner)
         .await?;
 
+        Ok(())
+    }
+
+    async fn remove_federation_aleph_bft_pending_operations(
+        &mut self,
+        operation_ids: &[FederationOperationId],
+    ) -> Result<(), Self::Err> {
+        if operation_ids.is_empty() {
+            return Ok(());
+        }
+        let ids = operation_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        for chunk in ids.chunks(FEDERATION_SQL_IN_CLAUSE_CHUNK_SIZE) {
+            query(
+                r#"
+                DELETE FROM federation_aleph_bft_pending_operations
+                WHERE operation_id IN (:operation_ids)
+                "#,
+            )?
+            .bind_vec("operation_ids", chunk.to_vec())?
+            .execute(&self.inner)
+            .await?;
+        }
         Ok(())
     }
 }
@@ -3142,6 +3398,170 @@ where
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
         federation_journal_entry(&*conn, key, before).await
+    }
+
+    async fn get_federation_journal_entries_by_keys(
+        &self,
+        operation_ids: &[FederationOperationId],
+        conflict_keys: &[FederationOperationConflictKey],
+        before: Option<u64>,
+    ) -> Result<Vec<FederationJournalEntry>, Self::Err> {
+        if operation_ids.is_empty() && conflict_keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        let mut entries = std::collections::BTreeMap::new();
+
+        if !operation_ids.is_empty() {
+            let unique_ids = operation_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            for chunk in unique_ids.chunks(FEDERATION_SQL_IN_CLAUSE_CHUNK_SIZE) {
+                let rows = match before {
+                    None => {
+                        query(federation_journal_entry_select!(
+                            "WHERE operation_index IN (
+                                SELECT MAX(operation_index)
+                                FROM federation_journal_entries
+                                WHERE operation_id IN (:operation_ids)
+                                GROUP BY operation_id
+                            )"
+                        ))?
+                        .bind_vec("operation_ids", chunk.to_vec())?
+                        .fetch_all(&*conn)
+                        .await?
+                    }
+                    Some(next_index) => {
+                        query(federation_journal_entry_select!(
+                            "WHERE operation_index IN (
+                                SELECT MAX(operation_index)
+                                FROM federation_journal_entries
+                                WHERE operation_id IN (:operation_ids)
+                                  AND operation_index < :next_index
+                                GROUP BY operation_id
+                            )"
+                        ))?
+                        .bind_vec("operation_ids", chunk.to_vec())?
+                        .bind("next_index", next_index as i64)
+                        .fetch_all(&*conn)
+                        .await?
+                    }
+                };
+                for row in rows {
+                    let entry = sql_row_to_federation_journal_entry(row)?;
+                    entries.insert(entry.index, entry);
+                }
+            }
+        }
+
+        if !conflict_keys.is_empty() {
+            let unique_keys = conflict_keys
+                .iter()
+                .map(serde_json::to_string)
+                .collect::<Result<std::collections::BTreeSet<_>, _>>()?
+                .into_iter()
+                .collect::<Vec<_>>();
+            for chunk in unique_keys.chunks(FEDERATION_SQL_IN_CLAUSE_CHUNK_SIZE) {
+                let rows = match before {
+                    None => {
+                        query(federation_journal_entry_select!(
+                            "WHERE operation_index IN (
+                                SELECT MAX(operation_index)
+                                FROM federation_journal_conflict_keys
+                                WHERE conflict_key_json IN (:conflict_keys)
+                                GROUP BY conflict_key_json
+                            )"
+                        ))?
+                        .bind_vec("conflict_keys", chunk.to_vec())?
+                        .fetch_all(&*conn)
+                        .await?
+                    }
+                    Some(next_index) => {
+                        query(federation_journal_entry_select!(
+                            "WHERE operation_index IN (
+                                SELECT MAX(operation_index)
+                                FROM federation_journal_conflict_keys
+                                WHERE conflict_key_json IN (:conflict_keys)
+                                  AND operation_index < :next_index
+                                GROUP BY conflict_key_json
+                            )"
+                        ))?
+                        .bind_vec("conflict_keys", chunk.to_vec())?
+                        .bind("next_index", next_index as i64)
+                        .fetch_all(&*conn)
+                        .await?
+                    }
+                };
+                for row in rows {
+                    let entry = sql_row_to_federation_journal_entry(row)?;
+                    entries.insert(entry.index, entry);
+                }
+            }
+        }
+
+        Ok(entries.into_values().collect())
+    }
+
+    async fn get_federation_journal_application_states(
+        &self,
+        operation_ids: &[FederationOperationId],
+    ) -> Result<
+        std::collections::BTreeMap<FederationOperationId, (u64, FederationApplicationState)>,
+        Self::Err,
+    > {
+        if operation_ids.is_empty() {
+            return Ok(std::collections::BTreeMap::new());
+        }
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        let unique_ids = operation_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let mut states = std::collections::BTreeMap::new();
+        for chunk in unique_ids.chunks(FEDERATION_SQL_IN_CLAUSE_CHUNK_SIZE) {
+            let rows = query(
+                r#"
+                SELECT operation_index, operation_id, status, rejection_json
+                FROM federation_journal_entries
+                WHERE operation_id IN (:operation_ids)
+                ORDER BY operation_index ASC
+                "#,
+            )?
+            .bind_vec("operation_ids", chunk.to_vec())?
+            .fetch_all(&*conn)
+            .await?;
+            for row in rows {
+                unpack_into!(let (operation_index, operation_id, status, rejection_json) = row);
+                let operation_index: u64 = column_as_number!(operation_index);
+                let operation_id = FederationOperationId::from_hex(column_as_string!(
+                    &operation_id
+                ))
+                .map_err(|e| Error::Internal(format!("Invalid federation operation id: {e}")))?;
+                let application = FederationApplicationState::from_parts(
+                    operation_index,
+                    status_from_str(&column_as_string!(&status))?,
+                    optional_json(&rejection_json, "journal rejection")?,
+                )
+                .map_err(|e| {
+                    Error::Internal(format!("Invalid federation application state: {e}"))
+                })?;
+                states.insert(operation_id, (operation_index, application));
+            }
+        }
+        Ok(states)
     }
 
     async fn get_federation_dkg_member_sequences(

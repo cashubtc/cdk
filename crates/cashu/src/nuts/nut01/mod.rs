@@ -16,11 +16,12 @@ mod public_key;
 mod secret_key;
 
 pub use self::bls::{
-    aggregate_blind_signature_shares, aggregate_public_key_commitments,
-    aggregate_public_key_shares, aggregate_secret_key_shares, batch_verify_blind_signature_shares,
-    evaluate_public_key_commitments, evaluate_secret_key_coefficients, trusted_dealer_keygen,
-    verify_blind_signature_share, BlsAggregatePublicKey, BlsBlindSignatureShare, BlsPublicKeyShare,
-    BlsSecretKeyShare, BlsSignerId, BlsThresholdKeySet,
+    aggregate_blind_signature_shares, aggregate_blind_signature_shares_batch,
+    aggregate_public_key_commitments, aggregate_public_key_shares, aggregate_secret_key_shares,
+    batch_verify_blind_signature_shares, evaluate_public_key_commitments,
+    evaluate_secret_key_coefficients, trusted_dealer_keygen, verify_blind_signature_share,
+    BlsAggregatePublicKey, BlsBlindSignatureShare, BlsPublicKeyShare, BlsSecretKeyShare,
+    BlsSignerId, BlsThresholdKeySet,
 };
 pub use self::bls::{BlsG1PublicKey, BlsG2PublicKey, BlsSecretKey};
 pub use self::public_key::PublicKey;

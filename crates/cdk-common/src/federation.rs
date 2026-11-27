@@ -254,7 +254,8 @@ pub use self::transaction_proposal::{
 pub use self::transport::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
     FederationAlephBftBackupRequest, FederationAlephBftBackupResponse,
-    FederationAlephBftBackupStatus, FederationAlephBftNetworkMessageRequest,
+    FederationAlephBftBackupStatus, FederationAlephBftNetworkMessageBatchRequest,
+    FederationAlephBftNetworkMessageBatchResponse, FederationAlephBftNetworkMessageRequest,
     FederationAlephBftNetworkMessageResponse, FederationApplicationCustodyAbortRequest,
     FederationApplicationThresholdDhRequest, FederationApplicationThresholdDhResponse,
     FederationApplicationVirtualMusigCommitmentRequest,
@@ -281,7 +282,9 @@ pub use self::transport::{
     FederationSubmitOperationResponse, FederationWalletRebroadcastResponse,
     FederationWalletTransactionRequest, FEDERATION_MAX_ALEPH_BFT_BACKUP_CHUNKS_PER_PAGE,
     FEDERATION_MAX_ALEPH_BFT_BACKUP_PAGE_BYTES, FEDERATION_MAX_ALEPH_BFT_BACKUP_RAW_BYTES_PER_PAGE,
-    FEDERATION_MAX_ALEPH_BFT_BACKUP_REQUEST_BYTES, FEDERATION_REST_API_VERSION,
+    FEDERATION_MAX_ALEPH_BFT_BACKUP_REQUEST_BYTES, FEDERATION_MAX_ALEPH_BFT_NETWORK_BATCH_BYTES,
+    FEDERATION_MAX_ALEPH_BFT_NETWORK_BATCH_MESSAGES,
+    FEDERATION_MAX_ALEPH_BFT_NETWORK_BATCH_REQUEST_BYTES, FEDERATION_REST_API_VERSION,
 };
 #[cfg(any(test, feature = "test"))]
 pub use self::trusted_dealer::{

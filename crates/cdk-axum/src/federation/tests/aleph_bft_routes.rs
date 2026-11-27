@@ -537,3 +537,66 @@ async fn federation_peer_client_rejects_aleph_bft_network_response_session_misma
     ));
     assert_eq!(transport.aleph_bft_network_message_requests().len(), 1);
 }
+
+#[tokio::test]
+async fn private_aleph_bft_network_message_batch_route_accepts_signed_batch_and_rejects_empty_or_replayed(
+) {
+    let (state, public_config, peer_private) = aleph_bft_route_state().await;
+    let (mut network, handle) = CdkAlephBftNetwork::<u64>::new_pair();
+    let activity_hint = CdkAlephBftActivityHint::default();
+    *state.federation.aleph_bft_network_inbound.write().await = Some(Arc::new(
+        CdkAlephBftNetworkInboundHandle::with_activity_hint(0, &handle, activity_hint.clone()),
+    ));
+
+    let empty_batch = FederationSignedRequest::new_signed(
+        public_config.federation_id,
+        member_id(1),
+        1,
+        FederationRestMessageKind::AlephBftNetworkMessageBatch,
+        FederationAlephBftNetworkMessageBatchRequest::new(0, Vec::new()),
+        &peer_private,
+    )
+    .expect("signed empty batch");
+    let empty_err = post_aleph_bft_network_message_batch(State(state.clone()), Json(empty_batch))
+        .await
+        .expect_err("empty batch must be rejected");
+    let detail = response_error_detail(empty_err).await;
+    assert!(
+        detail.contains("must not be empty"),
+        "unexpected empty-batch detail: {detail}"
+    );
+
+    // Rejected empty batch must not have consumed sequence 1.
+    let valid_batch = FederationSignedRequest::new_signed(
+        public_config.federation_id,
+        member_id(1),
+        1,
+        FederationRestMessageKind::AlephBftNetworkMessageBatch,
+        FederationAlephBftNetworkMessageBatchRequest::new(
+            0,
+            vec![101u64.encode(), 202u64.encode()],
+        ),
+        &peer_private,
+    )
+    .expect("signed valid batch");
+    let response =
+        post_aleph_bft_network_message_batch(State(state.clone()), Json(valid_batch.clone()))
+            .await
+            .expect("accepted batch")
+            .0;
+    assert_eq!(response.federation_id, public_config.federation_id);
+    assert_eq!(response.session_id, 0);
+    assert_eq!(response.accepted_count, 2);
+    assert!(activity_hint.is_active());
+    assert_eq!(network.next_event().await, Some(101));
+    assert_eq!(network.next_event().await, Some(202));
+
+    let replay_err = post_aleph_bft_network_message_batch(State(state), Json(valid_batch))
+        .await
+        .expect_err("replayed batch sequence must be rejected");
+    let detail = response_error_detail(replay_err).await;
+    assert!(
+        detail.contains("stale sequence"),
+        "unexpected replay detail: {detail}"
+    );
+}

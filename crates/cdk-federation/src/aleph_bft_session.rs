@@ -29,8 +29,7 @@ use crate::FederationNode;
 pub use self::faults::TestAlephBftSessionFaults;
 pub use self::faults::{AlephBftSessionFaults, NoAlephBftSessionFaults};
 use super::aleph_bft_network::{
-    run_cdk_aleph_bft_network_pump_tick_with_retry_queue_and_first_outbound,
-    CdkAlephBftNetworkInboundHandle, CdkAlephBftNetworkPumpConfig, CdkAlephBftNetworkRetryQueue,
+    run_cdk_aleph_bft_network_pump, CdkAlephBftNetworkInboundHandle, CdkAlephBftNetworkPumpConfig,
 };
 use super::aleph_bft_runtime::{
     CdkAlephBftActivityHint, CdkAlephBftFinalizedUnit, CdkAlephBftKeychain, CdkAlephBftNetwork,
@@ -38,7 +37,7 @@ use super::aleph_bft_runtime::{
     CdkAlephBftTokioSpawnHandle, CDK_ALEPH_BFT_NETWORK_ACTIVITY_GRACE,
 };
 use super::peer_client::FederationRestPeerClient;
-use super::sync_config::{federation_peer_sync_interval, FederationPeerSyncConfig};
+use super::sync_config::FederationPeerSyncConfig;
 use crate::is_retryable_federation_apply_error;
 
 // AlephBFT validates its default delay schedule by summing all configured
@@ -48,6 +47,7 @@ use crate::is_retryable_federation_apply_error;
 const CDK_ALEPH_BFT_MAX_ROUND: u16 = 3000;
 const CDK_ALEPH_BFT_IDLE_SLOWDOWN_AFTER_ROUND: usize = 64;
 const CDK_ALEPH_BFT_IDLE_UNIT_CREATION_DELAY: Duration = Duration::from_secs(2);
+const CDK_ALEPH_BFT_ACTIVITY_BROADCAST_MIN_INTERVAL: Duration = Duration::from_millis(500);
 const CDK_ALEPH_BFT_ESSENTIAL_TASK_ROOT_EXIT_GRACE: Duration = Duration::from_secs(1);
 static NEXT_ALEPH_BFT_SESSION_GENERATION: AtomicU64 = AtomicU64::new(1);
 
@@ -797,120 +797,15 @@ where
             if panic_network_pump_task {
                 panic!("injected AlephBFT network pump task panic");
             }
-            let mut interval = federation_peer_sync_interval(sync_config);
-            let mut retry_queue = CdkAlephBftNetworkRetryQueue::default();
-            loop {
-                let first_outbound = tokio::select! {
-                    outbound = network_handle.next_outgoing() => match outbound {
-                        Some(outbound) => Some(outbound),
-                        None => {
-                            tracing::warn!("AlephBFT network outbound bridge is closed");
-                            break;
-                        }
-                    },
-                    _ = interval.tick() => None,
-                };
-                let has_pump_work = first_outbound.is_some()
-                    || !retry_queue.is_empty()
-                    || network_handle.outbound_queue_len() > 0;
-                let pump_timer = has_pump_work.then(|| {
-                    crate::latency::FederationLatencyTimer::start(
-                        crate::latency::FederationLatencyCorrelation::Session,
-                        pump_config.session_id.to_string(),
-                        crate::latency::FederationLatencyBackend::AlephBft,
-                        crate::latency::FederationLatencyDirection::Internal,
-                        crate::latency::FederationLatencyPhase::AlephBftNetworkPump,
-                    )
-                });
-                let pump_result =
-                    run_cdk_aleph_bft_network_pump_tick_with_retry_queue_and_first_outbound(
-                        &mut network_handle,
-                        &pump_keychain,
-                        &client,
-                        pump_config,
-                        &mut retry_queue,
-                        first_outbound,
-                    )
-                    .await;
-                let pump_outcome = match &pump_result {
-                    Ok(outcome)
-                        if outcome.messages_drained > 0 || outcome.retry_messages_drained > 0 =>
-                    {
-                        crate::latency::FederationLatencyOutcome::Success
-                    }
-                    Ok(_) => crate::latency::FederationLatencyOutcome::Skipped,
-                    Err(_) => crate::latency::FederationLatencyOutcome::Error,
-                };
-                if let Some(pump_timer) = pump_timer {
-                    pump_timer.finish(pump_outcome);
-                }
-                match pump_result {
-                    Ok(outcome) => {
-                        #[cfg(any(test, feature = "test-utils"))]
-                        crate::aleph_bft_latency::record_network_pump_tick(
-                            outcome.messages_drained,
-                            outcome.encoded_bytes,
-                            outcome.retry_messages_drained,
-                            outcome.retry_queue_len,
-                            outcome.retry_deliveries_dropped,
-                            network_handle.outbound_queue_len(),
-                        );
-                        if outcome.messages_drained > 0 || outcome.retry_messages_drained > 0 {
-                            tracing::trace!(
-                                target: "cdk_axum::federation::aleph_bft_latency",
-                                stage = "network_pump_tick",
-                                session_id = pump_config.session_id,
-                                messages_drained = outcome.messages_drained,
-                                retry_messages_drained = outcome.retry_messages_drained,
-                                encoded_bytes = outcome.encoded_bytes,
-                                remote_accepted_members = outcome.remote_accepted_members.len(),
-                                remote_failed_members = outcome.remote_failed_members.len(),
-                                remote_requeued_members = outcome.remote_requeued_members.len(),
-                                remote_skipped_members = outcome.remote_skipped_members.len(),
-                                retry_queue_len = outcome.retry_queue_len,
-                                retry_deliveries_dropped = outcome.retry_deliveries_dropped,
-                                outbound_queue_len = network_handle.outbound_queue_len(),
-                                reached_idle = outcome.reached_idle,
-                                "AlephBFT network pump latency sample"
-                            );
-                            let remote_failed_members = outcome.remote_failed_members.len();
-                            let remote_requeued_members = outcome.remote_requeued_members.len();
-                            let remote_skipped_members = outcome.remote_skipped_members.len();
-                            if remote_failed_members > 0
-                                || remote_requeued_members > 0
-                                || remote_skipped_members > 0
-                            {
-                                tracing::debug!(
-                                    messages_drained = outcome.messages_drained,
-                                    retry_messages_drained = outcome.retry_messages_drained,
-                                    encoded_bytes = outcome.encoded_bytes,
-                                    remote_accepted_members = outcome.remote_accepted_members.len(),
-                                    remote_failed_members,
-                                    remote_requeued_members,
-                                    remote_skipped_members,
-                                    retry_queue_len = outcome.retry_queue_len,
-                                    retry_deliveries_dropped = outcome.retry_deliveries_dropped,
-                                    reached_idle = outcome.reached_idle,
-                                    "AlephBFT network pump tick completed with incomplete delivery"
-                                );
-                            } else {
-                                tracing::trace!(
-                                    messages_drained = outcome.messages_drained,
-                                    retry_messages_drained = outcome.retry_messages_drained,
-                                    encoded_bytes = outcome.encoded_bytes,
-                                    remote_accepted_members = outcome.remote_accepted_members.len(),
-                                    retry_queue_len = outcome.retry_queue_len,
-                                    retry_deliveries_dropped = outcome.retry_deliveries_dropped,
-                                    reached_idle = outcome.reached_idle,
-                                    "AlephBFT network pump tick completed"
-                                );
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        tracing::warn!("AlephBFT network pump tick failed: {}", err);
-                    }
-                }
+            if let Err(err) = run_cdk_aleph_bft_network_pump(
+                &mut network_handle,
+                &pump_keychain,
+                &client,
+                pump_config,
+            )
+            .await
+            {
+                tracing::warn!("AlephBFT network pump stopped with error: {}", err);
             }
         };
         match AssertUnwindSafe(pump).catch_unwind().await {
@@ -1077,61 +972,115 @@ async fn run_aleph_bft_activity_broadcast_loop<T>(
     session_id: u64,
     db: DynMintDatabase,
     activity_hint: CdkAlephBftActivityHint,
-    mut pending_operation_ids: BTreeSet<FederationOperationId>,
-    mut activity_receiver: mpsc::Receiver<FederationOperationId>,
+    pending_operation_ids: BTreeSet<FederationOperationId>,
+    activity_receiver: mpsc::Receiver<FederationOperationId>,
 ) where
     T: Transport + 'static,
 {
-    if !pending_operation_ids.is_empty() {
+    run_aleph_bft_activity_broadcast_loop_with_interval(
+        client,
+        peers,
+        session_id,
+        db,
+        activity_hint,
+        pending_operation_ids,
+        activity_receiver,
+        CDK_ALEPH_BFT_ACTIVITY_BROADCAST_MIN_INTERVAL,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_aleph_bft_activity_broadcast_loop_with_interval<T>(
+    client: FederationRestPeerClient<T>,
+    peers: Vec<MemberConfigPublic>,
+    session_id: u64,
+    db: DynMintDatabase,
+    activity_hint: CdkAlephBftActivityHint,
+    pending_operation_ids: BTreeSet<FederationOperationId>,
+    mut activity_receiver: mpsc::Receiver<FederationOperationId>,
+    min_broadcast_interval: Duration,
+) where
+    T: Transport + 'static,
+{
+    let refresh_interval = aleph_bft_activity_refresh_interval();
+    let mut active_operation_id = pending_operation_ids.into_iter().next();
+    let mut last_broadcast_at: Option<tokio::time::Instant> = None;
+    let mut next_refresh_at = tokio::time::Instant::now() + refresh_interval;
+
+    if let Some(operation_id) = active_operation_id {
         refresh_aleph_bft_operation_activity(
             &client,
             &peers,
             session_id,
             &activity_hint,
-            &pending_operation_ids,
+            operation_id,
             false,
         )
         .await;
+        last_broadcast_at = Some(tokio::time::Instant::now());
+        next_refresh_at = tokio::time::Instant::now() + refresh_interval;
     }
 
     loop {
-        if pending_operation_ids.is_empty() {
-            let Some(operation_id) = activity_receiver.recv().await else {
+        if active_operation_id.is_none() {
+            let Some(mut operation_id) = activity_receiver.recv().await else {
                 return;
             };
-            pending_operation_ids.insert(operation_id);
+            while let Ok(extra_operation_id) = activity_receiver.try_recv() {
+                operation_id = extra_operation_id;
+            }
+            active_operation_id = Some(operation_id);
+            // Idle -> active transition always broadcasts immediately to wake peers.
             refresh_aleph_bft_operation_activity(
                 &client,
                 &peers,
                 session_id,
                 &activity_hint,
-                &BTreeSet::from([operation_id]),
+                operation_id,
                 true,
             )
             .await;
+            let now = tokio::time::Instant::now();
+            last_broadcast_at = Some(now);
+            next_refresh_at = now + refresh_interval;
             continue;
         }
 
         tokio::select! {
             operation_id = activity_receiver.recv() => {
-                let Some(operation_id) = operation_id else {
+                let Some(mut operation_id) = operation_id else {
                     return;
                 };
-                pending_operation_ids.insert(operation_id);
-                refresh_aleph_bft_operation_activity(
-                    &client,
-                    &peers,
-                    session_id,
-                    &activity_hint,
-                    &BTreeSet::from([operation_id]),
-                    true,
-                )
-                .await;
+                while let Ok(extra_operation_id) = activity_receiver.try_recv() {
+                    operation_id = extra_operation_id;
+                }
+                active_operation_id = Some(operation_id);
+                activity_hint.mark_local_pending();
+
+                let now = tokio::time::Instant::now();
+                let should_broadcast = match last_broadcast_at {
+                    Some(last) => now.saturating_duration_since(last) >= min_broadcast_interval,
+                    None => true,
+                };
+                if should_broadcast {
+                    refresh_aleph_bft_operation_activity(
+                        &client,
+                        &peers,
+                        session_id,
+                        &activity_hint,
+                        operation_id,
+                        true,
+                    )
+                    .await;
+                    last_broadcast_at = Some(tokio::time::Instant::now());
+                }
             }
-            () = tokio::time::sleep(aleph_bft_activity_refresh_interval()) => {
+            () = tokio::time::sleep_until(next_refresh_at) => {
+                next_refresh_at = tokio::time::Instant::now() + refresh_interval;
                 match pending_aleph_bft_operation_ids(&db, session_id).await {
                     Ok(durable_operation_ids) => {
-                        pending_operation_ids = durable_operation_ids;
+                        active_operation_id = durable_operation_ids.into_iter().next();
                     }
                     Err(err) => {
                         tracing::warn!(
@@ -1141,16 +1090,17 @@ async fn run_aleph_bft_activity_broadcast_loop<T>(
                         );
                     }
                 }
-                if !pending_operation_ids.is_empty() {
+                if let Some(operation_id) = active_operation_id {
                     refresh_aleph_bft_operation_activity(
                         &client,
                         &peers,
                         session_id,
                         &activity_hint,
-                        &pending_operation_ids,
+                        operation_id,
                         false,
                     )
                     .await;
+                    last_broadcast_at = Some(tokio::time::Instant::now());
                 }
             }
         }
@@ -1171,15 +1121,12 @@ async fn refresh_aleph_bft_operation_activity<T>(
     peers: &[MemberConfigPublic],
     session_id: u64,
     activity_hint: &CdkAlephBftActivityHint,
-    operation_ids: &BTreeSet<FederationOperationId>,
+    operation_id: FederationOperationId,
     warn_if_unreachable: bool,
 ) where
     T: Transport,
 {
     // One operation-bound lease is enough to keep the shared session active.
-    let Some(operation_id) = operation_ids.first().copied() else {
-        return;
-    };
     activity_hint.mark_local_pending();
     broadcast_aleph_bft_operation_activity(
         client,
@@ -2145,12 +2092,14 @@ mod tests {
         let default_sync_config = FederationPeerSyncConfig::default();
         assert_eq!(
             default_sync_config.aleph_bft_active_unit_interval,
-            Duration::from_millis(200)
+            Duration::from_millis(30)
         );
         assert_eq!(
             default_sync_config.aleph_bft_network_pump_max_messages_per_tick,
-            1
+            64
         );
+        assert_eq!(default_sync_config.pending_mempool_item_limit, 4096);
+        assert_eq!(default_sync_config.response_waiter_limit, 4096);
 
         let sync_config = FederationPeerSyncConfig {
             aleph_bft_active_unit_interval: Duration::from_millis(100),
@@ -2226,5 +2175,217 @@ mod tests {
             (default_delay_config.unit_creation_delay)(0),
             "configured active cadence must preserve the upstream startup delay"
         );
+    }
+
+    #[derive(Clone)]
+    struct CountingActivityTransport {
+        federation_id: cdk::federation::FederationId,
+        request_count: Arc<std::sync::atomic::AtomicUsize>,
+        request_notify: Arc<tokio::sync::Notify>,
+    }
+
+    impl core::fmt::Debug for CountingActivityTransport {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_struct("CountingActivityTransport")
+                .field("request_count", &self.request_count.load(Ordering::Acquire))
+                .finish_non_exhaustive()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Transport for CountingActivityTransport {
+        fn with_proxy(
+            &mut self,
+            _proxy: url::Url,
+            _host_matcher: Option<&str>,
+            _accept_invalid_certs: bool,
+        ) -> Result<(), cdk_http_client::HttpError> {
+            Ok(())
+        }
+
+        async fn resolve_dns_txt(
+            &self,
+            _domain: &str,
+        ) -> Result<Vec<String>, cdk_http_client::HttpError> {
+            Ok(Vec::new())
+        }
+
+        async fn http_get(
+            &self,
+            url: url::Url,
+            _auth: Option<cdk::nuts::AuthToken>,
+        ) -> Result<cdk_http_client::RawResponse, cdk_http_client::HttpError> {
+            Err(cdk_http_client::HttpError::Other(format!(
+                "unexpected GET {}",
+                url.path()
+            )))
+        }
+
+        async fn http_post<P>(
+            &self,
+            url: url::Url,
+            _auth_token: Option<cdk::nuts::AuthToken>,
+            payload: &P,
+        ) -> Result<cdk_http_client::RawResponse, cdk_http_client::HttpError>
+        where
+            P: serde::Serialize + Send + Sync,
+        {
+            if url.path().ends_with("/federation/v1/aleph-bft/activity") {
+                let body = serde_json::to_vec(payload)?;
+                let signed: cdk::federation::FederationSignedRequest<
+                    FederationAlephBftActivityRequest,
+                > = serde_json::from_slice(&body)?;
+                self.request_count.fetch_add(1, Ordering::AcqRel);
+                self.request_notify.notify_waiters();
+                let response = cdk::federation::FederationAlephBftActivityResponse::new(
+                    self.federation_id,
+                    signed.payload.session_id,
+                    signed.payload.operation_id,
+                );
+                return Ok(cdk_http_client::RawResponse::new(
+                    200,
+                    serde_json::to_vec(&response)?,
+                ));
+            }
+            Err(cdk_http_client::HttpError::Other(format!(
+                "unexpected POST {}",
+                url.path()
+            )))
+        }
+
+        async fn http_post_form<P>(
+            &self,
+            url: url::Url,
+            _auth_token: Option<cdk::nuts::AuthToken>,
+            _payload: &P,
+        ) -> Result<cdk_http_client::RawResponse, cdk_http_client::HttpError>
+        where
+            P: serde::Serialize + Send + Sync,
+        {
+            Err(cdk_http_client::HttpError::Other(format!(
+                "unexpected form POST {}",
+                url.path()
+            )))
+        }
+    }
+
+    fn two_member_activity_bundle() -> cdk_common::federation::TrustedDealerConfigBundle {
+        use std::str::FromStr;
+
+        use cdk::mint_url::MintUrl;
+        use cdk::nuts::{CurrencyUnit, SecretKey};
+        use cdk_common::federation::{
+            generate_trusted_dealer_configs, ThresholdParams, TrustedDealerKeysetSpec,
+            TrustedDealerMember,
+        };
+        use cdk_common::nuts::nut01::BlsSecretKey;
+        use cdk_common::Amount;
+
+        let members = [1u16, 2]
+            .into_iter()
+            .map(|id| {
+                let mut key_bytes = [0u8; 32];
+                key_bytes[31] = id as u8;
+                let url =
+                    MintUrl::from_str(&format!("http://127.0.0.1:{}", 19080 + id)).expect("url");
+                TrustedDealerMember::new(
+                    MemberId::new(id).expect("member id"),
+                    url.clone(),
+                    url,
+                    SecretKey::from_slice(&key_bytes).expect("secret key"),
+                )
+            })
+            .collect();
+        let mut amount_coefficients = BTreeMap::new();
+        amount_coefficients.insert(
+            Amount::from(1),
+            vec![
+                BlsSecretKey::from_reduced_bytes(&[1u8; 32]),
+                BlsSecretKey::from_reduced_bytes(&[2u8; 32]),
+            ],
+        );
+        generate_trusted_dealer_configs(
+            ThresholdParams::new(2, 2, 2).expect("threshold params"),
+            members,
+            vec![TrustedDealerKeysetSpec::new(
+                CurrencyUnit::Sat,
+                true,
+                0,
+                None,
+                amount_coefficients,
+            )],
+        )
+        .expect("two-member bundle")
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn activity_broadcast_loop_coalesces_bursts_and_rate_limits_while_active() {
+        let bundle = two_member_activity_bundle();
+        let local_id = MemberId::new(1).expect("member 1");
+        let peer_id = MemberId::new(2).expect("member 2");
+        let local_private = bundle.private_configs[&local_id].clone();
+        let peers = vec![bundle.public_config.members[&peer_id].clone()];
+        let transport = CountingActivityTransport {
+            federation_id: bundle.public_config.federation_id,
+            request_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            request_notify: Arc::new(tokio::sync::Notify::new()),
+        };
+        let client =
+            FederationRestPeerClient::new(transport.clone(), &bundle.public_config, local_private)
+                .expect("peer client");
+        let db: DynMintDatabase = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory mint db"),
+        );
+        let activity_hint = CdkAlephBftActivityHint::default();
+        let (activity_tx, activity_rx) = mpsc::channel(64);
+        let loop_task = tokio::spawn(run_aleph_bft_activity_broadcast_loop_with_interval(
+            client,
+            peers,
+            0,
+            db,
+            activity_hint.clone(),
+            BTreeSet::new(),
+            activity_rx,
+            CDK_ALEPH_BFT_ACTIVITY_BROADCAST_MIN_INTERVAL,
+        ));
+
+        // Burst of 10 operations on idle -> active transition coalesces into 1 broadcast.
+        for idx in 1u8..=10 {
+            activity_tx
+                .try_send(FederationOperationId::from_bytes([idx; 32]))
+                .expect("send burst op");
+        }
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(transport.request_count.load(Ordering::Acquire), 1);
+        assert!(activity_hint.is_active());
+
+        // Subsequent operations within the 500ms cooldown do not emit HTTP storms.
+        tokio::time::advance(Duration::from_millis(100)).await;
+        for idx in 11u8..=20 {
+            activity_tx
+                .try_send(FederationOperationId::from_bytes([idx; 32]))
+                .expect("send active op");
+        }
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(transport.request_count.load(Ordering::Acquire), 1);
+
+        // Once 500ms has elapsed, a new operation is permitted to broadcast again.
+        tokio::time::advance(Duration::from_millis(450)).await;
+        activity_tx
+            .try_send(FederationOperationId::from_bytes([21u8; 32]))
+            .expect("send post-cooldown op");
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(transport.request_count.load(Ordering::Acquire), 2);
+
+        drop(activity_tx);
+        loop_task.await.expect("activity loop exits cleanly");
     }
 }

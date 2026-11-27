@@ -444,11 +444,8 @@ impl FederationNode {
             .await;
         }
 
-        let response = self
-            .submit_federation_envelope_to_consensus(envelope)
-            .await?;
-        validate_federation_submit_response(&response, operation_id)?;
-        Ok(response)
+        self.submit_validated_federation_envelope_to_consensus(envelope, operation_id)
+            .await
     }
 
     #[cfg(feature = "federation-bark")]
@@ -507,11 +504,8 @@ impl FederationNode {
             }
         }
 
-        let response = self
-            .submit_federation_envelope_to_consensus(envelope)
-            .await?;
-        validate_federation_submit_response(&response, operation_id)?;
-        Ok(response)
+        self.submit_validated_federation_envelope_to_consensus(envelope, operation_id)
+            .await
     }
 
     pub fn submit_federation_envelope_to_consensus(
@@ -528,6 +522,15 @@ impl FederationNode {
         self.validate_federation_envelope_admission(&envelope)
             .await?;
         let operation_id = envelope.operation_id()?;
+        self.submit_validated_federation_envelope_to_consensus(envelope, operation_id)
+            .await
+    }
+
+    async fn submit_validated_federation_envelope_to_consensus(
+        &self,
+        envelope: FederationOperationEnvelope,
+        operation_id: FederationOperationId,
+    ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
         let response = self.federation.submit_envelope(envelope).await?;
         validate_federation_submit_response(&response, operation_id)?;
         Ok(response)
@@ -537,6 +540,35 @@ impl FederationNode {
         &self,
         envelope: &FederationOperationEnvelope,
     ) -> Result<(), cdk::Error> {
+        if let Some(config) = self.mint.effective_federation_config().await? {
+            match &envelope.operation {
+                cdk::federation::FederationOperation::Swap(swap) => {
+                    envelope.verify_authorization(config.public_config())?;
+                    let operation_id = envelope.operation_id()?;
+                    if config.is_operation_admission_verified(operation_id, swap.request.inputs()) {
+                        return Ok(());
+                    }
+                    config
+                        .validate_federated_swap_submission_async(swap.request.clone())
+                        .await?;
+                    config.record_verified_operation_admission(operation_id, swap.request.inputs());
+                    return Ok(());
+                }
+                cdk::federation::FederationOperation::Melt(melt) => {
+                    envelope.verify_authorization(config.public_config())?;
+                    let operation_id = envelope.operation_id()?;
+                    if config.is_operation_admission_verified(operation_id, melt.request.inputs()) {
+                        return Ok(());
+                    }
+                    config
+                        .validate_federated_melt_operation_submission_async(melt.clone())
+                        .await?;
+                    config.record_verified_operation_admission(operation_id, melt.request.inputs());
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
         self.federation.validate_envelope_admission(envelope).await
     }
 

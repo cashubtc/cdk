@@ -240,7 +240,7 @@ async fn process_federation_swap(
     let Some(config) = state.mint.effective_federation_config().await? else {
         return Ok(None);
     };
-    let envelope = config.swap_operation(payload.clone())?;
+    let envelope = config.swap_operation_async(payload.clone()).await?;
     let operation_id = envelope.operation_id()?;
     let timer = crate::federation::latency::FederationLatencyTimer::start(
         crate::federation::latency::FederationLatencyCorrelation::Operation,

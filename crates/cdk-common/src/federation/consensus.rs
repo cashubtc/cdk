@@ -297,7 +297,7 @@ pub const FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION: u16 = 1;
 pub const FEDERATION_RECOVERY_BARRIER_VERSION: u16 = 1;
 
 /// Default maximum number of consensus items in one AlephBFT unit payload.
-pub const FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS: usize = 64;
+pub const FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS: usize = 256;
 
 /// Default maximum canonical item-body bytes in one AlephBFT unit payload.
 pub const FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES: usize = FEDERATION_MAX_CONSENSUS_ITEM_BYTES * 4;

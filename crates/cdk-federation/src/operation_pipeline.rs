@@ -6,10 +6,9 @@
 //! deterministic application, and publishes terminal responses last. It does
 //! not select peers or perform network requests.
 
-use std::collections::BTreeMap;
 #[cfg(any(test, feature = "test-utils"))]
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 #[cfg(feature = "federation-bark")]
 use cdk::federation::FederationAlephBftOrderedOperationGroup;
@@ -23,15 +22,190 @@ use cdk::federation::{
     FederationRestMessageKind, FederationSubmitOperationResponse, MemberId,
 };
 use cdk::mint::Mint;
-use cdk_common::database::mint::FederationJournalEntryKey;
+use cdk_common::database::{self, DynMintDatabase};
 use futures::future::BoxFuture;
 
 use super::node_runtime::{
-    apply_federation_journal_entry_for_replay, finalized_unit_recovery_mismatch,
-    runtime_unavailable, FederationNodeRuntime,
+    finalized_unit_recovery_mismatch, runtime_unavailable, FederationNodeRuntime,
 };
 use super::FederationPeerSyncConfig;
 use crate::{FederationOperationNotificationStats, FederationOperationWaitRegistration};
+
+struct PendingOperationBatchRequest {
+    operations: Vec<FederationAlephBftPendingOperationRecord>,
+    completion: tokio::sync::oneshot::Sender<Result<(), cdk::Error>>,
+}
+
+#[derive(Default)]
+struct PendingOperationGroupCommitter {
+    queue: Mutex<Vec<PendingOperationBatchRequest>>,
+    commit_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+type PendingCommitterRegistryEntry = (
+    Weak<dyn database::MintDatabase<database::Error> + Send + Sync>,
+    Arc<PendingOperationGroupCommitter>,
+);
+
+fn pending_operation_committer_for_db(db: &DynMintDatabase) -> Arc<PendingOperationGroupCommitter> {
+    static REGISTRY: OnceLock<Mutex<Vec<PendingCommitterRegistryEntry>>> = OnceLock::new();
+    let registry = REGISTRY.get_or_init(|| Mutex::new(Vec::new()));
+    let mut entries = match registry.lock() {
+        Ok(entries) => entries,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    entries.retain(|(weak, _)| weak.strong_count() > 0);
+    if let Some((_, committer)) = entries
+        .iter()
+        .find(|(weak, _)| weak.upgrade().is_some_and(|live| Arc::ptr_eq(&live, db)))
+    {
+        return Arc::clone(committer);
+    }
+    let committer = Arc::new(PendingOperationGroupCommitter::default());
+    entries.push((Arc::downgrade(db), Arc::clone(&committer)));
+    committer
+}
+
+async fn write_pending_operations_tx(
+    db: &DynMintDatabase,
+    operations: &[FederationAlephBftPendingOperationRecord],
+) -> Result<(), cdk::Error> {
+    let mut tx = db.begin_transaction().await?;
+    for operation in operations {
+        if let Err(err) = tx
+            .add_federation_aleph_bft_pending_operation(operation)
+            .await
+        {
+            let _ = tx.rollback().await;
+            return Err(err.into());
+        }
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+impl PendingOperationGroupCommitter {
+    async fn persist(
+        &self,
+        db: &DynMintDatabase,
+        operations: Vec<FederationAlephBftPendingOperationRecord>,
+    ) -> Result<(), cdk::Error> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        {
+            let mut queue = match self.queue.lock() {
+                Ok(queue) => queue,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            queue.push(PendingOperationBatchRequest {
+                operations,
+                completion: tx,
+            });
+        }
+
+        let commit_guard = Arc::clone(&self.commit_lock).lock_owned().await;
+        let drained = {
+            let mut queue = match self.queue.lock() {
+                Ok(queue) => queue,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            std::mem::take(&mut *queue)
+                .into_iter()
+                .filter(|req| !req.completion.is_closed())
+                .collect::<Vec<_>>()
+        };
+
+        if !drained.is_empty() {
+            // Spawn the commit task holding `commit_guard` so cancelling the
+            // leader caller's future never drops other batched callers'
+            // oneshot senders mid-transaction.
+            let db = Arc::clone(db);
+            tokio::spawn(async move {
+                let _commit_guard = commit_guard;
+                if drained.len() == 1 {
+                    if let Some(request) = drained.into_iter().next() {
+                        if !request.completion.is_closed() {
+                            let result =
+                                write_pending_operations_tx(&db, &request.operations).await;
+                            let _ = request.completion.send(result);
+                        }
+                    }
+                } else {
+                    let combined_len = drained.iter().map(|req| req.operations.len()).sum();
+                    let mut combined = Vec::with_capacity(combined_len);
+                    for request in &drained {
+                        combined.extend(request.operations.iter().cloned());
+                    }
+                    match write_pending_operations_tx(&db, &combined).await {
+                        Ok(()) => {
+                            for request in drained {
+                                let _ = request.completion.send(Ok(()));
+                            }
+                        }
+                        Err(_) => {
+                            // Isolate failures when a coalesced batch hits an error
+                            // (e.g. one caller had a stale session) so unrelated
+                            // callers still commit cleanly.
+                            for request in drained {
+                                if !request.completion.is_closed() {
+                                    let result =
+                                        write_pending_operations_tx(&db, &request.operations).await;
+                                    let _ = request.completion.send(result);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        } else {
+            drop(commit_guard);
+        }
+
+        rx.await.map_err(|_| {
+            cdk::Error::Custom("pending operation group commit channel closed".to_string())
+        })?
+    }
+}
+
+#[cfg(any(test, feature = "federation-bdk"))]
+pub(crate) fn operation_kind_requires_bdk_reconciliation(
+    kind: cdk::federation::FederationOperationKind,
+) -> bool {
+    matches!(
+        kind,
+        cdk::federation::FederationOperationKind::AddressAllocation
+            | cdk::federation::FederationOperationKind::ChainObservation
+            | cdk::federation::FederationOperationKind::TransactionProposal
+            | cdk::federation::FederationOperationKind::TransactionSigned
+            | cdk::federation::FederationOperationKind::TransactionBroadcastIntent
+            | cdk::federation::FederationOperationKind::TransactionBroadcastObservation
+    )
+}
+
+#[cfg(any(test, feature = "federation-bdk"))]
+pub(crate) fn entries_require_bdk_reconciliation(entries: &[FederationJournalEntry]) -> bool {
+    entries
+        .iter()
+        .any(|entry| operation_kind_requires_bdk_reconciliation(entry.envelope.operation.kind()))
+}
+
+#[cfg(any(test, feature = "federation-bark"))]
+pub(crate) fn operation_kind_requires_bark_reconciliation(
+    kind: cdk::federation::FederationOperationKind,
+) -> bool {
+    matches!(
+        kind,
+        cdk::federation::FederationOperationKind::Application
+            | cdk::federation::FederationOperationKind::MintQuotePayment
+            | cdk::federation::FederationOperationKind::MeltQuotePayment
+    )
+}
+
+#[cfg(any(test, feature = "federation-bark"))]
+pub(crate) fn entries_require_bark_reconciliation(entries: &[FederationJournalEntry]) -> bool {
+    entries
+        .iter()
+        .any(|entry| operation_kind_requires_bark_reconciliation(entry.envelope.operation.kind()))
+}
 
 #[cfg(feature = "federation-bark")]
 fn validate_ordered_group_responses(
@@ -479,101 +653,212 @@ impl FederationNodeRuntime {
         let member = self.configured_member()?;
         let sync_config = member.peer_sync_config;
         let notifications = &member.notifications;
-        let mut consensus = member.consensus.lock().await;
 
-        let existing = operation_ids
-            .iter()
-            .map(|operation_id| {
-                consensus
-                    .journal()
-                    .entry_by_operation_id(*operation_id)
-                    .cloned()
-            })
-            .collect::<Vec<_>>();
-        if existing.iter().any(Option::is_some) {
-            if !existing.iter().all(Option::is_some) {
-                return Err(FederationError::AlephBft(
-                    FederationAlephBftError::OrderedGroupInvalid {
-                        reason: "ordered group is only partially present in the journal",
-                    },
-                )
-                .into());
-            }
-            let mut waits = Vec::with_capacity(existing.len());
-            for (operation_id, entry) in operation_ids.iter().copied().zip(existing) {
-                let entry = entry.expect("all ordered group entries were checked as present");
-                if matches!(entry.status(), FederationOperationStatus::Accepted) {
-                    waits.push(Some(notifications.register_waiter(
-                        operation_id,
-                        sync_config.response_waiter_limit,
-                    )?));
-                } else {
-                    waits.push(None);
-                }
-            }
-            let existing = operation_ids
-                .iter()
-                .map(|operation_id| {
-                    consensus
-                        .journal()
-                        .entry_by_operation_id(*operation_id)
-                        .cloned()
-                        .expect("all ordered group entries were checked as present")
-                })
-                .collect::<Vec<_>>();
-            drop(consensus);
-            let mut responses = Vec::with_capacity(operation_ids.len());
-            for ((operation_id, wait), entry) in
-                operation_ids.iter().copied().zip(waits).zip(existing)
-            {
-                let response = match wait {
-                    Some(wait) => {
-                        Self::wait_for_operation_acceptance(operation_id, sync_config, wait).await?
+        let mut persisted_pending = false;
+        let mut wait_registrations: Option<Vec<FederationOperationWaitRegistration<'_>>> = None;
+
+        let (wait_registrations, accepted_admission) = loop {
+            let (stamped_envelopes, session_id) = {
+                let consensus = member.consensus.lock().await;
+                let existing = operation_ids
+                    .iter()
+                    .map(|operation_id| {
+                        consensus
+                            .journal()
+                            .entry_by_operation_id(*operation_id)
+                            .cloned()
+                    })
+                    .collect::<Vec<_>>();
+                if existing.iter().any(Option::is_some) {
+                    if !existing.iter().all(Option::is_some) {
+                        drop(consensus);
+                        if persisted_pending {
+                            self.cleanup_uncommitted_pending_operations(&operation_ids)
+                                .await;
+                        }
+                        return Err(FederationError::AlephBft(
+                            FederationAlephBftError::OrderedGroupInvalid {
+                                reason: "ordered group is only partially present in the journal",
+                            },
+                        )
+                        .into());
                     }
-                    None => FederationSubmitOperationResponse::from_outcome(
-                        FederationJournalAppendOutcome::Duplicate(entry),
-                    ),
-                };
-                responses.push(response);
-            }
-            validate_ordered_group_responses(&responses)?;
-            return Ok(responses);
-        }
+                    let waits = match wait_registrations.take() {
+                        Some(existing_waits) => existing_waits
+                            .into_iter()
+                            .zip(&existing)
+                            .map(|(wait, entry)| {
+                                let entry = entry
+                                    .as_ref()
+                                    .expect("all ordered group entries were checked as present");
+                                if matches!(entry.status(), FederationOperationStatus::Accepted) {
+                                    Some(wait)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect::<Vec<_>>(),
+                        None => {
+                            let mut waits = Vec::with_capacity(existing.len());
+                            for (operation_id, entry) in
+                                operation_ids.iter().copied().zip(&existing)
+                            {
+                                let entry = entry
+                                    .as_ref()
+                                    .expect("all ordered group entries were checked as present");
+                                if matches!(entry.status(), FederationOperationStatus::Accepted) {
+                                    match notifications.register_waiter(
+                                        operation_id,
+                                        sync_config.response_waiter_limit,
+                                    ) {
+                                        Ok(wait) => waits.push(Some(wait)),
+                                        Err(err) => {
+                                            drop(consensus);
+                                            if persisted_pending {
+                                                self.cleanup_uncommitted_pending_operations(
+                                                    &operation_ids,
+                                                )
+                                                .await;
+                                            }
+                                            return Err(err);
+                                        }
+                                    }
+                                } else {
+                                    waits.push(None);
+                                }
+                            }
+                            waits
+                        }
+                    };
+                    drop(consensus);
+                    if persisted_pending {
+                        self.cleanup_uncommitted_pending_operations(&operation_ids)
+                            .await;
+                    }
+                    let mut responses = Vec::with_capacity(operation_ids.len());
+                    for ((operation_id, wait), entry) in
+                        operation_ids.iter().copied().zip(waits).zip(existing)
+                    {
+                        let entry =
+                            entry.expect("all ordered group entries were checked as present");
+                        let response = match wait {
+                            Some(wait) => {
+                                Self::wait_for_operation_acceptance(operation_id, sync_config, wait)
+                                    .await?
+                            }
+                            None => FederationSubmitOperationResponse::from_outcome(
+                                FederationJournalAppendOutcome::Duplicate(entry),
+                            ),
+                        };
+                        responses.push(response);
+                    }
+                    validate_ordered_group_responses(&responses)?;
+                    return Ok(responses);
+                }
 
-        let session = consensus.aleph_bft_status()?.session;
-        let envelopes = envelopes
-            .into_iter()
-            .map(|envelope| self.stamp_for_session(envelope, session))
-            .collect::<Result<Vec<_>, _>>()?;
-        let queued_before = consensus.pending_mempool_len();
-        let prepared = consensus.prepare_aleph_bft_envelope_group(envelopes.clone())?;
-        let admission = prepared.admission();
-        let accepted_admission = admission == FederationConsensusItemAdmission::Accepted;
-        if accepted_admission
-            && queued_before.saturating_add(envelopes.len())
-                > sync_config.pending_mempool_item_limit
-        {
-            return Err(FederationError::PendingConsensusMempoolFull {
-                pending: queued_before,
-                max: sync_config.pending_mempool_item_limit,
-            }
-            .into());
-        }
-        let wait_registrations = operation_ids
-            .iter()
-            .map(|operation_id| {
-                notifications.register_waiter(*operation_id, sync_config.response_waiter_limit)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        if accepted_admission {
-            let session_id = consensus.aleph_bft_status()?.session;
+                let session_id = match consensus.aleph_bft_status() {
+                    Ok(status) => status.session,
+                    Err(err) => {
+                        drop(consensus);
+                        if persisted_pending {
+                            self.cleanup_uncommitted_pending_operations(&operation_ids)
+                                .await;
+                        }
+                        return Err(err.into());
+                    }
+                };
+                let stamped_envelopes = match envelopes
+                    .iter()
+                    .cloned()
+                    .map(|envelope| self.stamp_for_session(envelope, session_id))
+                    .collect::<Result<Vec<_>, _>>()
+                {
+                    Ok(stamped) => stamped,
+                    Err(err) => {
+                        drop(consensus);
+                        if persisted_pending {
+                            self.cleanup_uncommitted_pending_operations(&operation_ids)
+                                .await;
+                        }
+                        return Err(err);
+                    }
+                };
+                let queued_before = consensus.pending_mempool_len();
+                let prepared =
+                    match consensus.prepare_aleph_bft_envelope_group(stamped_envelopes.clone()) {
+                        Ok(prepared) => prepared,
+                        Err(err) => {
+                            drop(consensus);
+                            if persisted_pending {
+                                self.cleanup_uncommitted_pending_operations(&operation_ids)
+                                    .await;
+                            }
+                            return Err(err.into());
+                        }
+                    };
+                let admission = prepared.admission();
+                if admission == FederationConsensusItemAdmission::DuplicateOperation {
+                    let waits = match wait_registrations.take() {
+                        Some(waits) => waits,
+                        None => operation_ids
+                            .iter()
+                            .map(|operation_id| {
+                                notifications.register_waiter(
+                                    *operation_id,
+                                    sync_config.response_waiter_limit,
+                                )
+                            })
+                            .collect::<Result<Vec<_>, _>>()?,
+                    };
+                    drop(consensus);
+                    break (waits, false);
+                }
+                if queued_before.saturating_add(stamped_envelopes.len())
+                    > sync_config.pending_mempool_item_limit
+                {
+                    drop(consensus);
+                    if persisted_pending {
+                        self.cleanup_uncommitted_pending_operations(&operation_ids)
+                            .await;
+                    }
+                    return Err(FederationError::PendingConsensusMempoolFull {
+                        pending: queued_before,
+                        max: sync_config.pending_mempool_item_limit,
+                    }
+                    .into());
+                }
+                // Register response waiters before persisting pending rows so
+                // waiter-limit rejections never leave orphan DB rows.
+                if wait_registrations.is_none() {
+                    match operation_ids
+                        .iter()
+                        .map(|operation_id| {
+                            notifications
+                                .register_waiter(*operation_id, sync_config.response_waiter_limit)
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                    {
+                        Ok(waits) => wait_registrations = Some(waits),
+                        Err(err) => {
+                            drop(consensus);
+                            if persisted_pending {
+                                self.cleanup_uncommitted_pending_operations(&operation_ids)
+                                    .await;
+                            }
+                            return Err(err);
+                        }
+                    }
+                }
+                (stamped_envelopes, session_id)
+            };
+
             let ordered_group = FederationAlephBftOrderedOperationGroup {
                 operation_ids: operation_ids.clone(),
             };
             let pending = operation_ids
                 .iter()
                 .copied()
-                .zip(envelopes)
+                .zip(stamped_envelopes.iter().cloned())
                 .map(
                     |(operation_id, envelope)| FederationAlephBftPendingOperationRecord {
                         operation_id,
@@ -583,10 +868,115 @@ impl FederationNodeRuntime {
                     },
                 )
                 .collect::<Vec<_>>();
-            self.persist_pending_operations(&pending).await?;
-        }
-        consensus.commit_prepared_aleph_bft_envelope_group(prepared);
-        drop(consensus);
+            if let Err(err) = self.persist_pending_operations(&pending).await {
+                let current_session = member
+                    .consensus
+                    .lock()
+                    .await
+                    .aleph_bft_status()
+                    .map(|status| status.session)
+                    .ok();
+                if current_session.is_some_and(|current| current > session_id) {
+                    continue;
+                }
+                if persisted_pending {
+                    self.cleanup_uncommitted_pending_operations(&operation_ids)
+                        .await;
+                }
+                return Err(err);
+            }
+            persisted_pending = true;
+
+            let mut consensus = member.consensus.lock().await;
+            let existing = operation_ids
+                .iter()
+                .map(|operation_id| {
+                    consensus
+                        .journal()
+                        .entry_by_operation_id(*operation_id)
+                        .cloned()
+                })
+                .collect::<Vec<_>>();
+            if existing.iter().any(Option::is_some) {
+                drop(consensus);
+                self.cleanup_uncommitted_pending_operations(&operation_ids)
+                    .await;
+                if !existing.iter().all(Option::is_some) {
+                    return Err(FederationError::AlephBft(
+                        FederationAlephBftError::OrderedGroupInvalid {
+                            reason: "ordered group is only partially present in the journal",
+                        },
+                    )
+                    .into());
+                }
+                let waits = wait_registrations
+                    .take()
+                    .expect("ordered group waiters were registered before persistence");
+                let mut responses = Vec::with_capacity(operation_ids.len());
+                for ((operation_id, wait), entry) in
+                    operation_ids.iter().copied().zip(waits).zip(existing)
+                {
+                    let entry = entry.expect("all ordered group entries were checked as present");
+                    let response = if matches!(entry.status(), FederationOperationStatus::Accepted)
+                    {
+                        Self::wait_for_operation_acceptance(operation_id, sync_config, wait).await?
+                    } else {
+                        FederationSubmitOperationResponse::from_outcome(
+                            FederationJournalAppendOutcome::Duplicate(entry),
+                        )
+                    };
+                    responses.push(response);
+                }
+                validate_ordered_group_responses(&responses)?;
+                return Ok(responses);
+            }
+            match consensus.aleph_bft_status() {
+                Ok(status) if status.session != session_id => continue,
+                Ok(_) => {}
+                Err(err) => {
+                    drop(consensus);
+                    self.cleanup_uncommitted_pending_operations(&operation_ids)
+                        .await;
+                    return Err(err.into());
+                }
+            }
+            let queued_before = consensus.pending_mempool_len();
+            let prepared = match consensus.prepare_aleph_bft_envelope_group(stamped_envelopes) {
+                Ok(prepared) => prepared,
+                Err(err) => {
+                    drop(consensus);
+                    self.cleanup_uncommitted_pending_operations(&operation_ids)
+                        .await;
+                    return Err(err.into());
+                }
+            };
+            let admission = prepared.admission();
+            if admission == FederationConsensusItemAdmission::DuplicateOperation {
+                let waits = wait_registrations
+                    .take()
+                    .expect("ordered group waiters were registered before persistence");
+                drop(consensus);
+                break (waits, false);
+            }
+            if queued_before.saturating_add(operation_ids.len())
+                > sync_config.pending_mempool_item_limit
+            {
+                drop(consensus);
+                self.cleanup_uncommitted_pending_operations(&operation_ids)
+                    .await;
+                return Err(FederationError::PendingConsensusMempoolFull {
+                    pending: queued_before,
+                    max: sync_config.pending_mempool_item_limit,
+                }
+                .into());
+            }
+            let waits = wait_registrations
+                .take()
+                .expect("ordered group waiters were registered before persistence");
+            consensus.commit_prepared_aleph_bft_envelope_group(prepared);
+            drop(consensus);
+            break (waits, true);
+        };
         for operation_id in &operation_ids {
             self.mark_consensus_activity(*operation_id, true).await;
             if accepted_admission {
@@ -619,48 +1009,250 @@ impl FederationNodeRuntime {
         let member = self.configured_member()?;
         let sync_config = member.peer_sync_config;
         let notifications = &member.notifications;
-        let mut consensus = member.consensus.lock().await;
-        if let Some(entry) = consensus.journal().entry_by_operation_id(operation_id) {
-            if matches!(entry.status(), FederationOperationStatus::Accepted) {
-                notifications.record_duplicate_pending_waiter_join();
-                let wait_registration = notifications
-                    .register_waiter(operation_id, sync_config.response_waiter_limit)?;
-                drop(consensus);
-                self.mark_consensus_activity(operation_id, true).await;
-                let response = Self::wait_for_operation_acceptance(
+
+        let mut persisted_pending = false;
+        let mut wait_registration: Option<FederationOperationWaitRegistration<'_>> = None;
+
+        let (wait_registration, accepted_admission) = loop {
+            let (stamped_envelope, session_id) = {
+                let consensus = member.consensus.lock().await;
+                if let Some(entry) = consensus.journal().entry_by_operation_id(operation_id) {
+                    if matches!(entry.status(), FederationOperationStatus::Accepted) {
+                        notifications.record_duplicate_pending_waiter_join();
+                        let wait = match wait_registration.take() {
+                            Some(wait) => wait,
+                            None => match notifications
+                                .register_waiter(operation_id, sync_config.response_waiter_limit)
+                            {
+                                Ok(wait) => wait,
+                                Err(err) => {
+                                    drop(consensus);
+                                    if persisted_pending {
+                                        self.cleanup_uncommitted_pending_operations(&[
+                                            operation_id,
+                                        ])
+                                        .await;
+                                    }
+                                    return Err(err);
+                                }
+                            },
+                        };
+                        drop(consensus);
+                        if persisted_pending {
+                            self.cleanup_uncommitted_pending_operations(&[operation_id])
+                                .await;
+                        }
+                        self.mark_consensus_activity(operation_id, true).await;
+                        let response =
+                            Self::wait_for_operation_acceptance(operation_id, sync_config, wait)
+                                .await?;
+                        #[cfg(feature = "prometheus")]
+                        self.record_consensus_rejection_metric(&operation_label, &response);
+                        return Ok(response);
+                    }
+
+                    let response = FederationSubmitOperationResponse::from_outcome(
+                        FederationJournalAppendOutcome::Duplicate(entry.clone()),
+                    );
+                    notifications.record_duplicate_submission();
+                    drop(consensus);
+                    if persisted_pending {
+                        self.cleanup_uncommitted_pending_operations(&[operation_id])
+                            .await;
+                    }
+                    return Ok(response);
+                }
+
+                let session_id = match consensus.aleph_bft_status() {
+                    Ok(status) => status.session,
+                    Err(err) => {
+                        drop(consensus);
+                        if persisted_pending {
+                            self.cleanup_uncommitted_pending_operations(&[operation_id])
+                                .await;
+                        }
+                        return Err(err.into());
+                    }
+                };
+                let stamped_envelope = match self.stamp_for_session(envelope.clone(), session_id) {
+                    Ok(stamped) => stamped,
+                    Err(err) => {
+                        drop(consensus);
+                        if persisted_pending {
+                            self.cleanup_uncommitted_pending_operations(&[operation_id])
+                                .await;
+                        }
+                        return Err(err);
+                    }
+                };
+                let queued_before = consensus.pending_mempool_len();
+                let prepared = match consensus.prepare_aleph_bft_envelope(stamped_envelope.clone())
+                {
+                    Ok(prepared) => prepared,
+                    Err(err) => {
+                        drop(consensus);
+                        if persisted_pending {
+                            self.cleanup_uncommitted_pending_operations(&[operation_id])
+                                .await;
+                        }
+                        #[cfg(feature = "prometheus")]
+                        self.record_rejected_operation_metric(&operation_label, "consensus");
+                        return Err(cdk::Error::from(err));
+                    }
+                };
+                if matches!(
+                    prepared.admission(),
+                    FederationConsensusItemAdmission::DuplicateOperation
+                ) {
+                    notifications.record_duplicate_pending_waiter_join();
+                    tracing::debug!(
+                        operation_id = %operation_id,
+                        "Duplicate AlephBFT federation operation is already pending"
+                    );
+                    let wait = match wait_registration.take() {
+                        Some(wait) => wait,
+                        None => notifications
+                            .register_waiter(operation_id, sync_config.response_waiter_limit)?,
+                    };
+                    drop(consensus);
+                    break (wait, false);
+                }
+                let limit = sync_config.pending_mempool_item_limit;
+                if queued_before >= limit {
+                    drop(consensus);
+                    if persisted_pending {
+                        self.cleanup_uncommitted_pending_operations(&[operation_id])
+                            .await;
+                    }
+                    let err = FederationError::PendingConsensusMempoolFull {
+                        pending: queued_before,
+                        max: limit,
+                    };
+                    #[cfg(feature = "prometheus")]
+                    self.record_rejected_operation_metric(&operation_label, "mempool_full");
+                    return Err(cdk::Error::from(err));
+                }
+                // Register response waiter before persisting the pending row so
+                // waiter-limit rejections never write an orphan pending row.
+                if wait_registration.is_none() {
+                    match notifications
+                        .register_waiter(operation_id, sync_config.response_waiter_limit)
+                    {
+                        Ok(wait) => wait_registration = Some(wait),
+                        Err(err) => {
+                            drop(consensus);
+                            if persisted_pending {
+                                self.cleanup_uncommitted_pending_operations(&[operation_id])
+                                    .await;
+                            }
+                            return Err(err);
+                        }
+                    }
+                }
+                (stamped_envelope, session_id)
+            };
+
+            if let Err(err) = self
+                .persist_pending_operation(FederationAlephBftPendingOperationRecord {
                     operation_id,
-                    sync_config,
-                    wait_registration,
-                )
-                .await?;
-                #[cfg(feature = "prometheus")]
-                self.record_consensus_rejection_metric(&operation_label, &response);
+                    session_id,
+                    envelope: stamped_envelope.clone(),
+                    ordered_group: None,
+                })
+                .await
+            {
+                let current_session = member
+                    .consensus
+                    .lock()
+                    .await
+                    .aleph_bft_status()
+                    .map(|status| status.session)
+                    .ok();
+                if current_session.is_some_and(|current| current > session_id) {
+                    continue;
+                }
+                if persisted_pending {
+                    self.cleanup_uncommitted_pending_operations(&[operation_id])
+                        .await;
+                }
+                return Err(err);
+            }
+            persisted_pending = true;
+
+            let mut consensus = member.consensus.lock().await;
+            if let Some(entry) = consensus.journal().entry_by_operation_id(operation_id) {
+                let is_accepted = matches!(entry.status(), FederationOperationStatus::Accepted);
+                let cloned_entry = (!is_accepted).then(|| entry.clone());
+                if is_accepted {
+                    notifications.record_duplicate_pending_waiter_join();
+                } else {
+                    notifications.record_duplicate_submission();
+                }
+                drop(consensus);
+                self.cleanup_uncommitted_pending_operations(&[operation_id])
+                    .await;
+                if is_accepted {
+                    let wait = wait_registration
+                        .take()
+                        .expect("operation waiter was registered before persistence");
+                    self.mark_consensus_activity(operation_id, true).await;
+                    let response =
+                        Self::wait_for_operation_acceptance(operation_id, sync_config, wait)
+                            .await?;
+                    #[cfg(feature = "prometheus")]
+                    self.record_consensus_rejection_metric(&operation_label, &response);
+                    return Ok(response);
+                }
+
+                let response = FederationSubmitOperationResponse::from_outcome(
+                    FederationJournalAppendOutcome::Duplicate(
+                        cloned_entry.expect("entry cloned for terminal duplicate"),
+                    ),
+                );
                 return Ok(response);
             }
-
-            let response = FederationSubmitOperationResponse::from_outcome(
-                FederationJournalAppendOutcome::Duplicate(entry.clone()),
-            );
-            notifications.record_duplicate_submission();
-            drop(consensus);
-            return Ok(response);
-        }
-
-        let envelope = self.stamp_for_session(envelope, consensus.aleph_bft_status()?.session)?;
-        let queued_before = consensus.pending_mempool_len();
-        let prepared = match consensus.prepare_aleph_bft_envelope(envelope.clone()) {
-            Ok(prepared) => prepared,
-            Err(err) => {
-                #[cfg(feature = "prometheus")]
-                self.record_rejected_operation_metric(&operation_label, "consensus");
-                return Err(cdk::Error::from(err));
+            match consensus.aleph_bft_status() {
+                Ok(status) if status.session != session_id => continue,
+                Ok(_) => {}
+                Err(err) => {
+                    drop(consensus);
+                    self.cleanup_uncommitted_pending_operations(&[operation_id])
+                        .await;
+                    return Err(err.into());
+                }
             }
-        };
-        let admission = prepared.admission();
-        let accepted_admission = matches!(admission, FederationConsensusItemAdmission::Accepted);
-        if accepted_admission {
+            let queued_before = consensus.pending_mempool_len();
+            let prepared = match consensus.prepare_aleph_bft_envelope(stamped_envelope) {
+                Ok(prepared) => prepared,
+                Err(err) => {
+                    drop(consensus);
+                    self.cleanup_uncommitted_pending_operations(&[operation_id])
+                        .await;
+                    #[cfg(feature = "prometheus")]
+                    self.record_rejected_operation_metric(&operation_label, "consensus");
+                    return Err(cdk::Error::from(err));
+                }
+            };
+            if matches!(
+                prepared.admission(),
+                FederationConsensusItemAdmission::DuplicateOperation
+            ) {
+                notifications.record_duplicate_pending_waiter_join();
+                tracing::debug!(
+                    operation_id = %operation_id,
+                    "Duplicate AlephBFT federation operation is already pending"
+                );
+                let wait = wait_registration
+                    .take()
+                    .expect("operation waiter was registered before persistence");
+                drop(consensus);
+                break (wait, false);
+            }
             let limit = sync_config.pending_mempool_item_limit;
             if queued_before >= limit {
+                drop(consensus);
+                self.cleanup_uncommitted_pending_operations(&[operation_id])
+                    .await;
                 let err = FederationError::PendingConsensusMempoolFull {
                     pending: queued_before,
                     max: limit,
@@ -669,32 +1261,13 @@ impl FederationNodeRuntime {
                 self.record_rejected_operation_metric(&operation_label, "mempool_full");
                 return Err(cdk::Error::from(err));
             }
-        }
-        if matches!(
-            admission,
-            FederationConsensusItemAdmission::DuplicateOperation
-        ) {
-            notifications.record_duplicate_pending_waiter_join();
-            tracing::debug!(
-                operation_id = %operation_id,
-                "Duplicate AlephBFT federation operation is already pending"
-            );
-        }
-        let wait_registration =
-            notifications.register_waiter(operation_id, sync_config.response_waiter_limit)?;
-        if accepted_admission {
-            let session_id = consensus.aleph_bft_status()?.session;
-            self.persist_pending_operation(FederationAlephBftPendingOperationRecord {
-                operation_id,
-                session_id,
-                envelope,
-                ordered_group: None,
-            })
-            .await?;
-        }
-
-        consensus.commit_prepared_aleph_bft_envelope(prepared);
-        drop(consensus);
+            let wait = wait_registration
+                .take()
+                .expect("operation waiter was registered before persistence");
+            consensus.commit_prepared_aleph_bft_envelope(prepared);
+            drop(consensus);
+            break (wait, true);
+        };
         self.mark_consensus_activity(operation_id, true).await;
         if accepted_admission {
             #[cfg(feature = "prometheus")]
@@ -764,6 +1337,31 @@ impl FederationNodeRuntime {
         self.persist_pending_operations(&[operation]).await
     }
 
+    async fn cleanup_uncommitted_pending_operations(
+        &self,
+        operation_ids: &[FederationOperationId],
+    ) {
+        if operation_ids.is_empty() {
+            return;
+        }
+        let Ok(mint) = self.active_mint() else {
+            return;
+        };
+        let db = mint.localstore();
+        let Ok(mut tx) = db.begin_transaction().await else {
+            return;
+        };
+        if tx
+            .remove_federation_aleph_bft_pending_operations(operation_ids)
+            .await
+            .is_ok()
+        {
+            let _ = tx.commit().await;
+        } else {
+            let _ = tx.rollback().await;
+        }
+    }
+
     pub async fn persist_pending_operations(
         &self,
         operations: &[FederationAlephBftPendingOperationRecord],
@@ -779,14 +1377,12 @@ impl FederationNodeRuntime {
                 "injected pending-operation persistence failure".to_string(),
             ));
         }
-        let db = self.active_mint()?.localstore();
-        let mut tx = db.begin_transaction().await?;
-        for operation in operations {
-            tx.add_federation_aleph_bft_pending_operation(operation)
-                .await?;
+        if operations.is_empty() {
+            return Ok(());
         }
-        tx.commit().await?;
-        Ok(())
+        let db = self.active_mint()?.localstore();
+        let committer = pending_operation_committer_for_db(&db);
+        committer.persist(&db, operations.to_vec()).await
     }
 
     pub async fn persist_finalization(
@@ -809,13 +1405,13 @@ impl FederationNodeRuntime {
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_aleph_bft_finalized_items(finalized_items)
             .await?;
-        for operation_id in finalized_items.iter().filter_map(|item| item.operation_id) {
-            tx.remove_federation_aleph_bft_pending_operation(operation_id)
-                .await?;
-        }
-        for entry in entries {
-            tx.add_federation_journal_entry(entry).await?;
-        }
+        let pending_operation_ids = finalized_items
+            .iter()
+            .filter_map(|item| item.operation_id)
+            .collect::<Vec<_>>();
+        tx.remove_federation_aleph_bft_pending_operations(&pending_operation_ids)
+            .await?;
+        tx.add_federation_journal_entries(entries).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -832,13 +1428,13 @@ impl FederationNodeRuntime {
             .await?;
         tx.add_federation_aleph_bft_finalized_items(finalized_items)
             .await?;
-        for operation_id in finalized_items.iter().filter_map(|item| item.operation_id) {
-            tx.remove_federation_aleph_bft_pending_operation(operation_id)
-                .await?;
-        }
-        for entry in entries {
-            tx.add_federation_journal_entry(entry).await?;
-        }
+        let pending_operation_ids = finalized_items
+            .iter()
+            .filter_map(|item| item.operation_id)
+            .collect::<Vec<_>>();
+        tx.remove_federation_aleph_bft_pending_operations(&pending_operation_ids)
+            .await?;
+        tx.add_federation_journal_entries(entries).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -879,43 +1475,33 @@ impl FederationNodeRuntime {
         }
         let _application = self.components.operation.lock().await;
         let db = self.active_mint()?.localstore();
-        let mut durable_entries = BTreeMap::new();
         // Duplicate and conflict decisions read only entries ordered inside
         // the unit's validity window, so every member decides alike whatever
         // older history it still holds.
+        let mut precheck_operation_ids = Vec::new();
+        let mut precheck_conflict_keys = Vec::new();
         for item in &payload.items {
             let FederationConsensusItem::Operation(envelope) = item else {
                 continue;
             };
-            let operation_id = envelope.operation_id()?;
-            if let Some(entry) = db
-                .get_federation_journal_entry(
-                    FederationJournalEntryKey::Operation(operation_id),
-                    None,
-                )
-                .await?
-                .filter(|entry| entry.guards_session(payload.session))
-            {
-                durable_entries.insert(entry.index, entry);
-            }
-            for conflict_key in envelope.operation.conflict_keys() {
-                if let Some(entry) = db
-                    .get_federation_journal_entry(
-                        FederationJournalEntryKey::ConflictKey(&conflict_key),
-                        None,
-                    )
-                    .await?
-                    .filter(|entry| entry.guards_session(payload.session))
-                {
-                    durable_entries.insert(entry.index, entry);
-                }
-            }
+            precheck_operation_ids.push(envelope.operation_id()?);
+            precheck_conflict_keys.extend(envelope.operation.conflict_keys());
         }
+        let durable_entries = db
+            .get_federation_journal_entries_by_keys(
+                &precheck_operation_ids,
+                &precheck_conflict_keys,
+                None,
+            )
+            .await?
+            .into_iter()
+            .filter(|entry| entry.guards_session(payload.session))
+            .collect::<Vec<_>>();
         let consensus = self
             .consensus()
             .ok_or_else(|| runtime_unavailable("consensus"))?;
         let mut consensus = consensus.lock().await;
-        for entry in durable_entries.into_values() {
+        for entry in durable_entries {
             if consensus
                 .journal()
                 .entry_by_operation_id(entry.operation_id)
@@ -1003,125 +1589,185 @@ impl FederationNodeRuntime {
         &self,
         entries: &[FederationJournalEntry],
     ) -> Result<Vec<FederationOperationId>, cdk::Error> {
-        let db = self.active_mint()?.localstore();
+        let mint = self.active_mint()?;
+        if !entries.is_empty() {
+            if let Some(config) = mint.effective_federation_config().await? {
+                config.preverify_journal_entries(entries).await?;
+            }
+        }
+        let label = format!(
+            "Federation journal batch apply of {} operations",
+            entries.len()
+        );
+        let outcomes = match crate::retry_transient_storage(
+            &label,
+            crate::is_retryable_federation_apply_error,
+            || mint.apply_federation_journal_entries_batch(entries, true),
+        )
+        .await
+        {
+            Ok(outcomes) => outcomes,
+            Err(crate::TransientRetryFailure::Exhausted {
+                error,
+                attempts,
+                elapsed,
+            }) => {
+                self.sync_persisted_application_states_for_entries(entries)
+                    .await;
+                return Err(cdk::Error::Custom(format!(
+                    "federation journal batch apply retry budget exhausted after {} attempts over {:.1}s: {}",
+                    attempts,
+                    elapsed.as_secs_f64(),
+                    error
+                )));
+            }
+            Err(crate::TransientRetryFailure::Permanent(err)) => {
+                self.sync_persisted_application_states_for_entries(entries)
+                    .await;
+                return Err(err);
+            }
+        };
+
         let mut applied = Vec::new();
-        let mut terminal_applications = Vec::with_capacity(entries.len());
-        for entry in entries {
-            let persisted_before_apply = db
-                .get_federation_journal_entry(
-                    FederationJournalEntryKey::Operation(entry.operation_id),
-                    None,
-                )
-                .await?;
-            let persisted = match persisted_before_apply {
-                Some(persisted)
-                    if matches!(
-                        persisted.status(),
-                        FederationOperationStatus::Applied | FederationOperationStatus::Rejected
-                    ) =>
-                {
-                    persisted
-                }
-                _ => {
-                    if self.apply_journal_entry_for_replay(entry).await?.is_some() {
-                        applied.push(entry.operation_id);
-                    }
-                    db.get_federation_journal_entry(
-                        FederationJournalEntryKey::Operation(entry.operation_id),
-                        None,
-                    )
-                    .await?
-                    .ok_or_else(|| {
-                        cdk::Error::Federation(FederationError::UnknownOperation {
-                            operation_id: entry.operation_id.to_string(),
-                        })
-                    })?
-                }
-            };
+        let mut terminal_applications = Vec::with_capacity(outcomes.len());
+        for (operation_id, newly_applied, application) in outcomes {
+            if newly_applied {
+                applied.push(operation_id);
+            }
             if !matches!(
-                persisted.status(),
+                application.status(),
                 FederationOperationStatus::Applied | FederationOperationStatus::Rejected
             ) {
                 return Err(cdk::Error::Custom(format!(
-                    "federation operation {} remained non-terminal after journal application",
-                    entry.operation_id
+                    "federation operation {operation_id} remained non-terminal after journal application"
                 )));
             }
-            terminal_applications.push((entry.operation_id, persisted.application.clone()));
+            terminal_applications.push((operation_id, application));
         }
         self.mark_operation_applications(&terminal_applications)
             .await?;
-        #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
-        let mint = self.active_mint()?;
         #[cfg(feature = "federation-bdk")]
-        #[cfg(any(test, feature = "test-utils"))]
-        let reconcile_result = if self
-            .components
-            .faults
-            .fail_next_onchain_reconciliation
-            .swap(false, Ordering::SeqCst)
         {
-            self.components
-                .wallet
-                .set_bdk_degraded_reason(Some(
-                    "injected on-chain reconciliation failure".to_string(),
-                ))
-                .await;
-            Err(anyhow::anyhow!("injected on-chain reconciliation failure"))
-        } else {
-            self.components.wallet.reconcile(mint).await
-        };
-        #[cfg(feature = "federation-bdk")]
-        #[cfg(not(any(test, feature = "test-utils")))]
-        let reconcile_result = self.components.wallet.reconcile(mint).await;
-        // Local BDK projection health is separate from the consensus
-        // state-machine decision: a reconciliation failure marks this member
-        // BDK-degraded (blocking local signing) and is retried on later
-        // applications, but it never aborts deterministic application or
-        // halts the session.
-        #[cfg(feature = "federation-bdk")]
-        if let Err(err) = reconcile_result {
-            tracing::error!(
-                reason = %format!("{err:#}"),
-                "federation local BDK reconciliation failed after deterministic application; member continues BDK-degraded"
-            );
+            #[cfg(any(test, feature = "test-utils"))]
+            let injected_failure = self
+                .components
+                .faults
+                .fail_next_onchain_reconciliation
+                .swap(false, Ordering::SeqCst);
+            #[cfg(not(any(test, feature = "test-utils")))]
+            let injected_failure = false;
+
+            if injected_failure {
+                self.components
+                    .wallet
+                    .set_bdk_degraded_reason(Some(
+                        "injected on-chain reconciliation failure".to_string(),
+                    ))
+                    .await;
+                tracing::error!(
+                    reason = "injected on-chain reconciliation failure",
+                    "federation local BDK reconciliation failed after deterministic application; member continues BDK-degraded"
+                );
+            } else {
+                let should_reconcile_bdk =
+                    self.components.wallet.bdk_degraded_reason().await.is_some()
+                        || (!self.components.wallet.onchain_wallets.is_empty()
+                            && entries_require_bdk_reconciliation(entries));
+                // Local BDK projection health is separate from the consensus
+                // state-machine decision: a reconciliation failure marks this
+                // member BDK-degraded (blocking local signing) and is retried
+                // on later applications, but it never aborts deterministic
+                // application or halts the session.
+                if should_reconcile_bdk {
+                    if let Err(err) = self.components.wallet.reconcile(mint).await {
+                        tracing::error!(
+                            reason = %format!("{err:#}"),
+                            "federation local BDK reconciliation failed after deterministic application; member continues BDK-degraded"
+                        );
+                    }
+                }
+            }
         }
         #[cfg(feature = "federation-bark")]
         if let Some(runtime) = self.components.wallet.bark.as_ref() {
-            if let Err(err) =
-                Box::pin(crate::reconcile_federation_bark_runtime(mint, runtime)).await
-            {
-                tracing::error!(
-                    reason = %format!("{err:#}"),
-                    "federation local Bark reconciliation failed after deterministic application; member continues Bark-degraded"
-                );
+            let should_reconcile_bark = entries_require_bark_reconciliation(entries)
+                || runtime.degraded_reason().await.is_some();
+            if should_reconcile_bark {
+                if let Err(err) =
+                    Box::pin(crate::reconcile_federation_bark_runtime(mint, runtime)).await
+                {
+                    tracing::error!(
+                        reason = %format!("{err:#}"),
+                        "federation local Bark reconciliation failed after deterministic application; member continues Bark-degraded"
+                    );
+                }
             }
         }
         Ok(applied)
+    }
+
+    async fn sync_persisted_application_states_for_entries(
+        &self,
+        entries: &[FederationJournalEntry],
+    ) {
+        if entries.is_empty() {
+            return;
+        }
+        let Ok(mint) = self.active_mint() else {
+            return;
+        };
+        let operation_ids = entries
+            .iter()
+            .map(|entry| entry.operation_id)
+            .collect::<Vec<_>>();
+        let Ok(states) = mint
+            .localstore()
+            .get_federation_journal_application_states(&operation_ids)
+            .await
+        else {
+            return;
+        };
+        let updates = entries
+            .iter()
+            .filter_map(|entry| {
+                states
+                    .get(&entry.operation_id)
+                    .map(|(_, state)| (entry.operation_id, state.clone()))
+            })
+            .collect::<Vec<_>>();
+        if !updates.is_empty() {
+            let _ = self.mark_operation_applications(&updates).await;
+        }
     }
 
     pub async fn verify_catch_up_rejections(
         &self,
         peer_entries: &[FederationCatchUpOperation],
     ) -> Result<(), cdk::Error> {
-        for peer_entry in peer_entries
+        let rejected_peer_entries = peer_entries
             .iter()
             .filter(|entry| entry.application.status() == FederationOperationStatus::Rejected)
-        {
-            let local_entry = self
-                .active_mint()?
-                .localstore()
-                .get_federation_journal_entry(
-                    FederationJournalEntryKey::Operation(peer_entry.operation_id),
-                    None,
-                )
-                .await?
-                .ok_or_else(|| {
+            .collect::<Vec<_>>();
+        if rejected_peer_entries.is_empty() {
+            return Ok(());
+        }
+        let operation_ids = rejected_peer_entries
+            .iter()
+            .map(|entry| entry.operation_id)
+            .collect::<Vec<_>>();
+        let local_states = self
+            .active_mint()?
+            .localstore()
+            .get_federation_journal_application_states(&operation_ids)
+            .await?;
+        for peer_entry in rejected_peer_entries {
+            let (_, local_application) =
+                local_states.get(&peer_entry.operation_id).ok_or_else(|| {
                     cdk::Error::Federation(FederationError::UnknownOperation {
                         operation_id: peer_entry.operation_id.to_string(),
                     })
                 })?;
-            if local_entry.application != peer_entry.application {
+            if *local_application != peer_entry.application {
                 return Err(cdk::Error::from(
                     FederationAlephBftError::RecoveryOperationMismatch {
                         reason: "catch-up rejection mismatch",
@@ -1132,31 +1778,6 @@ impl FederationNodeRuntime {
         }
 
         Ok(())
-    }
-
-    async fn apply_journal_entry_for_replay(
-        &self,
-        entry: &FederationJournalEntry,
-    ) -> Result<Option<FederationOperationId>, cdk::Error> {
-        let mint = self.active_mint()?;
-        let outcome = apply_federation_journal_entry_for_replay(mint, entry).await;
-        if outcome.is_err() {
-            let persisted = mint
-                .localstore()
-                .get_federation_journal_entry(
-                    FederationJournalEntryKey::Operation(entry.operation_id),
-                    None,
-                )
-                .await?
-                .ok_or_else(|| {
-                    cdk::Error::Federation(FederationError::UnknownOperation {
-                        operation_id: entry.operation_id.to_string(),
-                    })
-                })?;
-            self.mark_operation_applications(&[(entry.operation_id, persisted.application)])
-                .await?;
-        }
-        outcome
     }
 
     async fn mark_operation_applications(
@@ -1171,5 +1792,145 @@ impl FederationNodeRuntime {
             consensus.update_application_state(*operation_id, application.clone())?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use cdk::federation::{
+        FederationAlephBftPendingOperationRecord, FederationId, FederationOperation,
+        FederationOperationEnvelope, FederationOperationKind, FederationSwapOperation,
+        InMemoryFederationJournal,
+    };
+    use cdk_common::database::DynMintDatabase;
+    use cdk_common::SwapRequest;
+
+    use super::{
+        entries_require_bark_reconciliation, entries_require_bdk_reconciliation,
+        operation_kind_requires_bark_reconciliation, operation_kind_requires_bdk_reconciliation,
+        pending_operation_committer_for_db,
+    };
+
+    #[test]
+    fn gated_reconciliation_skips_pure_ecash_and_triggers_for_relevant_ops() {
+        let pure_ecash = [
+            FederationOperationKind::Swap,
+            FederationOperationKind::Mint,
+            FederationOperationKind::MintQuote,
+            FederationOperationKind::MeltQuote,
+            FederationOperationKind::Melt,
+            FederationOperationKind::KeysetRotation,
+        ];
+        for kind in pure_ecash {
+            assert!(
+                !operation_kind_requires_bdk_reconciliation(kind),
+                "pure e-cash op {kind} must not trigger BDK reconciliation"
+            );
+            assert!(
+                !operation_kind_requires_bark_reconciliation(kind),
+                "pure e-cash op {kind} must not trigger Bark reconciliation"
+            );
+        }
+
+        for kind in [
+            FederationOperationKind::AddressAllocation,
+            FederationOperationKind::ChainObservation,
+            FederationOperationKind::TransactionProposal,
+            FederationOperationKind::TransactionSigned,
+            FederationOperationKind::TransactionBroadcastIntent,
+            FederationOperationKind::TransactionBroadcastObservation,
+        ] {
+            assert!(
+                operation_kind_requires_bdk_reconciliation(kind),
+                "on-chain op {kind} must trigger BDK reconciliation"
+            );
+            assert!(
+                !operation_kind_requires_bark_reconciliation(kind),
+                "on-chain op {kind} must not trigger Bark reconciliation"
+            );
+        }
+
+        for kind in [
+            FederationOperationKind::Application,
+            FederationOperationKind::MintQuotePayment,
+            FederationOperationKind::MeltQuotePayment,
+        ] {
+            assert!(
+                operation_kind_requires_bark_reconciliation(kind),
+                "Bark/payment op {kind} must trigger Bark reconciliation"
+            );
+            assert!(
+                !operation_kind_requires_bdk_reconciliation(kind),
+                "non-onchain op {kind} must not trigger BDK reconciliation"
+            );
+        }
+
+        let mut journal = InMemoryFederationJournal::new();
+        let swap_entry = journal
+            .append(FederationOperationEnvelope::new(
+                FederationId::from_bytes([9; 32]),
+                FederationOperation::Swap(FederationSwapOperation {
+                    request: SwapRequest::new(Vec::new(), Vec::new()),
+                }),
+            ))
+            .expect("append swap")
+            .entry()
+            .clone();
+        assert!(!entries_require_bdk_reconciliation(std::slice::from_ref(
+            &swap_entry
+        )));
+        assert!(!entries_require_bark_reconciliation(std::slice::from_ref(
+            &swap_entry
+        )));
+    }
+
+    #[tokio::test]
+    async fn pending_operation_group_committer_coalesces_concurrent_writes() {
+        let db: DynMintDatabase =
+            Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+        let committer = pending_operation_committer_for_db(&db);
+        let mut tasks = Vec::new();
+        let mut expected_ids = Vec::new();
+
+        for idx in 0..8_u8 {
+            let envelope = FederationOperationEnvelope::new(
+                FederationId::from_bytes([idx + 1; 32]),
+                FederationOperation::Swap(FederationSwapOperation {
+                    request: SwapRequest::new(Vec::new(), Vec::new()),
+                }),
+            );
+            let operation_id = envelope.operation_id().expect("operation id");
+            expected_ids.push(operation_id);
+            let record = FederationAlephBftPendingOperationRecord {
+                operation_id,
+                session_id: 0,
+                envelope,
+                ordered_group: None,
+            };
+            let db = Arc::clone(&db);
+            let committer = Arc::clone(&committer);
+            tasks.push(tokio::spawn(async move {
+                committer.persist(&db, vec![record]).await
+            }));
+        }
+
+        for task in tasks {
+            task.await
+                .expect("join pending commit task")
+                .expect("group commit succeeded");
+        }
+
+        let persisted = db
+            .get_federation_aleph_bft_pending_operations(0)
+            .await
+            .expect("persisted pending operations");
+        assert_eq!(persisted.len(), expected_ids.len());
+        for expected_id in expected_ids {
+            assert!(persisted
+                .iter()
+                .any(|record| record.operation_id == expected_id));
+        }
     }
 }

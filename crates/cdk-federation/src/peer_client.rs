@@ -5,6 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use cdk::federation::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
     FederationAlephBftBackupRequest, FederationAlephBftBackupResponse, FederationAlephBftError,
+    FederationAlephBftNetworkMessageBatchRequest, FederationAlephBftNetworkMessageBatchResponse,
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
     FederationCheckpoint, FederationCheckpointError, FederationCheckpointFetchRequest,
     FederationCheckpointFetchResponse, FederationCheckpointId, FederationCheckpointQuorum,
@@ -546,6 +547,36 @@ where
             )
             .await?;
         response.validate(self.federation_id, request.payload.session_id)?;
+
+        Ok(response)
+    }
+
+    pub async fn submit_aleph_bft_network_message_batch(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationAlephBftNetworkMessageBatchRequest,
+    ) -> anyhow::Result<FederationAlephBftNetworkMessageBatchResponse> {
+        request.ensure_admissible_size()?;
+        let expected_count = request.encoded_messages.len();
+        let request = self.signed_request(
+            member,
+            FederationRestMessageKind::AlephBftNetworkMessageBatch,
+            request.clone(),
+        )?;
+        let response: FederationAlephBftNetworkMessageBatchResponse = self
+            .http_post_with_timeout(
+                member,
+                "aleph-bft/messages/batch",
+                "AlephBFT network-message batch submission",
+                &request,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        response.validate(
+            self.federation_id,
+            request.payload.session_id,
+            expected_count,
+        )?;
 
         Ok(response)
     }

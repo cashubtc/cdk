@@ -789,3 +789,208 @@ async fn apply_federation_swap_rejects_sliding_window_input_reuse_attack() {
         vec![Some(State::Spent), Some(State::Spent), Some(State::Spent)]
     );
 }
+
+#[tokio::test]
+async fn batch_apply_mixed_valid_and_deterministically_rejected_swaps_in_one_unit() {
+    use cdk_common::database::mint::FederationJournalDatabase;
+
+    let runtime_config = runtime_config();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+
+    let inputs_a = vec![
+        proof_for_runtime(&runtime_config, "batch-swap-a-1"),
+        proof_for_runtime(&runtime_config, "batch-swap-a-2"),
+    ];
+    let outputs_a = vec![
+        output_for_runtime(&runtime_config, b"batch-swap-out-a-1"),
+        output_for_runtime(&runtime_config, b"batch-swap-out-a-2"),
+    ];
+    let swap_req_a = SwapRequest::new(inputs_a.clone(), outputs_a.clone());
+
+    let outputs_conflict = vec![
+        output_for_runtime(&runtime_config, b"batch-swap-out-conflict-1"),
+        output_for_runtime(&runtime_config, b"batch-swap-out-conflict-2"),
+    ];
+    let swap_req_conflict = SwapRequest::new(inputs_a.clone(), outputs_conflict.clone());
+
+    let inputs_c = vec![
+        proof_for_runtime(&runtime_config, "batch-swap-c-1"),
+        proof_for_runtime(&runtime_config, "batch-swap-c-2"),
+    ];
+    let outputs_c = vec![
+        output_for_runtime(&runtime_config, b"batch-swap-out-c-1"),
+        output_for_runtime(&runtime_config, b"batch-swap-out-c-2"),
+    ];
+    let swap_req_c = SwapRequest::new(inputs_c.clone(), outputs_c.clone());
+
+    let entry_a = appended_entry(
+        &mut journal,
+        runtime_config
+            .swap_operation(swap_req_a.clone())
+            .expect("swap a operation"),
+    );
+    let entry_conflict = appended_entry(
+        &mut journal,
+        runtime_config
+            .swap_operation(swap_req_conflict)
+            .expect("conflicting swap operation"),
+    );
+    let entry_c = appended_entry(
+        &mut journal,
+        runtime_config
+            .swap_operation(swap_req_c.clone())
+            .expect("swap c operation"),
+    );
+
+    let batch_entries = vec![entry_a.clone(), entry_conflict.clone(), entry_c.clone()];
+    let mut tx = localstore.begin_transaction().await.expect("begin batch");
+    tx.add_federation_journal_entries(&batch_entries)
+        .await
+        .expect("persist journal batch");
+    tx.commit().await.expect("commit journal batch");
+
+    // Verify batch pre-finalization lookup returns deduplicated entries in order.
+    let conflict_keys = entry_a.conflict_keys.clone();
+    let looked_up = localstore
+        .get_federation_journal_entries_by_keys(
+            &[entry_c.operation_id, entry_a.operation_id],
+            &conflict_keys,
+            None,
+        )
+        .await
+        .expect("batch lookup by keys");
+    let looked_up_ids = looked_up
+        .iter()
+        .map(|entry| entry.operation_id)
+        .collect::<Vec<_>>();
+    assert!(looked_up_ids.contains(&entry_a.operation_id));
+    assert!(looked_up_ids.contains(&entry_c.operation_id));
+    assert!(looked_up
+        .windows(2)
+        .all(|pair| pair[0].index < pair[1].index));
+
+    // Apply all three in a single batched unit call with deterministic rejection isolation.
+    let outcomes = mint
+        .apply_federation_journal_entries_batch(&batch_entries, true)
+        .await
+        .expect("batch apply mixed unit");
+    assert_eq!(outcomes.len(), 3);
+    assert_eq!(
+        outcomes[0],
+        (
+            entry_a.operation_id,
+            true,
+            FederationApplicationState::Applied {}
+        )
+    );
+    assert_eq!(outcomes[1].0, entry_conflict.operation_id);
+    assert!(!outcomes[1].1);
+    assert_eq!(outcomes[1].2.status(), FederationOperationStatus::Rejected);
+    assert_eq!(
+        outcomes[2],
+        (
+            entry_c.operation_id,
+            true,
+            FederationApplicationState::Applied {}
+        )
+    );
+
+    // Durable checkpoint frontier must have advanced past all 3 terminal operations.
+    let frontier = localstore
+        .get_federation_checkpoint_frontier()
+        .await
+        .expect("checkpoint frontier");
+    assert_eq!(frontier.journal_next_index, 3);
+    assert_eq!(frontier.application_next_index, 3);
+
+    // Lightweight batch application-state lookup must match without loading envelopes.
+    let states = localstore
+        .get_federation_journal_application_states(&[
+            entry_a.operation_id,
+            entry_conflict.operation_id,
+            entry_c.operation_id,
+        ])
+        .await
+        .expect("batch application states");
+    assert_eq!(
+        states
+            .get(&entry_a.operation_id)
+            .map(|(_, state)| state.status()),
+        Some(FederationOperationStatus::Applied)
+    );
+    assert_eq!(
+        states
+            .get(&entry_conflict.operation_id)
+            .map(|(_, state)| state.status()),
+        Some(FederationOperationStatus::Rejected)
+    );
+    assert_eq!(
+        states
+            .get(&entry_c.operation_id)
+            .map(|(_, state)| state.status()),
+        Some(FederationOperationStatus::Applied)
+    );
+
+    // Savepoint rollback must have prevented any signatures for the conflicting swap
+    // while keeping both valid swaps fully materialized.
+    let conflict_sigs = localstore
+        .get_blind_signatures(&[
+            outputs_conflict[0].blinded_secret,
+            outputs_conflict[1].blinded_secret,
+        ])
+        .await
+        .expect("conflict signatures");
+    assert_eq!(conflict_sigs, vec![None, None]);
+
+    let valid_a_ys = inputs_a.ys().expect("inputs_a ys");
+    let valid_c_ys = inputs_c.ys().expect("inputs_c ys");
+    assert_eq!(
+        localstore
+            .get_proofs_states(&valid_a_ys)
+            .await
+            .expect("a states"),
+        vec![Some(State::Spent), Some(State::Spent)]
+    );
+    assert_eq!(
+        localstore
+            .get_proofs_states(&valid_c_ys)
+            .await
+            .expect("c states"),
+        vec![Some(State::Spent), Some(State::Spent)]
+    );
+
+    // Batch signature share fetching by operation_id returns all outputs in order.
+    let shares_a = localstore
+        .get_federation_signature_shares(FederationSignatureShareKey::Operation(
+            entry_a.operation_id,
+        ))
+        .await
+        .expect("operation signature shares");
+    assert_eq!(shares_a.len(), 2);
+    assert_eq!(shares_a[0].output_index, 0);
+    assert_eq!(shares_a[1].output_index, 1);
+
+    // Both cached and DB-backed share responses match the persisted shares.
+    let response_a = mint
+        .persisted_swap_share_response(entry_a.operation_id, &swap_req_a)
+        .await
+        .expect("swap a share response");
+    assert_eq!(response_a.signatures.len(), 2);
+    let response_c = mint
+        .persisted_swap_share_response(entry_c.operation_id, &swap_req_c)
+        .await
+        .expect("swap c share response");
+    assert_eq!(response_c.signatures.len(), 2);
+
+    // Replaying the same batch is idempotent and reports newly_applied = false for all entries.
+    let replay = mint
+        .apply_federation_journal_entries_batch(&batch_entries, true)
+        .await
+        .expect("idempotent batch replay");
+    assert_eq!(replay.len(), 3);
+    assert!(replay.iter().all(|(_, newly_applied, _)| !newly_applied));
+    assert_eq!(replay[0].2.status(), FederationOperationStatus::Applied);
+    assert_eq!(replay[1].2.status(), FederationOperationStatus::Rejected);
+    assert_eq!(replay[2].2.status(), FederationOperationStatus::Applied);
+}
