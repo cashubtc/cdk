@@ -42,7 +42,8 @@ pub use self::outgoing::{
     submit_federated_bark_melt_with_plan,
 };
 pub use self::projection::{
-    federation_bark_ready_projection, federation_bark_recovery_projection,
+    federation_bark_ready_indexed_projection, federation_bark_ready_projection,
+    federation_bark_recovery_indexed_projection, federation_bark_recovery_projection,
     reconcile_federation_bark_runtime,
 };
 

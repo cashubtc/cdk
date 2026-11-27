@@ -56,8 +56,8 @@ const RESULT_CACHE_LIMIT: usize = 1_024;
 #[cfg(feature = "federation-bark")]
 const BARK_CUSTODY_PROJECTION_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 #[cfg(feature = "federation-bark")]
-const BARK_CUSTODY_PROJECTION_POLL_INTERVAL: std::time::Duration =
-    std::time::Duration::from_millis(20);
+const BARK_CUSTODY_PROJECTION_FALLBACK_POLL_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(500);
 
 #[cfg(feature = "federation-bark")]
 const fn bark_action_authorizes_output_locator(kind: FederationBarkActionKind) -> bool {
@@ -259,6 +259,338 @@ mod bark_custody_authorization_tests {
         ] {
             assert!(!bark_action_authorizes_output_locator(kind));
         }
+    }
+
+    #[derive(Debug, Default)]
+    struct MockBarkStoreState {
+        action: Option<cdk_federation_bark::FederationBarkActionRecord>,
+        vtxos: Vec<cdk::federation::FederationBarkVtxoRecord>,
+        on_first_action_read: Option<(
+            cdk_federation_bark::FederationBarkActionRecord,
+            Vec<cdk::federation::FederationBarkVtxoRecord>,
+            tokio::sync::watch::Sender<u64>,
+        )>,
+    }
+
+    #[derive(Debug)]
+    struct MockBarkStore {
+        state: std::sync::Mutex<MockBarkStoreState>,
+        action_reads: std::sync::atomic::AtomicUsize,
+    }
+
+    impl MockBarkStore {
+        fn new() -> std::sync::Arc<Self> {
+            std::sync::Arc::new(Self {
+                state: std::sync::Mutex::new(MockBarkStoreState::default()),
+                action_reads: std::sync::atomic::AtomicUsize::new(0),
+            })
+        }
+
+        fn set_authorized(
+            &self,
+            action: cdk_federation_bark::FederationBarkActionRecord,
+            vtxos: Vec<cdk::federation::FederationBarkVtxoRecord>,
+        ) {
+            let mut state = self.state.lock().expect("mock bark store mutex");
+            state.action = Some(action);
+            state.vtxos = vtxos;
+        }
+
+        fn inject_race_on_first_read(
+            &self,
+            action: cdk_federation_bark::FederationBarkActionRecord,
+            vtxos: Vec<cdk::federation::FederationBarkVtxoRecord>,
+            frontier_tx: tokio::sync::watch::Sender<u64>,
+        ) {
+            let mut state = self.state.lock().expect("mock bark store mutex");
+            state.on_first_action_read = Some((action, vtxos, frontier_tx));
+        }
+
+        fn action_reads(&self) -> usize {
+            self.action_reads.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl cdk_federation_bark::FederationBarkStore for MockBarkStore {
+        async fn bark_action(
+            &self,
+            action_id: cdk::federation::FederationBarkActionId,
+        ) -> Result<
+            Option<cdk_federation_bark::FederationBarkActionRecord>,
+            cdk_common::database::Error,
+        > {
+            self.action_reads
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut state = self.state.lock().expect("mock bark store mutex");
+            if let Some((action, vtxos, frontier_tx)) = state.on_first_action_read.take() {
+                state.action = Some(action);
+                state.vtxos = vtxos;
+                frontier_tx.send_modify(|value| *value = (*value).max(1));
+                return Ok(None);
+            }
+            Ok(state
+                .action
+                .as_ref()
+                .filter(|action| action.action_id == action_id)
+                .cloned())
+        }
+
+        async fn bark_action_transitions(
+            &self,
+            _action_id: cdk::federation::FederationBarkActionId,
+        ) -> Result<
+            Vec<cdk_federation_bark::FederationBarkTransitionRecord>,
+            cdk_common::database::Error,
+        > {
+            Ok(Vec::new())
+        }
+
+        async fn bark_action_observations(
+            &self,
+            _action_id: cdk::federation::FederationBarkActionId,
+        ) -> Result<
+            Vec<cdk_federation_bark::FederationBarkObservationRecord>,
+            cdk_common::database::Error,
+        > {
+            Ok(Vec::new())
+        }
+
+        async fn bark_vtxos_in_state(
+            &self,
+            _state: cdk::federation::FederationBarkVtxoState,
+        ) -> Result<Vec<cdk::federation::FederationBarkVtxoRecord>, cdk_common::database::Error>
+        {
+            Ok(Vec::new())
+        }
+
+        async fn bark_vtxos(
+            &self,
+            vtxo_ids: &[cdk::federation::FederationBarkVtxoId],
+        ) -> Result<Vec<cdk::federation::FederationBarkVtxoRecord>, cdk_common::database::Error>
+        {
+            let state = self.state.lock().expect("mock bark store mutex");
+            Ok(state
+                .vtxos
+                .iter()
+                .filter(|vtxo| vtxo_ids.contains(&vtxo.vtxo_id))
+                .cloned()
+                .collect())
+        }
+
+        async fn bark_vtxos_reserved_by(
+            &self,
+            _action_id: cdk::federation::FederationBarkActionId,
+        ) -> Result<Vec<cdk::federation::FederationBarkVtxoRecord>, cdk_common::database::Error>
+        {
+            Ok(Vec::new())
+        }
+
+        async fn bark_max_locator_index(&self) -> Result<Option<u32>, cdk_common::database::Error> {
+            Ok(None)
+        }
+
+        async fn bark_projection_frontier(
+            &self,
+        ) -> Result<Option<u64>, cdk_common::database::Error> {
+            Ok(None)
+        }
+
+        async fn bark_projection_snapshot(
+            &self,
+        ) -> Result<cdk::federation::FederationBarkProjectionSnapshot, cdk_common::database::Error>
+        {
+            Ok(cdk::federation::FederationBarkProjectionSnapshot::default())
+        }
+    }
+
+    fn authorized_claim_fixture() -> (
+        cdk::federation::FederationBarkActionPlan,
+        cdk_federation_bark::FederationBarkActionRecord,
+        Vec<cdk::federation::FederationBarkVtxoRecord>,
+    ) {
+        let (plan, mut projection) = pending_claim_input();
+        projection.vtxos[0].state = cdk::federation::FederationBarkVtxoState::Reserved;
+        let operation = cdk::federation::FederationBarkOperation::ActionPlan(plan.clone());
+        let action = cdk_federation_bark::FederationBarkActionRecord {
+            action_id: plan.action_id,
+            quote: plan.quote.clone(),
+            payment_hash: plan.payment_hash,
+            action_kind: Some(plan.kind),
+            phase: cdk::federation::FederationBarkSemanticPhase::ClaimPlanned,
+            signing_retry_phase: None,
+            actor: plan.actor,
+            attempt: plan.attempt,
+            origin_operation_id: plan.predecessor_operation_id,
+            origin_operation_index: 1,
+            latest_operation_id: plan.predecessor_operation_id,
+            latest_operation_index: 2,
+            plan_operation_id: Some(plan.predecessor_operation_id),
+            predecessor_operation_id: Some(plan.predecessor_operation_id),
+            operation_commitment: operation.commitment().expect("plan commitment"),
+            operation,
+            quote_settled_operation_index: None,
+        };
+        (plan, action, projection.vtxos)
+    }
+
+    async fn test_mint_with_bark_store(store: std::sync::Arc<MockBarkStore>) -> cdk::mint::Mint {
+        let db = std::sync::Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory mint db"),
+        );
+        cdk::mint::MintBuilder::new(db.clone())
+            .with_federation_bark_store(store)
+            .build_with_seed(db, &[7_u8; 64])
+            .await
+            .expect("mint with mock bark store")
+    }
+
+    #[tokio::test]
+    async fn bark_projection_wait_wakes_immediately_on_frontier_advance() {
+        let store = MockBarkStore::new();
+        let mint = test_mint_with_bark_store(store.clone()).await;
+        let (plan, action, vtxos) = authorized_claim_fixture();
+        let (frontier_tx, frontier_rx) = tokio::sync::watch::channel(0_u64);
+
+        let store_for_task = store.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            store_for_task.set_authorized(action, vtxos);
+            frontier_tx.send_modify(|value| *value = 1);
+        });
+
+        let started = tokio::time::Instant::now();
+        // Use a 10s fallback so this can only succeed quickly via the watch notification.
+        super::wait_for_bark_custody_projection_inner(
+            &mint,
+            &plan,
+            plan.attempt,
+            frontier_rx,
+            std::time::Duration::from_secs(2),
+            std::time::Duration::from_secs(10),
+        )
+        .await
+        .expect("projection wait must wake on frontier advance");
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(250),
+            "expected immediate watch wakeup, took {}ms",
+            started.elapsed().as_millis()
+        );
+        assert!(
+            store.action_reads() <= 4,
+            "expected event-driven check without polling storm, got {} reads",
+            store.action_reads()
+        );
+    }
+
+    #[tokio::test]
+    async fn bark_projection_wait_returns_immediately_when_already_applied() {
+        let store = MockBarkStore::new();
+        let mint = test_mint_with_bark_store(store.clone()).await;
+        let (plan, action, vtxos) = authorized_claim_fixture();
+        store.set_authorized(action, vtxos);
+        let (_frontier_tx, frontier_rx) = tokio::sync::watch::channel(0_u64);
+
+        let started = tokio::time::Instant::now();
+        super::wait_for_bark_custody_projection_inner(
+            &mint,
+            &plan,
+            plan.attempt,
+            frontier_rx,
+            std::time::Duration::from_millis(50),
+            std::time::Duration::from_secs(10),
+        )
+        .await
+        .expect("already-applied projection must succeed immediately");
+
+        assert!(started.elapsed() < std::time::Duration::from_millis(50));
+    }
+
+    #[tokio::test]
+    async fn bark_projection_wait_handles_frontier_advance_during_db_read_without_lost_wakeup() {
+        let store = MockBarkStore::new();
+        let mint = test_mint_with_bark_store(store.clone()).await;
+        let (plan, action, vtxos) = authorized_claim_fixture();
+        let (frontier_tx, frontier_rx) = tokio::sync::watch::channel(0_u64);
+        store.inject_race_on_first_read(action, vtxos, frontier_tx);
+
+        let started = tokio::time::Instant::now();
+        super::wait_for_bark_custody_projection_inner(
+            &mint,
+            &plan,
+            plan.attempt,
+            frontier_rx,
+            std::time::Duration::from_secs(2),
+            std::time::Duration::from_secs(10),
+        )
+        .await
+        .expect("frontier advance during DB read must not lose wakeup");
+
+        assert!(started.elapsed() < std::time::Duration::from_millis(250));
+    }
+
+    #[tokio::test]
+    async fn bark_projection_wait_times_out_cleanly_without_polling_storm() {
+        let store = MockBarkStore::new();
+        let mint = test_mint_with_bark_store(store.clone()).await;
+        let (plan, _, _) = authorized_claim_fixture();
+        let (_frontier_tx, frontier_rx) = tokio::sync::watch::channel(0_u64);
+
+        let result = super::wait_for_bark_custody_projection_inner(
+            &mint,
+            &plan,
+            plan.attempt,
+            frontier_rx,
+            std::time::Duration::from_millis(40),
+            std::time::Duration::from_secs(10),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(cdk::Error::Federation(
+                cdk::federation::FederationError::FrostSigningInvalid { .. }
+            ))
+        ));
+        assert!(
+            store.action_reads() <= 2,
+            "timeout must not busy-poll SQLite, got {} reads",
+            store.action_reads()
+        );
+    }
+
+    #[tokio::test]
+    async fn bark_projection_wait_does_not_busy_spin_when_sender_dropped() {
+        let store = MockBarkStore::new();
+        let mint = test_mint_with_bark_store(store.clone()).await;
+        let (plan, _, _) = authorized_claim_fixture();
+        let (frontier_tx, frontier_rx) = tokio::sync::watch::channel(0_u64);
+        drop(frontier_tx);
+
+        let result = super::wait_for_bark_custody_projection_inner(
+            &mint,
+            &plan,
+            plan.attempt,
+            frontier_rx,
+            std::time::Duration::from_millis(40),
+            std::time::Duration::from_millis(20),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(cdk::Error::Federation(
+                cdk::federation::FederationError::FrostSigningInvalid { .. }
+            ))
+        ));
+        assert!(
+            store.action_reads() <= 4,
+            "dropped watch sender must not busy-spin, got {} reads",
+            store.action_reads()
+        );
     }
 }
 
@@ -857,6 +1189,7 @@ pub struct FederationFrostSigningRuntime {
     managers: Arc<BTreeMap<u64, Arc<tokio::sync::Mutex<ParticipantKeyManager>>>>,
     aggregate_results: Arc<tokio::sync::Mutex<AggregateResultCache>>,
     authorizer: Arc<dyn SigningAuthorizer>,
+    applied_frontier: Arc<tokio::sync::watch::Sender<u64>>,
 }
 
 impl std::fmt::Debug for FederationFrostSigningRuntime {
@@ -957,10 +1290,12 @@ impl FederationFrostSigningRuntime {
             public_root.root_key_epoch,
             Arc::new(tokio::sync::Mutex::new(manager)),
         );
+        let (applied_frontier, _) = tokio::sync::watch::channel(0);
         Ok(Some(Self {
             managers: Arc::new(managers),
             aggregate_results: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
             authorizer: Arc::new(MintSigningAuthorizer),
+            applied_frontier: Arc::new(applied_frontier),
         }))
     }
 
@@ -975,6 +1310,7 @@ impl FederationFrostSigningRuntime {
             ),
         >,
     ) -> Self {
+        let (applied_frontier, _) = tokio::sync::watch::channel(0);
         Self {
             managers: Arc::new(managers),
             aggregate_results: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
@@ -984,7 +1320,24 @@ impl FederationFrostSigningRuntime {
                     .map(|value| (value.0.session_id().to_bytes(), value))
                     .collect(),
             )),
+            applied_frontier: Arc::new(applied_frontier),
         }
+    }
+
+    /// Subscribe to finalized journal application frontier updates observed by this runtime.
+    pub fn subscribe_applied_frontier(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.applied_frontier.subscribe()
+    }
+
+    /// Advance the finalized journal application frontier observed by this runtime.
+    pub fn notify_applied_frontier(&self, next_index: u64, mutated: bool) {
+        self.applied_frontier.send_if_modified(|current| {
+            let advanced = next_index > *current;
+            if advanced {
+                *current = next_index;
+            }
+            advanced || mutated
+        });
     }
 
     /// Return bounded nonterminal protocol counts for one public root epoch.
@@ -1396,7 +1749,12 @@ impl FederationFrostSigningRuntime {
         authorization: &AuthorizationRequest,
     ) -> Result<ValidatedCdkAuthorization, cdk::Error> {
         self.authorizer
-            .validate_bark(mint, context, authorization)
+            .validate_bark(
+                mint,
+                context,
+                authorization,
+                self.subscribe_applied_frontier(),
+            )
             .await
     }
 }
@@ -1408,6 +1766,7 @@ async fn validate_bark_authorization(
     mint: &Mint,
     context: &SigningSessionContext,
     authorization: &AuthorizationRequest,
+    applied_frontier: tokio::sync::watch::Receiver<u64>,
 ) -> Result<ValidatedCdkAuthorization, cdk::Error> {
     let typed = FederationBarkFrostAuthorization::from_bytes(authorization.payload())?;
     let entry = mint
@@ -1541,7 +1900,7 @@ async fn validate_bark_authorization(
         )
         .into());
     }
-    wait_for_bark_custody_projection(mint, &plan, authorization_attempt).await?;
+    wait_for_bark_custody_projection(mint, &plan, authorization_attempt, applied_frontier).await?;
     let wallet = public_config
         .frost_wallet
         .as_ref()
@@ -1602,14 +1961,39 @@ async fn wait_for_bark_custody_projection(
     mint: &Mint,
     plan: &cdk::federation::FederationBarkActionPlan,
     authorization_attempt: u32,
+    applied_frontier: tokio::sync::watch::Receiver<u64>,
 ) -> Result<(), cdk::Error> {
-    let deadline = tokio::time::Instant::now() + BARK_CUSTODY_PROJECTION_WAIT_TIMEOUT;
+    wait_for_bark_custody_projection_inner(
+        mint,
+        plan,
+        authorization_attempt,
+        applied_frontier,
+        BARK_CUSTODY_PROJECTION_WAIT_TIMEOUT,
+        BARK_CUSTODY_PROJECTION_FALLBACK_POLL_INTERVAL,
+    )
+    .await
+}
+
+#[cfg(feature = "federation-bark")]
+async fn wait_for_bark_custody_projection_inner(
+    mint: &Mint,
+    plan: &cdk::federation::FederationBarkActionPlan,
+    authorization_attempt: u32,
+    mut applied_frontier: tokio::sync::watch::Receiver<u64>,
+    timeout: std::time::Duration,
+    fallback_interval: std::time::Duration,
+) -> Result<(), cdk::Error> {
+    let deadline = tokio::time::Instant::now() + timeout;
     let input_ids = plan
         .inputs
         .iter()
         .map(|input| input.vtxo_id)
         .collect::<Vec<_>>();
     loop {
+        // Pin the watch cursor before reading SQLite so any frontier advance
+        // committed concurrently with the read keeps `changed()` ready.
+        let _ = *applied_frontier.borrow_and_update();
+
         let authorization_is_current = match mint.federation_bark_action(plan.action_id).await? {
             Some(action)
                 if cdk::federation::federation_bark_custody_attempt_is_current(
@@ -1636,12 +2020,23 @@ async fn wait_for_bark_custody_projection(
         if authorization_is_current {
             return Ok(());
         }
-        if tokio::time::Instant::now() >= deadline {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
             return Err(
                 frost_invalid("Bark custody request differs from a reserved action input").into(),
             );
         }
-        tokio::time::sleep(BARK_CUSTODY_PROJECTION_POLL_INTERVAL).await;
+        let remaining = deadline.saturating_duration_since(now);
+        let wait_window = remaining.min(fallback_interval);
+        match tokio::time::timeout(wait_window, applied_frontier.changed()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                // Watch sender was dropped; bound retries to the fallback window
+                // so the waiter never busy-spins.
+                tokio::time::sleep(wait_window).await;
+            }
+            Err(_) => {}
+        }
     }
 }
 
@@ -1698,8 +2093,9 @@ trait SigningAuthorizer: Send + Sync {
         mint: &Mint,
         context: &SigningSessionContext,
         authorization: &AuthorizationRequest,
+        applied_frontier: tokio::sync::watch::Receiver<u64>,
     ) -> Result<ValidatedCdkAuthorization, cdk::Error> {
-        validate_bark_authorization(mint, context, authorization).await
+        validate_bark_authorization(mint, context, authorization, applied_frontier).await
     }
 }
 
@@ -1782,10 +2178,13 @@ impl SigningAuthorizer for FixedSigningAuthorizations {
         mint: &Mint,
         context: &SigningSessionContext,
         authorization: &AuthorizationRequest,
+        applied_frontier: tokio::sync::watch::Receiver<u64>,
     ) -> Result<ValidatedCdkAuthorization, cdk::Error> {
         match self.fixed(context, authorization)? {
             Some(validated) => Ok(validated),
-            None => validate_bark_authorization(mint, context, authorization).await,
+            None => {
+                validate_bark_authorization(mint, context, authorization, applied_frontier).await
+            }
         }
     }
 }

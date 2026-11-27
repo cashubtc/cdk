@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::str::FromStr;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -17,12 +17,13 @@ use cdk::federation::{
 use cdk::mint::QuoteId;
 use cdk::nuts::{MeltQuoteState, MintQuoteState};
 use cdk_common::database::mint::FederationPaymentObservationSelection;
+use futures::stream::{FuturesUnordered, StreamExt as _};
 use futures::FutureExt as _;
 
 use super::payment_schedule::{
     FederationPaymentAdvancement, FederationPaymentObservationPermit,
     FederationPaymentObservationSchedule, FederationPaymentObservationTrigger,
-    FederationPaymentQuote, FederationPaymentQuoteKind,
+    FederationPaymentQuote, FederationPaymentQuoteKind, FederationPaymentScheduleLane,
 };
 use crate::FederationNode;
 
@@ -32,9 +33,18 @@ const FEDERATION_PAYMENT_REPAIR_INTERVAL: std::time::Duration = std::time::Durat
 const FEDERATION_PAYMENT_IDLE_DEADLINE: std::time::Duration =
     std::time::Duration::from_secs(24 * 60 * 60);
 const FEDERATION_PAYMENT_MAX_ADVANCEMENTS_PER_WAKE: usize = 8;
-const FEDERATION_PAYMENT_SCAN_LIMIT_PER_KIND: usize = 4;
-const FEDERATION_PAYMENT_WAKE_CAPACITY: usize = 256;
-const FEDERATION_PAYMENT_CONCURRENT_QUOTE_TASKS: usize = 16;
+const FEDERATION_PAYMENT_SCAN_LIMIT_PER_KIND: usize = 64;
+const FEDERATION_PAYMENT_DUE_BATCH_LIMIT: usize = 64;
+const FEDERATION_PAYMENT_WAKE_CAPACITY: usize = 512;
+const FEDERATION_PAYMENT_WAKE_DRAIN_LIMIT: usize = 32;
+/// Concurrent task permits for unpaid Bark incoming invoice waits.
+const FEDERATION_PAYMENT_CONCURRENT_INCOMING_WAIT_TASKS: usize = 64;
+/// Concurrent task permits for paid/advancing Bark incoming claims.
+const FEDERATION_PAYMENT_CONCURRENT_CLAIM_TASKS: usize = 16;
+/// Concurrent task permits for Bark outgoing melts.
+const FEDERATION_PAYMENT_CONCURRENT_MELT_TASKS: usize = 16;
+/// Concurrent task permits for generic `MintPayment` / non-Bark quote probes.
+const FEDERATION_PAYMENT_CONCURRENT_DIRECT_QUOTE_TASKS: usize = 16;
 /// Per-quote backend probe deadline.
 ///
 /// One hung or slow backend call must never occupy the sequential observer
@@ -143,7 +153,7 @@ fn advance_bark_melt_quote<'a>(
 /// Outcome of reserving a background task for one quote attempt.
 #[derive(Debug)]
 enum FederationPaymentQuoteTaskClaim {
-    /// Every quote task is busy; the quote stays due and unleased.
+    /// Every quote task permit in the quote's lane is busy; the quote stays due and unleased.
     CapacityReached,
     /// The quote is not due, typically because an attempt already holds it.
     NotDue,
@@ -154,12 +164,105 @@ enum FederationPaymentQuoteTaskClaim {
     },
 }
 
+/// Wake emitted when a consensus operation touching a payment quote is applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FederationPaymentWake {
+    quote: FederationPaymentQuote,
+    /// True when the operation carries payment evidence or advances an active
+    /// claim/settlement rather than creating a fresh unpaid quote.
+    priority: bool,
+}
+
+/// Active quote paired with its bounded execution lane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClassifiedPaymentQuote {
+    quote: FederationPaymentQuote,
+    lane: FederationPaymentScheduleLane,
+}
+
+/// Separate bounded permit pools per observation lane so unpaid incoming
+/// invoice long-polls cannot starve ready claims, outgoing melts, or direct
+/// `MintPayment` probes.
+#[derive(Debug, Clone)]
+struct FederationPaymentTaskPool {
+    incoming_wait: std::sync::Arc<tokio::sync::Semaphore>,
+    incoming_claim: std::sync::Arc<tokio::sync::Semaphore>,
+    outgoing_melt: std::sync::Arc<tokio::sync::Semaphore>,
+    direct: std::sync::Arc<tokio::sync::Semaphore>,
+}
+
+impl Default for FederationPaymentTaskPool {
+    fn default() -> Self {
+        Self {
+            incoming_wait: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                FEDERATION_PAYMENT_CONCURRENT_INCOMING_WAIT_TASKS,
+            )),
+            incoming_claim: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                FEDERATION_PAYMENT_CONCURRENT_CLAIM_TASKS,
+            )),
+            outgoing_melt: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                FEDERATION_PAYMENT_CONCURRENT_MELT_TASKS,
+            )),
+            direct: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                FEDERATION_PAYMENT_CONCURRENT_DIRECT_QUOTE_TASKS,
+            )),
+        }
+    }
+}
+
+impl FederationPaymentTaskPool {
+    fn semaphore(
+        &self,
+        lane: FederationPaymentScheduleLane,
+    ) -> &std::sync::Arc<tokio::sync::Semaphore> {
+        match lane {
+            FederationPaymentScheduleLane::IncomingWait => &self.incoming_wait,
+            FederationPaymentScheduleLane::IncomingClaim => &self.incoming_claim,
+            FederationPaymentScheduleLane::OutgoingMelt => &self.outgoing_melt,
+            FederationPaymentScheduleLane::Direct => &self.direct,
+        }
+    }
+
+    fn available_permits(&self, lane: FederationPaymentScheduleLane) -> usize {
+        self.semaphore(lane).available_permits()
+    }
+
+    fn available_lanes(&self) -> Vec<FederationPaymentScheduleLane> {
+        FederationPaymentScheduleLane::ALL
+            .into_iter()
+            .filter(|lane| self.available_permits(*lane) > 0)
+            .collect()
+    }
+
+    fn saturated_lanes(&self) -> Vec<FederationPaymentScheduleLane> {
+        FederationPaymentScheduleLane::ALL
+            .into_iter()
+            .filter(|lane| self.available_permits(*lane) == 0)
+            .collect()
+    }
+
+    /// Wait until at least one lane in `lanes` releases a permit, then release
+    /// it immediately so the observer loop can dispatch the next due quote.
+    async fn wait_for_any_lane(&self, lanes: &[FederationPaymentScheduleLane]) {
+        if lanes.is_empty() {
+            return;
+        }
+        let waiters = lanes
+            .iter()
+            .map(|lane| Box::pin(self.semaphore(*lane).clone().acquire_owned()))
+            .collect::<Vec<_>>();
+        let (result, _, _) = futures::future::select_all(waiters).await;
+        if let Ok(permit) = result {
+            drop(permit);
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FederationPaymentObserver {
     schedule: FederationPaymentObservationSchedule,
-    accepted_operation_wakes:
-        tokio::sync::broadcast::Sender<(FederationPaymentQuote, u64, Instant)>,
-    quote_tasks: std::sync::Arc<tokio::sync::Semaphore>,
+    accepted_operation_wakes: tokio::sync::broadcast::Sender<(FederationPaymentWake, u64, Instant)>,
+    task_pool: FederationPaymentTaskPool,
 }
 
 impl Default for FederationPaymentObserver {
@@ -169,9 +272,7 @@ impl Default for FederationPaymentObserver {
         Self {
             schedule: FederationPaymentObservationSchedule::default(),
             accepted_operation_wakes,
-            quote_tasks: std::sync::Arc::new(tokio::sync::Semaphore::new(
-                FEDERATION_PAYMENT_CONCURRENT_QUOTE_TASKS,
-            )),
+            task_pool: FederationPaymentTaskPool::default(),
         }
     }
 }
@@ -503,80 +604,144 @@ impl FederationPaymentObserver {
         trigger: FederationPaymentObservationTrigger,
         queued_at: Instant,
     ) -> Result<usize, cdk::Error> {
-        let mut direct = Vec::with_capacity(quotes.len());
+        let classified = self
+            .classify_and_filter_active_quotes(state, quotes, trigger, false)
+            .await?;
+        let mut direct = Vec::with_capacity(classified.len());
         let mut background = Vec::new();
-        for quote in quotes {
-            if self.quote_uses_bark(state, &quote).await? {
-                background.push(quote);
+        for item in classified {
+            if item.lane == FederationPaymentScheduleLane::Direct {
+                direct.push(item.quote);
             } else {
-                direct.push(quote);
+                background.push(item);
             }
         }
 
-        let submitted = Box::pin(self.drive_quotes(state, &direct, trigger)).await?;
+        let submitted = Box::pin(self.drive_active_direct_quotes(state, direct, trigger)).await?;
         // A dispatched quote has only started an attempt; its task reports
         // its own progress. Counting it here made every dispatch look like a
         // submitted observation.
-        self.dispatch_quotes(state, background, trigger, queued_at)
+        self.dispatch_classified_quotes(state, background, trigger, queued_at)
             .await?;
         Ok(submitted)
     }
 
-    async fn quote_uses_bark(
+    /// Filter out inactive quotes (removing their schedules) and assign each
+    /// active quote its bounded execution lane in one DB read per quote.
+    async fn classify_and_filter_active_quotes(
         &self,
         state: &FederationNode,
-        quote: &FederationPaymentQuote,
-    ) -> Result<bool, cdk::Error> {
+        quotes: Vec<FederationPaymentQuote>,
+        trigger: FederationPaymentObservationTrigger,
+        priority_hint: bool,
+    ) -> Result<Vec<ClassifiedPaymentQuote>, cdk::Error> {
+        let db = state.mint.localstore();
         #[cfg(feature = "federation-bark")]
-        {
-            if state.federation.bark_runtime().is_none() {
-                return Ok(false);
-            }
-            let uses_bark = match quote.kind {
-                FederationPaymentQuoteKind::Mint => state
-                    .mint
-                    .localstore()
-                    .get_mint_quote(&quote.id)
-                    .await?
-                    .is_some_and(|quote| quote.payment_method.is_bolt11()),
-                FederationPaymentQuoteKind::Melt => state
-                    .mint
-                    .localstore()
-                    .get_melt_quote(&quote.id)
-                    .await?
-                    .is_some_and(|quote| quote.payment_method.is_bolt11()),
-            };
-            Ok(uses_bark)
-        }
+        let has_bark = state.federation.bark_runtime().is_some();
         #[cfg(not(feature = "federation-bark"))]
-        {
-            let _ = (state, quote);
-            Ok(false)
+        let has_bark = false;
+
+        let mut active = Vec::with_capacity(quotes.len());
+        for quote in quotes {
+            let active_is_bark = match quote.kind {
+                FederationPaymentQuoteKind::Mint => match db.get_mint_quote(&quote.id).await? {
+                    Some(mint_quote)
+                        if !matches!(
+                            mint_quote.state(),
+                            MintQuoteState::Paid | MintQuoteState::Issued
+                        ) =>
+                    {
+                        Some(has_bark && mint_quote.payment_method.is_bolt11())
+                    }
+                    _ => None,
+                },
+                FederationPaymentQuoteKind::Melt => match db.get_melt_quote(&quote.id).await? {
+                    Some(melt_quote) if melt_quote.state == MeltQuoteState::Pending => {
+                        Some(has_bark && melt_quote.payment_method.is_bolt11())
+                    }
+                    _ => None,
+                },
+            };
+            let Some(uses_bark) = active_is_bark else {
+                self.schedule.remove(&db, &quote).await?;
+                continue;
+            };
+            let lane = if !uses_bark {
+                FederationPaymentScheduleLane::Direct
+            } else {
+                self.bark_lane_for_quote(&db, &quote, trigger, priority_hint)
+                    .await?
+            };
+            active.push(ClassifiedPaymentQuote { quote, lane });
+        }
+        Ok(active)
+    }
+
+    async fn bark_lane_for_quote(
+        &self,
+        db: &cdk_common::database::DynMintDatabase,
+        quote: &FederationPaymentQuote,
+        trigger: FederationPaymentObservationTrigger,
+        priority_hint: bool,
+    ) -> Result<FederationPaymentScheduleLane, cdk::Error> {
+        match quote.kind {
+            FederationPaymentQuoteKind::Melt => Ok(FederationPaymentScheduleLane::OutgoingMelt),
+            FederationPaymentQuoteKind::Mint => {
+                if priority_hint
+                    || trigger == FederationPaymentObservationTrigger::BackendNotified
+                    || self.schedule.has_payment_activity(db, quote).await?
+                {
+                    Ok(FederationPaymentScheduleLane::IncomingClaim)
+                } else {
+                    Ok(FederationPaymentScheduleLane::IncomingWait)
+                }
+            }
         }
     }
 
-    /// Hand each due quote to its own background task.
+    /// Hand each due quote to its own background task in its lane.
     ///
     /// The attempt lease is claimed here, before the task is spawned, so the
     /// quote stops being due at once: a scheduled round that runs again before
     /// the task starts neither dispatches it a second time nor finds it due.
-    async fn dispatch_quotes(
+    /// Saturation in one lane skips only further quotes in that lane so unpaid
+    /// incoming waits never block ready claims, outgoing melts, or direct probes.
+    async fn dispatch_classified_quotes(
         &self,
         state: &FederationNode,
-        quotes: Vec<FederationPaymentQuote>,
+        quotes: Vec<ClassifiedPaymentQuote>,
         trigger: FederationPaymentObservationTrigger,
         queued_at: Instant,
     ) -> Result<usize, cdk::Error> {
         let Some(federation_config) = state.mint.federation_config() else {
             return Ok(0);
         };
+        if quotes.is_empty() {
+            return Ok(0);
+        }
         let member_id = federation_config.member_id();
         let db = state.mint.localstore();
-        let active_quotes = self.active_quotes(&db, &quotes).await?;
         let mut dispatched = 0_usize;
-        for quote in active_quotes {
+        let mut saturated_lanes = [false; 4];
+        let event_driven = matches!(
+            trigger,
+            FederationPaymentObservationTrigger::BackendNotified
+                | FederationPaymentObservationTrigger::OperationAccepted(_)
+        );
+
+        for ClassifiedPaymentQuote { quote, lane } in quotes {
+            if saturated_lanes[lane.index()] {
+                if event_driven {
+                    self.schedule
+                        .mark_due_now(&db, &quote, lane, trigger, current_unix_time_ms())
+                        .await?;
+                } else {
+                    self.schedule.reconcile_lane(&db, &quote, lane).await?;
+                }
+                continue;
+            }
             let (task_permit, attempt) = match self
-                .claim_quote_task(&db, &quote, trigger, current_unix_time_ms())
+                .claim_quote_task_in_lane(&db, &quote, trigger, lane, current_unix_time_ms())
                 .await?
             {
                 FederationPaymentQuoteTaskClaim::Claimed {
@@ -585,12 +750,20 @@ impl FederationPaymentObserver {
                 } => (task_permit, attempt),
                 FederationPaymentQuoteTaskClaim::NotDue => continue,
                 FederationPaymentQuoteTaskClaim::CapacityReached => {
+                    saturated_lanes[lane.index()] = true;
+                    if event_driven {
+                        self.schedule
+                            .mark_due_now(&db, &quote, lane, trigger, current_unix_time_ms())
+                            .await?;
+                    } else {
+                        self.schedule.reconcile_lane(&db, &quote, lane).await?;
+                    }
                     tracing::debug!(
                         quote = %quote.id,
                         quote_kind = quote.kind.as_str(),
-                        "Federation payment quote task capacity reached; durable schedule will retry"
+                        "Federation payment quote task lane capacity reached; durable schedule will retry"
                     );
-                    break;
+                    continue;
                 }
             };
             tracing::trace!(
@@ -609,13 +782,23 @@ impl FederationPaymentObserver {
                     super::latency::FederationLatencyDirection::Outgoing
                 }
             };
+            let backend = match lane {
+                FederationPaymentScheduleLane::Direct => {
+                    super::latency::FederationLatencyBackend::Cashu
+                }
+                FederationPaymentScheduleLane::IncomingWait
+                | FederationPaymentScheduleLane::IncomingClaim
+                | FederationPaymentScheduleLane::OutgoingMelt => {
+                    super::latency::FederationLatencyBackend::Bark
+                }
+            };
             let tasks = state.federation.tasks.clone();
             tasks.spawn("payment quote", false, async move {
                 let _task_permit = task_permit;
                 super::latency::record_duration(
                     super::latency::FederationLatencyCorrelation::Quote,
                     &correlation_id,
-                    super::latency::FederationLatencyBackend::Bark,
+                    backend,
                     direction,
                     super::latency::FederationLatencyPhase::PaymentCoordinatorDispatch,
                     super::latency::FederationLatencyOutcome::Success,
@@ -645,21 +828,26 @@ impl FederationPaymentObserver {
         Ok(dispatched)
     }
 
-    /// Reserve a quote task and the quote's attempt lease together.
+    /// Reserve a quote task permit in `lane` and the quote's attempt lease together.
     ///
     /// The task permit is taken first so a quote is never leased without a
     /// task to drive it; a quote that is not due releases the permit again.
-    async fn claim_quote_task(
+    async fn claim_quote_task_in_lane(
         &self,
         db: &cdk_common::database::DynMintDatabase,
         quote: &FederationPaymentQuote,
         trigger: FederationPaymentObservationTrigger,
+        lane: FederationPaymentScheduleLane,
         now_ms: u64,
     ) -> Result<FederationPaymentQuoteTaskClaim, cdk::Error> {
-        let Ok(task_permit) = self.quote_tasks.clone().try_acquire_owned() else {
+        let Ok(task_permit) = self.task_pool.semaphore(lane).clone().try_acquire_owned() else {
             return Ok(FederationPaymentQuoteTaskClaim::CapacityReached);
         };
-        match self.schedule.claim(db, quote, trigger, now_ms).await? {
+        match self
+            .schedule
+            .claim_in_lane(db, quote, trigger, lane, now_ms)
+            .await?
+        {
             Some(attempt) => Ok(FederationPaymentQuoteTaskClaim::Claimed {
                 task_permit,
                 attempt,
@@ -668,66 +856,52 @@ impl FederationPaymentObserver {
         }
     }
 
-    /// Keep the quotes that still await payment evidence and drop the
-    /// schedules of the rest.
-    async fn active_quotes(
-        &self,
-        db: &cdk_common::database::DynMintDatabase,
-        quotes: &[FederationPaymentQuote],
-    ) -> Result<Vec<FederationPaymentQuote>, cdk::Error> {
-        let mut active_quotes = Vec::with_capacity(quotes.len());
-        for quote in quotes {
-            let active = match quote.kind {
-                FederationPaymentQuoteKind::Mint => {
-                    db.get_mint_quote(&quote.id).await?.is_some_and(|quote| {
-                        !matches!(quote.state(), MintQuoteState::Paid | MintQuoteState::Issued)
-                    })
-                }
-                FederationPaymentQuoteKind::Melt => db
-                    .get_melt_quote(&quote.id)
-                    .await?
-                    .is_some_and(|quote| quote.state == MeltQuoteState::Pending),
-            };
-            if active {
-                active_quotes.push(quote.clone());
-            } else {
-                self.schedule.remove(db, quote).await?;
-            }
-        }
-        Ok(active_quotes)
-    }
-
-    async fn drive_quotes(
+    async fn drive_active_direct_quotes(
         &self,
         state: &FederationNode,
-        quotes: &[FederationPaymentQuote],
+        active_quotes: Vec<FederationPaymentQuote>,
         trigger: FederationPaymentObservationTrigger,
     ) -> Result<usize, cdk::Error> {
         let Some(federation_config) = state.mint.federation_config() else {
             return Ok(0);
         };
+        if active_quotes.is_empty() {
+            return Ok(0);
+        }
         let member_id = federation_config.member_id();
         let db = state.mint.localstore();
         let mut schedule_changes = self.schedule.subscribe_changes();
-        let active_quotes = self.active_quotes(&db, quotes).await?;
-        let quotes = self
+        let candidates = self
             .schedule
             .candidates(&db, &active_quotes, trigger, current_unix_time_ms())
             .await?;
-        let mut submitted = 0usize;
-        for quote in &quotes {
-            let Some(attempt) = self
-                .schedule
-                .claim(&db, quote, trigger, current_unix_time_ms())
-                .await?
-            else {
-                continue;
-            };
-            let advanced = self
-                .drive_claimed_quote(state, member_id, quote, attempt, trigger)
-                .await?;
-            submitted = submitted.saturating_add(advanced);
-        }
+        let direct_semaphore = self
+            .task_pool
+            .semaphore(FederationPaymentScheduleLane::Direct)
+            .clone();
+        let db_ref = &db;
+        let submitted = run_bounded_direct_tasks(
+            candidates,
+            direct_semaphore,
+            FEDERATION_PAYMENT_CONCURRENT_DIRECT_QUOTE_TASKS,
+            |quote| async move {
+                let Some(attempt) = self
+                    .schedule
+                    .claim_in_lane(
+                        db_ref,
+                        &quote,
+                        trigger,
+                        FederationPaymentScheduleLane::Direct,
+                        current_unix_time_ms(),
+                    )
+                    .await?
+                else {
+                    return Ok(0_usize);
+                };
+                Box::pin(self.drive_claimed_quote(state, member_id, &quote, attempt, trigger)).await
+            },
+        )
+        .await?;
         if trigger == FederationPaymentObservationTrigger::Requested {
             self.wait_for_active_attempts(&db, &active_quotes, &mut schedule_changes)
                 .await?;
@@ -1091,6 +1265,23 @@ impl FederationPaymentObserver {
         })
     }
 
+    async fn resolve_payment_event_quote(
+        state: &FederationNode,
+        event: Event,
+    ) -> Result<Option<FederationPaymentQuote>, cdk::Error> {
+        match event {
+            Event::PaymentReceived(payment) => Ok(state
+                .mint
+                .localstore()
+                .get_mint_quote_by_request_lookup_id(&payment.payment_identifier)
+                .await?
+                .map(|quote| FederationPaymentQuote::mint(quote.id))),
+            Event::PaymentSuccessful { quote_id, .. } | Event::PaymentFailed { quote_id, .. } => {
+                Ok(Some(FederationPaymentQuote::melt(quote_id)))
+            }
+        }
+    }
+
     pub async fn observe_event(
         &self,
         state: &FederationNode,
@@ -1099,34 +1290,117 @@ impl FederationPaymentObserver {
         state
             .ensure_federation_ready_for_authoritative_read()
             .await?;
-        match event {
-            Event::PaymentReceived(payment) => {
-                let Some(quote) = state
-                    .mint
-                    .localstore()
-                    .get_mint_quote_by_request_lookup_id(&payment.payment_identifier)
-                    .await?
-                else {
-                    return Ok(0);
-                };
-                Box::pin(self.drive_or_dispatch_quotes(
-                    state,
-                    vec![FederationPaymentQuote::mint(quote.id)],
-                    FederationPaymentObservationTrigger::BackendNotified,
-                    Instant::now(),
-                ))
-                .await
-            }
-            Event::PaymentSuccessful { quote_id, .. } | Event::PaymentFailed { quote_id, .. } => {
-                Box::pin(self.drive_or_dispatch_quotes(
-                    state,
-                    vec![FederationPaymentQuote::melt(quote_id)],
-                    FederationPaymentObservationTrigger::BackendNotified,
-                    Instant::now(),
-                ))
-                .await
+        let Some(quote) = Self::resolve_payment_event_quote(state, event).await? else {
+            return Ok(0);
+        };
+        Box::pin(self.drive_or_dispatch_quotes(
+            state,
+            vec![quote],
+            FederationPaymentObservationTrigger::BackendNotified,
+            Instant::now(),
+        ))
+        .await
+    }
+
+    /// Dispatch a burst of backend payment events asynchronously across their
+    /// bounded lanes without head-of-line blocking the observer worker loop.
+    async fn dispatch_payment_events(
+        &self,
+        state: &FederationNode,
+        events: Vec<Event>,
+    ) -> Result<usize, cdk::Error> {
+        state
+            .ensure_federation_ready_for_authoritative_read()
+            .await?;
+        let mut quotes = Vec::with_capacity(events.len());
+        let mut seen = HashSet::with_capacity(events.len());
+        for event in events {
+            if let Some(quote) = Self::resolve_payment_event_quote(state, event).await? {
+                if seen.insert(quote.clone()) {
+                    quotes.push(quote);
+                }
             }
         }
+        if quotes.is_empty() {
+            return Ok(0);
+        }
+        let classified = self
+            .classify_and_filter_active_quotes(
+                state,
+                quotes,
+                FederationPaymentObservationTrigger::BackendNotified,
+                true,
+            )
+            .await?;
+        self.dispatch_classified_quotes(
+            state,
+            classified,
+            FederationPaymentObservationTrigger::BackendNotified,
+            Instant::now(),
+        )
+        .await
+    }
+
+    async fn dispatch_accepted_wake(
+        &self,
+        state: &FederationNode,
+        wake: FederationPaymentWake,
+        operation_index: u64,
+        queued_at: Instant,
+    ) -> Result<usize, cdk::Error> {
+        let trigger = FederationPaymentObservationTrigger::OperationAccepted(operation_index);
+        let classified = self
+            .classify_and_filter_active_quotes(state, vec![wake.quote], trigger, wake.priority)
+            .await?;
+        self.dispatch_classified_quotes(state, classified, trigger, queued_at)
+            .await
+    }
+
+    /// Fast-path scheduled wakeup driven directly from the in-memory priority
+    /// queue for lanes that currently have available task permits.
+    async fn scheduled_due_quotes(&self, state: &FederationNode) -> Result<usize, cdk::Error> {
+        if state.mint.federation_config().is_none() {
+            return Ok(0);
+        }
+        state
+            .ensure_federation_ready_for_authoritative_read()
+            .await?;
+
+        let available_lanes = self.task_pool.available_lanes();
+        if available_lanes.is_empty() {
+            return Ok(0);
+        }
+        let db = state.mint.localstore();
+        let due = self
+            .schedule
+            .due_quotes_for_lanes(
+                &db,
+                &available_lanes,
+                current_unix_time_ms(),
+                FEDERATION_PAYMENT_DUE_BATCH_LIMIT,
+            )
+            .await?;
+        if due.is_empty() {
+            // Legacy KV rows without stored quote metadata still surface their
+            // deadlines in the heap; fall back to one bounded DB scan to
+            // discover and backfill them.
+            return self.scheduled_quotes(state).await;
+        }
+        let classified = self
+            .classify_and_filter_active_quotes(
+                state,
+                due,
+                FederationPaymentObservationTrigger::Scheduled,
+                false,
+            )
+            .await?;
+        self.dispatch_classified_quotes(
+            state,
+            classified,
+            FederationPaymentObservationTrigger::Scheduled,
+            Instant::now(),
+        )
+        .await
     }
 
     async fn scheduled_quotes(&self, state: &FederationNode) -> Result<usize, cdk::Error> {
@@ -1138,6 +1412,16 @@ impl FederationPaymentObserver {
             .await?;
 
         let db = state.mint.localstore();
+        let available_lanes = self.task_pool.available_lanes();
+        let due_from_queue = self
+            .schedule
+            .due_quotes_for_lanes(
+                &db,
+                &available_lanes,
+                current_unix_time_ms(),
+                FEDERATION_PAYMENT_DUE_BATCH_LIMIT,
+            )
+            .await?;
         let mint_cursor = self
             .schedule
             .scan_cursor(&db, FederationPaymentQuoteKind::Mint)
@@ -1160,56 +1444,55 @@ impl FederationPaymentObserver {
             .await?;
         let mint_reaches_end = mint_ids.len() < FEDERATION_PAYMENT_SCAN_LIMIT_PER_KIND;
         let melt_reaches_end = melt_ids.len() < FEDERATION_PAYMENT_SCAN_LIMIT_PER_KIND;
-        if mint_ids.is_empty() && mint_cursor.is_some() {
-            self.schedule
-                .set_scan_cursor(&db, FederationPaymentQuoteKind::Mint, None)
-                .await?;
+
+        let mut batch = Vec::with_capacity(due_from_queue.len() + mint_ids.len() + melt_ids.len());
+        let mut seen = HashSet::with_capacity(batch.capacity());
+        for quote in due_from_queue {
+            if seen.insert(quote.clone()) {
+                batch.push(quote);
+            }
         }
-        if melt_ids.is_empty() && melt_cursor.is_some() {
-            self.schedule
-                .set_scan_cursor(&db, FederationPaymentQuoteKind::Melt, None)
-                .await?;
+        let scan_len = mint_ids.len().max(melt_ids.len());
+        for index in 0..scan_len {
+            if let Some(id) = melt_ids.get(index) {
+                let quote = FederationPaymentQuote::melt(id.clone());
+                if seen.insert(quote.clone()) {
+                    batch.push(quote);
+                }
+            }
+            if let Some(id) = mint_ids.get(index) {
+                let quote = FederationPaymentQuote::mint(id.clone());
+                if seen.insert(quote.clone()) {
+                    batch.push(quote);
+                }
+            }
         }
 
-        let mut submitted = 0usize;
-        let batch_len = mint_ids.len().max(melt_ids.len());
-        for index in 0..batch_len {
-            for (kind, ids, reaches_end) in [
-                (
-                    FederationPaymentQuoteKind::Mint,
-                    &mint_ids,
-                    mint_reaches_end,
-                ),
-                (
-                    FederationPaymentQuoteKind::Melt,
-                    &melt_ids,
-                    melt_reaches_end,
-                ),
-            ] {
-                let Some(id) = ids.get(index) else {
-                    continue;
-                };
-                let quote = match kind {
-                    FederationPaymentQuoteKind::Mint => FederationPaymentQuote::mint(id.clone()),
-                    FederationPaymentQuoteKind::Melt => FederationPaymentQuote::melt(id.clone()),
-                };
-                submitted = submitted.saturating_add(
-                    Box::pin(self.drive_or_dispatch_quotes(
-                        state,
-                        vec![quote],
-                        FederationPaymentObservationTrigger::Scheduled,
-                        Instant::now(),
-                    ))
-                    .await?,
-                );
-                let next_cursor = match reaches_end && index.saturating_add(1) == ids.len() {
-                    true => None,
-                    false => Some(id.clone()),
-                };
-                self.schedule
-                    .set_scan_cursor(&db, kind, next_cursor)
-                    .await?;
-            }
+        let submitted = Box::pin(self.drive_or_dispatch_quotes(
+            state,
+            batch,
+            FederationPaymentObservationTrigger::Scheduled,
+            Instant::now(),
+        ))
+        .await?;
+
+        let next_mint_cursor = match mint_reaches_end {
+            true => None,
+            false => mint_ids.last().cloned(),
+        };
+        let next_melt_cursor = match melt_reaches_end {
+            true => None,
+            false => melt_ids.last().cloned(),
+        };
+        if mint_ids.is_empty() && mint_cursor.is_some() || !mint_ids.is_empty() {
+            self.schedule
+                .set_scan_cursor(&db, FederationPaymentQuoteKind::Mint, next_mint_cursor)
+                .await?;
+        }
+        if melt_ids.is_empty() && melt_cursor.is_some() || !melt_ids.is_empty() {
+            self.schedule
+                .set_scan_cursor(&db, FederationPaymentQuoteKind::Melt, next_melt_cursor)
+                .await?;
         }
 
         Ok(submitted)
@@ -1226,18 +1509,32 @@ impl FederationPaymentObserver {
     }
 
     pub fn notify_accepted_operation(&self, entry: &cdk::federation::FederationJournalEntry) {
-        for quote in payment_wakes_for_entry(entry) {
+        for wake in payment_wakes_for_entry(entry) {
             let _ = self
                 .accepted_operation_wakes
-                .send((quote, entry.index, Instant::now()));
+                .send((wake, entry.index, Instant::now()));
         }
     }
 
+    #[cfg(test)]
     async fn next_schedule_delay(
         &self,
         db: &cdk_common::database::DynMintDatabase,
     ) -> Result<std::time::Duration, cdk::Error> {
-        let Some(deadline_ms) = self.schedule.next_attempt_at_ms(db).await? else {
+        self.next_schedule_delay_for_lanes(db, &FederationPaymentScheduleLane::ALL)
+            .await
+    }
+
+    async fn next_schedule_delay_for_lanes(
+        &self,
+        db: &cdk_common::database::DynMintDatabase,
+        lanes: &[FederationPaymentScheduleLane],
+    ) -> Result<std::time::Duration, cdk::Error> {
+        let Some(deadline_ms) = self
+            .schedule
+            .next_attempt_at_ms_for_lanes(db, lanes)
+            .await?
+        else {
             return Ok(FEDERATION_PAYMENT_IDLE_DEADLINE);
         };
         Ok(std::time::Duration::from_millis(
@@ -1256,6 +1553,13 @@ impl FederationPaymentObserver {
         let tasks = state.federation.tasks.clone();
         let stop = tasks.stop_token();
         tasks.spawn("payment observer", true, async move {
+            if let Err(error) = self.schedule.hydrate(&state.mint.localstore()).await {
+                tracing::warn!(
+                    error = %error,
+                    "Could not hydrate federation payment schedule at startup; will retry lazily"
+                );
+            }
+
             let mut repair_interval = tokio::time::interval(FEDERATION_PAYMENT_REPAIR_INTERVAL);
             repair_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut onchain_interval = tokio::time::interval(FEDERATION_ONCHAIN_OBSERVER_INTERVAL);
@@ -1266,7 +1570,11 @@ impl FederationPaymentObserver {
                 if stop.is_cancelled() {
                     break;
                 }
-                let schedule_delay = match self.next_schedule_delay(&state.mint.localstore()).await
+                let available_lanes = self.task_pool.available_lanes();
+                let saturated_lanes = self.task_pool.saturated_lanes();
+                let schedule_delay = match self
+                    .next_schedule_delay_for_lanes(&state.mint.localstore(), &available_lanes)
+                    .await
                 {
                     Ok(delay) => delay,
                     Err(error) => {
@@ -1278,13 +1586,13 @@ impl FederationPaymentObserver {
                     }
                 };
                 // A dispatched quote holds its attempt lease, so it is not due
-                // while its task runs. A due quote that cannot get a task
-                // permit is left unleased and stays due, so a scheduled round
-                // started while every permit is held would find it due again
-                // immediately and spin. Wait for a running quote task to
-                // finish instead.
-                let scheduled_round_ready =
-                    scheduled_round_can_dispatch(self.quote_tasks.available_permits());
+                // while its task runs. A due quote in a saturated lane stays
+                // unleased and due; excluding saturated lanes from the schedule
+                // timer prevents spinning on that lane while still dispatching
+                // due quotes in any other lane with free capacity.
+                let scheduled_round_ready = scheduled_round_can_dispatch(&available_lanes)
+                    && schedule_delay < FEDERATION_PAYMENT_IDLE_DEADLINE;
+                let has_saturated_lane = !saturated_lanes.is_empty();
                 // One panicking round, event, or backend future must not kill
                 // the only observation worker; it is logged and the loop
                 // continues so remaining quotes keep being repaired.
@@ -1292,12 +1600,9 @@ impl FederationPaymentObserver {
                     tokio::select! {
                         _ = stop.cancelled() => (Ok(0), true),
                         _ = tokio::time::sleep(schedule_delay), if scheduled_round_ready => {
-                            (self.scheduled_quotes(&state).await, false)
+                            (self.scheduled_due_quotes(&state).await, false)
                         }
-                        permit = self.quote_tasks.clone().acquire_owned(), if !scheduled_round_ready => {
-                            // Release it at once: the next round dispatches
-                            // through `dispatch_quotes`, which takes its own.
-                            drop(permit);
+                        _ = self.task_pool.wait_for_any_lane(&saturated_lanes), if has_saturated_lane => {
                             (Ok(0), false)
                         }
                         _ = repair_interval.tick() => (self.run_round(&state).await, false),
@@ -1308,17 +1613,54 @@ impl FederationPaymentObserver {
                             (changed.map(|_| 0).map_err(|_| cdk::Error::Internal), false)
                         }
                         wake = accepted_operation_wakes.recv() => match wake {
-                            Ok((quote, operation_index, queued_at)) => (
-                                Box::pin(self.drive_or_dispatch_quotes(
-                                    &state,
-                                    vec![quote],
-                                    FederationPaymentObservationTrigger::OperationAccepted(
-                                        operation_index,
-                                    ),
-                                    queued_at,
-                                )).await,
-                                false,
-                            ),
+                            Ok((first_wake, first_index, first_queued_at)) => {
+                                let mut wakes = Vec::with_capacity(1);
+                                wakes.push((first_wake, first_index, first_queued_at));
+                                let mut lagged = false;
+                                while wakes.len() < FEDERATION_PAYMENT_WAKE_DRAIN_LIMIT {
+                                    match accepted_operation_wakes.try_recv() {
+                                        Ok(item) => wakes.push(item),
+                                        Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                                            break;
+                                        }
+                                        Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) => {
+                                            tracing::warn!(
+                                                skipped,
+                                                "Federation payment journal wake lagged; running repair scan"
+                                            );
+                                            lagged = true;
+                                            break;
+                                        }
+                                        Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                                            break;
+                                        }
+                                    }
+                                }
+                                let mut outcome = Ok(0_usize);
+                                for (wake, operation_index, queued_at) in wakes {
+                                    if let Err(error) = self
+                                        .dispatch_accepted_wake(
+                                            &state,
+                                            wake,
+                                            operation_index,
+                                            queued_at,
+                                        )
+                                        .await
+                                    {
+                                        outcome = Err(error);
+                                        break;
+                                    }
+                                }
+                                let outcome = if lagged {
+                                    match outcome {
+                                        Ok(_) => self.run_round(&state).await,
+                                        Err(error) => Err(error),
+                                    }
+                                } else {
+                                    outcome
+                                };
+                                (outcome, false)
+                            }
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                                 tracing::warn!(
                                     skipped,
@@ -1329,7 +1671,40 @@ impl FederationPaymentObserver {
                             Err(tokio::sync::broadcast::error::RecvError::Closed) => (Ok(0), true),
                         },
                         event = payment_events.recv() => match event {
-                            Ok(event) => (self.observe_event(&state, event).await, false),
+                            Ok(first_event) => {
+                                let mut events = Vec::with_capacity(1);
+                                events.push(first_event);
+                                let mut lagged = false;
+                                while events.len() < FEDERATION_PAYMENT_WAKE_DRAIN_LIMIT {
+                                    match payment_events.try_recv() {
+                                        Ok(event) => events.push(event),
+                                        Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                                            break;
+                                        }
+                                        Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) => {
+                                            tracing::warn!(
+                                                skipped,
+                                                "Federation payment observer lagged; running repair scan"
+                                            );
+                                            lagged = true;
+                                            break;
+                                        }
+                                        Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                                            break;
+                                        }
+                                    }
+                                }
+                                let dispatched = self.dispatch_payment_events(&state, events).await;
+                                let outcome = if lagged {
+                                    match dispatched {
+                                        Ok(_) => self.run_round(&state).await,
+                                        Err(error) => Err(error),
+                                    }
+                                } else {
+                                    dispatched
+                                };
+                                (outcome, false)
+                            }
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                                 tracing::warn!(
                                     skipped,
@@ -1384,12 +1759,69 @@ impl FederationPaymentObserver {
     }
 }
 
+/// Drive `items` concurrently up to `max_in_flight` while holding permits from
+/// `semaphore`. Already-started futures are always drained before returning an
+/// error so no claimed quote lease is ever dropped mid-flight.
+async fn run_bounded_direct_tasks<T, F, Fut>(
+    items: Vec<T>,
+    semaphore: std::sync::Arc<tokio::sync::Semaphore>,
+    max_in_flight: usize,
+    mut work: F,
+) -> Result<usize, cdk::Error>
+where
+    F: FnMut(T) -> Fut,
+    Fut: std::future::Future<Output = Result<usize, cdk::Error>>,
+{
+    if items.is_empty() {
+        return Ok(0);
+    }
+    let concurrency_limit = max_in_flight.max(1);
+    let mut in_flight = FuturesUnordered::new();
+    let mut pending = items.into_iter();
+    let mut submitted = 0_usize;
+    let mut first_error = None::<cdk::Error>;
+
+    loop {
+        while first_error.is_none() && in_flight.len() < concurrency_limit {
+            let Some(item) = pending.next() else {
+                break;
+            };
+            let semaphore = semaphore.clone();
+            let future = work(item);
+            in_flight.push(async move {
+                let _permit = semaphore
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| cdk::Error::Internal)?;
+                future.await
+            });
+        }
+
+        let Some(outcome) = in_flight.next().await else {
+            break;
+        };
+        match outcome {
+            Ok(advanced) => submitted = submitted.saturating_add(advanced),
+            Err(error) => {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+    }
+
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(submitted),
+    }
+}
+
 /// Whether the worker may start a scheduled round now.
 ///
-/// With no free quote-task permit, every due Bark quote is left due without
-/// being driven, so the round would be repeated without delay.
-fn scheduled_round_can_dispatch(available_quote_permits: usize) -> bool {
-    available_quote_permits > 0
+/// With no lane holding a free quote-task permit, every due quote is left due
+/// without being driven, so a scheduled round would repeat without delay.
+fn scheduled_round_can_dispatch(available_lanes: &[FederationPaymentScheduleLane]) -> bool {
+    !available_lanes.is_empty()
 }
 
 fn continue_payment_pump(
@@ -1405,29 +1837,31 @@ fn continue_payment_pump(
 
 fn payment_wakes_for_entry(
     entry: &cdk::federation::FederationJournalEntry,
-) -> Vec<FederationPaymentQuote> {
+) -> Vec<FederationPaymentWake> {
     if entry.status() != FederationOperationStatus::Applied {
         return Vec::new();
     }
 
     let parse = |quote: &str| quote.parse::<QuoteId>().ok();
+    let wake =
+        |quote: FederationPaymentQuote, priority: bool| FederationPaymentWake { quote, priority };
     match &entry.envelope.operation {
         FederationOperation::AddressAllocation(operation) => parse(&operation.quote)
-            .map(FederationPaymentQuote::mint)
+            .map(|id| wake(FederationPaymentQuote::mint(id), false))
             .into_iter()
             .collect(),
         FederationOperation::ChainObservation(FederationChainObservation::Deposit(observation)) => {
             parse(&observation.allocation.quote)
-                .map(FederationPaymentQuote::mint)
+                .map(|id| wake(FederationPaymentQuote::mint(id), true))
                 .into_iter()
                 .collect()
         }
         FederationOperation::MintQuote(operation) => parse(&operation.quote)
-            .map(FederationPaymentQuote::mint)
+            .map(|id| wake(FederationPaymentQuote::mint(id), false))
             .into_iter()
             .collect(),
         FederationOperation::MintQuotePayment(observation) => parse(&observation.quote)
-            .map(FederationPaymentQuote::mint)
+            .map(|id| wake(FederationPaymentQuote::mint(id), true))
             .into_iter()
             .collect(),
         FederationOperation::Mint(operation) => operation
@@ -1435,34 +1869,55 @@ fn payment_wakes_for_entry(
             .quote_ids()
             .into_iter()
             .filter_map(parse)
-            .map(FederationPaymentQuote::mint)
+            .map(|id| wake(FederationPaymentQuote::mint(id), true))
             .collect(),
         FederationOperation::MeltQuote(operation) => parse(&operation.quote)
-            .map(FederationPaymentQuote::melt)
+            .map(|id| wake(FederationPaymentQuote::melt(id), false))
             .into_iter()
             .collect(),
         FederationOperation::MeltQuotePayment(observation) => parse(&observation.quote)
-            .map(FederationPaymentQuote::melt)
+            .map(|id| wake(FederationPaymentQuote::melt(id), true))
             .into_iter()
             .collect(),
         FederationOperation::Melt(operation) => parse(operation.request.quote())
-            .map(FederationPaymentQuote::melt)
+            .map(|id| wake(FederationPaymentQuote::melt(id), true))
             .into_iter()
             .collect(),
         #[cfg(feature = "federation-bark")]
         FederationOperation::Application(_) => {
-            cdk::federation::validate_federation_bark_operation(&entry.envelope.operation)
-                .ok()
-                .and_then(|operation| operation.quote().map(str::to_owned))
-                .and_then(|quote| parse(&quote))
-                .into_iter()
-                .flat_map(|quote| {
-                    [
-                        FederationPaymentQuote::mint(quote.clone()),
-                        FederationPaymentQuote::melt(quote),
-                    ]
-                })
-                .collect()
+            let Ok(operation) =
+                cdk::federation::validate_federation_bark_operation(&entry.envelope.operation)
+            else {
+                return Vec::new();
+            };
+            let Some(quote_id) = operation.quote().and_then(parse) else {
+                return Vec::new();
+            };
+            match operation {
+                cdk::federation::FederationBarkOperation::ReceiveIntent(_)
+                | cdk::federation::FederationBarkOperation::ReceivePrepared(_) => {
+                    vec![wake(FederationPaymentQuote::mint(quote_id), false)]
+                }
+                cdk::federation::FederationBarkOperation::ActionPlan(plan) => match plan.kind {
+                    cdk::federation::FederationBarkActionKind::IncomingClaim => {
+                        vec![wake(FederationPaymentQuote::mint(quote_id), true)]
+                    }
+                    cdk::federation::FederationBarkActionKind::LightningSend
+                    | cdk::federation::FederationBarkActionKind::FailedSendRevocation => {
+                        vec![wake(FederationPaymentQuote::melt(quote_id), true)]
+                    }
+                    _ => vec![
+                        wake(FederationPaymentQuote::mint(quote_id.clone()), true),
+                        wake(FederationPaymentQuote::melt(quote_id), true),
+                    ],
+                },
+                cdk::federation::FederationBarkOperation::ActionTransition(_)
+                | cdk::federation::FederationBarkOperation::MemberObservation(_)
+                | cdk::federation::FederationBarkOperation::EvidenceCertificate(_) => vec![
+                    wake(FederationPaymentQuote::mint(quote_id.clone()), true),
+                    wake(FederationPaymentQuote::melt(quote_id), true),
+                ],
+            }
         }
         #[cfg(not(feature = "federation-bark"))]
         FederationOperation::Application(_) => Vec::new(),
@@ -1681,32 +2136,56 @@ mod tests {
 
     #[test]
     fn scheduled_round_waits_while_every_quote_task_permit_is_held() {
-        assert!(!scheduled_round_can_dispatch(0));
-        assert!(scheduled_round_can_dispatch(1));
+        assert!(!scheduled_round_can_dispatch(&[]));
+        assert!(scheduled_round_can_dispatch(&[
+            FederationPaymentScheduleLane::OutgoingMelt
+        ]));
         assert!(scheduled_round_can_dispatch(
-            FEDERATION_PAYMENT_CONCURRENT_QUOTE_TASKS
+            &FederationPaymentScheduleLane::ALL
         ));
     }
 
     #[tokio::test]
     async fn worker_wakes_when_a_quote_task_permit_is_released() {
         let observer = FederationPaymentObserver::default();
-        let held = observer
-            .quote_tasks
-            .clone()
-            .acquire_many_owned(
-                u32::try_from(FEDERATION_PAYMENT_CONCURRENT_QUOTE_TASKS)
-                    .expect("permit count fits in u32"),
-            )
-            .await
-            .expect("semaphore is open");
+        let mut held = Vec::new();
+        for (lane, count) in [
+            (
+                FederationPaymentScheduleLane::IncomingWait,
+                FEDERATION_PAYMENT_CONCURRENT_INCOMING_WAIT_TASKS,
+            ),
+            (
+                FederationPaymentScheduleLane::IncomingClaim,
+                FEDERATION_PAYMENT_CONCURRENT_CLAIM_TASKS,
+            ),
+            (
+                FederationPaymentScheduleLane::OutgoingMelt,
+                FEDERATION_PAYMENT_CONCURRENT_MELT_TASKS,
+            ),
+            (
+                FederationPaymentScheduleLane::Direct,
+                FEDERATION_PAYMENT_CONCURRENT_DIRECT_QUOTE_TASKS,
+            ),
+        ] {
+            held.push(
+                observer
+                    .task_pool
+                    .semaphore(lane)
+                    .clone()
+                    .acquire_many_owned(u32::try_from(count).expect("permit count fits in u32"))
+                    .await
+                    .expect("semaphore is open"),
+            );
+        }
         assert!(!scheduled_round_can_dispatch(
-            observer.quote_tasks.available_permits()
+            &observer.task_pool.available_lanes()
         ));
+        let saturated = observer.task_pool.saturated_lanes();
+        assert_eq!(saturated.len(), FederationPaymentScheduleLane::ALL.len());
 
         let waiter = tokio::spawn({
-            let quote_tasks = observer.quote_tasks.clone();
-            async move { quote_tasks.acquire_owned().await.map(drop) }
+            let task_pool = observer.task_pool.clone();
+            async move { task_pool.wait_for_any_lane(&saturated).await }
         });
         tokio::task::yield_now().await;
         assert!(
@@ -1714,14 +2193,13 @@ mod tests {
             "the worker must block, not spin, while every permit is held"
         );
 
-        drop(held);
+        held.pop();
         tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
             .await
             .expect("released permit wakes the worker")
-            .expect("waiter task completes")
-            .expect("semaphore is open");
+            .expect("waiter task completes");
         assert!(scheduled_round_can_dispatch(
-            observer.quote_tasks.available_permits()
+            &observer.task_pool.available_lanes()
         ));
     }
 
@@ -1738,14 +2216,16 @@ mod tests {
         observer: &FederationPaymentObserver,
         db: &cdk_common::database::DynMintDatabase,
         quote: &FederationPaymentQuote,
+        lane: FederationPaymentScheduleLane,
         now_ms: u64,
     ) {
         let attempt = observer
             .schedule
-            .claim(
+            .claim_in_lane(
                 db,
                 quote,
                 FederationPaymentObservationTrigger::Scheduled,
+                lane,
                 now_ms.saturating_sub(2_000),
             )
             .await
@@ -1773,8 +2253,9 @@ mod tests {
         let db = memory_db().await;
         let observer = FederationPaymentObserver::default();
         let quote = FederationPaymentQuote::mint(QuoteId::new());
+        let lane = FederationPaymentScheduleLane::IncomingWait;
         let now_ms = current_unix_time_ms();
-        schedule_due_quote(&observer, &db, &quote, now_ms).await;
+        schedule_due_quote(&observer, &db, &quote, lane, now_ms).await;
         assert_eq!(
             observer.next_schedule_delay(&db).await.expect("delay"),
             std::time::Duration::ZERO,
@@ -1785,10 +2266,11 @@ mod tests {
             task_permit,
             attempt,
         } = observer
-            .claim_quote_task(
+            .claim_quote_task_in_lane(
                 &db,
                 &quote,
                 FederationPaymentObservationTrigger::Scheduled,
+                lane,
                 now_ms,
             )
             .await
@@ -1799,12 +2281,13 @@ mod tests {
 
         // Scheduled rounds that run again before the task starts driving the
         // quote must neither dispatch it again nor take more task permits.
-        for _ in 0..FEDERATION_PAYMENT_CONCURRENT_QUOTE_TASKS * 2 {
+        for _ in 0..FEDERATION_PAYMENT_CONCURRENT_INCOMING_WAIT_TASKS * 2 {
             let repeated = observer
-                .claim_quote_task(
+                .claim_quote_task_in_lane(
                     &db,
                     &quote,
                     FederationPaymentObservationTrigger::Scheduled,
+                    lane,
                     now_ms,
                 )
                 .await
@@ -1815,8 +2298,8 @@ mod tests {
             );
         }
         assert_eq!(
-            observer.quote_tasks.available_permits(),
-            FEDERATION_PAYMENT_CONCURRENT_QUOTE_TASKS - 1
+            observer.task_pool.available_permits(lane),
+            FEDERATION_PAYMENT_CONCURRENT_INCOMING_WAIT_TASKS - 1
         );
 
         drop(task_permit);
@@ -1837,10 +2320,11 @@ mod tests {
             .expect("finish attempt");
         assert!(matches!(
             observer
-                .claim_quote_task(
+                .claim_quote_task_in_lane(
                     &db,
                     &quote,
                     FederationPaymentObservationTrigger::Scheduled,
+                    lane,
                     now_ms.saturating_add(1_000),
                 )
                 .await
@@ -1854,19 +2338,26 @@ mod tests {
         let db = memory_db().await;
         let observer = FederationPaymentObserver::default();
         let quotes = [
-            FederationPaymentQuote::mint(QuoteId::new()),
-            FederationPaymentQuote::melt(QuoteId::new()),
+            (
+                FederationPaymentQuote::mint(QuoteId::new()),
+                FederationPaymentScheduleLane::IncomingWait,
+            ),
+            (
+                FederationPaymentQuote::melt(QuoteId::new()),
+                FederationPaymentScheduleLane::OutgoingMelt,
+            ),
         ];
         let now_ms = current_unix_time_ms();
         let mut attempts = Vec::new();
-        for quote in &quotes {
-            schedule_due_quote(&observer, &db, quote, now_ms).await;
+        for (quote, lane) in &quotes {
+            schedule_due_quote(&observer, &db, quote, *lane, now_ms).await;
             attempts.push(
                 observer
-                    .claim_quote_task(
+                    .claim_quote_task_in_lane(
                         &db,
                         quote,
                         FederationPaymentObservationTrigger::Scheduled,
+                        *lane,
                         now_ms,
                     )
                     .await
@@ -1891,13 +2382,15 @@ mod tests {
         let db = memory_db().await;
         let observer = FederationPaymentObserver::default();
         let quote = FederationPaymentQuote::melt(QuoteId::new());
+        let lane = FederationPaymentScheduleLane::OutgoingMelt;
         let now_ms = current_unix_time_ms();
-        schedule_due_quote(&observer, &db, &quote, now_ms).await;
+        schedule_due_quote(&observer, &db, &quote, lane, now_ms).await;
         let held = observer
-            .quote_tasks
+            .task_pool
+            .semaphore(lane)
             .clone()
             .acquire_many_owned(
-                u32::try_from(FEDERATION_PAYMENT_CONCURRENT_QUOTE_TASKS)
+                u32::try_from(FEDERATION_PAYMENT_CONCURRENT_MELT_TASKS)
                     .expect("permit count fits in u32"),
             )
             .await
@@ -1905,10 +2398,11 @@ mod tests {
 
         assert!(matches!(
             observer
-                .claim_quote_task(
+                .claim_quote_task_in_lane(
                     &db,
                     &quote,
                     FederationPaymentObservationTrigger::Scheduled,
+                    lane,
                     now_ms,
                 )
                 .await
@@ -1924,14 +2418,303 @@ mod tests {
         drop(held);
         assert!(matches!(
             observer
-                .claim_quote_task(
+                .claim_quote_task_in_lane(
                     &db,
                     &quote,
                     FederationPaymentObservationTrigger::Scheduled,
+                    lane,
                     now_ms,
                 )
                 .await
                 .expect("dispatch after release"),
+            FederationPaymentQuoteTaskClaim::Claimed { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn unpaid_incoming_quotes_do_not_starve_outgoing_melts_or_ready_claims() {
+        let db = memory_db().await;
+        let observer = FederationPaymentObserver::default();
+        let now_ms = current_unix_time_ms();
+
+        // Occupy every single permit in IncomingWait (far more than the old 16-permit cap).
+        let mut held_unpaid = Vec::new();
+        for _ in 0..FEDERATION_PAYMENT_CONCURRENT_INCOMING_WAIT_TASKS {
+            let unpaid = FederationPaymentQuote::mint(QuoteId::new());
+            schedule_due_quote(
+                &observer,
+                &db,
+                &unpaid,
+                FederationPaymentScheduleLane::IncomingWait,
+                now_ms,
+            )
+            .await;
+            let claim = observer
+                .claim_quote_task_in_lane(
+                    &db,
+                    &unpaid,
+                    FederationPaymentObservationTrigger::Scheduled,
+                    FederationPaymentScheduleLane::IncomingWait,
+                    now_ms,
+                )
+                .await
+                .expect("claim unpaid");
+            assert!(matches!(
+                claim,
+                FederationPaymentQuoteTaskClaim::Claimed { .. }
+            ));
+            held_unpaid.push(claim);
+        }
+
+        // One more unpaid quote hits CapacityReached and stays unleased.
+        let overflow_unpaid = FederationPaymentQuote::mint(QuoteId::new());
+        schedule_due_quote(
+            &observer,
+            &db,
+            &overflow_unpaid,
+            FederationPaymentScheduleLane::IncomingWait,
+            now_ms,
+        )
+        .await;
+        assert!(matches!(
+            observer
+                .claim_quote_task_in_lane(
+                    &db,
+                    &overflow_unpaid,
+                    FederationPaymentObservationTrigger::Scheduled,
+                    FederationPaymentScheduleLane::IncomingWait,
+                    now_ms,
+                )
+                .await
+                .expect("overflow unpaid"),
+            FederationPaymentQuoteTaskClaim::CapacityReached
+        ));
+
+        // With IncomingWait saturated and no due work in other lanes, the
+        // worker ignores the saturated lane so it does NOT busy-spin.
+        let available_lanes = observer.task_pool.available_lanes();
+        assert!(!available_lanes.contains(&FederationPaymentScheduleLane::IncomingWait));
+        assert_eq!(
+            observer
+                .next_schedule_delay_for_lanes(&db, &available_lanes)
+                .await
+                .expect("idle delay"),
+            FEDERATION_PAYMENT_IDLE_DEADLINE
+        );
+
+        // Now an outgoing melt and a ready incoming claim become due:
+        // both must wake immediately and claim permits in their own lanes
+        // while all 64 IncomingWait permits are still held.
+        let ready_claim = FederationPaymentQuote::mint(QuoteId::new());
+        let outgoing_melt = FederationPaymentQuote::melt(QuoteId::new());
+        schedule_due_quote(
+            &observer,
+            &db,
+            &ready_claim,
+            FederationPaymentScheduleLane::IncomingClaim,
+            now_ms,
+        )
+        .await;
+        schedule_due_quote(
+            &observer,
+            &db,
+            &outgoing_melt,
+            FederationPaymentScheduleLane::OutgoingMelt,
+            now_ms,
+        )
+        .await;
+
+        assert_eq!(
+            observer
+                .next_schedule_delay_for_lanes(&db, &available_lanes)
+                .await
+                .expect("ready delay"),
+            std::time::Duration::ZERO
+        );
+        assert!(matches!(
+            observer
+                .claim_quote_task_in_lane(
+                    &db,
+                    &ready_claim,
+                    FederationPaymentObservationTrigger::Scheduled,
+                    FederationPaymentScheduleLane::IncomingClaim,
+                    now_ms,
+                )
+                .await
+                .expect("claim ready incoming"),
+            FederationPaymentQuoteTaskClaim::Claimed { .. }
+        ));
+        assert!(matches!(
+            observer
+                .claim_quote_task_in_lane(
+                    &db,
+                    &outgoing_melt,
+                    FederationPaymentObservationTrigger::Scheduled,
+                    FederationPaymentScheduleLane::OutgoingMelt,
+                    now_ms,
+                )
+                .await
+                .expect("claim outgoing melt"),
+            FederationPaymentQuoteTaskClaim::Claimed { .. }
+        ));
+
+        drop(held_unpaid);
+    }
+
+    #[tokio::test]
+    async fn direct_quote_probes_run_concurrently_within_bound_and_drain_on_error() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let bound = 4_usize;
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(bound));
+        let barrier = Arc::new(tokio::sync::Barrier::new(bound));
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let peak_in_flight = Arc::new(AtomicUsize::new(0));
+
+        // All 4 tasks in the first wave must enter concurrently to clear the
+        // barrier; a sequential loop would time out and fail the test.
+        let total = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            run_bounded_direct_tasks((0..12_usize).collect(), semaphore.clone(), bound, |index| {
+                let barrier = Arc::clone(&barrier);
+                let in_flight = Arc::clone(&in_flight);
+                let peak_in_flight = Arc::clone(&peak_in_flight);
+                async move {
+                    let current = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak_in_flight.fetch_max(current, Ordering::SeqCst);
+                    if index < bound {
+                        barrier.wait().await;
+                    } else {
+                        tokio::task::yield_now().await;
+                    }
+                    in_flight.fetch_sub(1, Ordering::SeqCst);
+                    Ok(1)
+                }
+            }),
+        )
+        .await
+        .expect("concurrent probes must not serialize and deadlock on barrier")
+        .expect("all probes succeed");
+
+        assert_eq!(total, 12);
+        assert_eq!(peak_in_flight.load(Ordering::SeqCst), bound);
+        assert_eq!(semaphore.available_permits(), bound);
+
+        // Verify that an error in one task still drains all already-started
+        // sibling tasks cleanly so leases are never dropped mid-flight.
+        let completed_siblings = Arc::new(AtomicUsize::new(0));
+        let err_barrier = Arc::new(tokio::sync::Barrier::new(bound));
+        let result =
+            run_bounded_direct_tasks((0..8_usize).collect(), semaphore.clone(), bound, |index| {
+                let err_barrier = Arc::clone(&err_barrier);
+                let completed_siblings = Arc::clone(&completed_siblings);
+                async move {
+                    if index < bound {
+                        err_barrier.wait().await;
+                    }
+                    if index == 0 {
+                        return Err(cdk::Error::Internal);
+                    }
+                    tokio::task::yield_now().await;
+                    completed_siblings.fetch_add(1, Ordering::SeqCst);
+                    Ok(1)
+                }
+            })
+            .await;
+        assert!(result.is_err());
+        assert_eq!(
+            completed_siblings.load(Ordering::SeqCst),
+            bound - 1,
+            "every already-started sibling must drain before returning error"
+        );
+        assert_eq!(semaphore.available_permits(), bound);
+    }
+
+    #[tokio::test]
+    async fn lane_mismatch_on_saturated_target_lane_reconciles_without_spinning() {
+        let db = memory_db().await;
+        let observer = FederationPaymentObserver::default();
+        let quote = FederationPaymentQuote::mint(QuoteId::new());
+        let now_ms = current_unix_time_ms();
+
+        // Simulate a pre-upgrade entry indexed in IncomingWait whose classified
+        // target lane is Direct.
+        schedule_due_quote(
+            &observer,
+            &db,
+            &quote,
+            FederationPaymentScheduleLane::IncomingWait,
+            now_ms,
+        )
+        .await;
+
+        // Saturate Direct while IncomingWait still has free permits.
+        let held_direct = observer
+            .task_pool
+            .semaphore(FederationPaymentScheduleLane::Direct)
+            .clone()
+            .acquire_many_owned(
+                u32::try_from(FEDERATION_PAYMENT_CONCURRENT_DIRECT_QUOTE_TASKS)
+                    .expect("permit count fits in u32"),
+            )
+            .await
+            .expect("direct semaphore open");
+
+        assert!(matches!(
+            observer
+                .claim_quote_task_in_lane(
+                    &db,
+                    &quote,
+                    FederationPaymentObservationTrigger::Scheduled,
+                    FederationPaymentScheduleLane::Direct,
+                    now_ms,
+                )
+                .await
+                .expect("capacity reached on direct"),
+            FederationPaymentQuoteTaskClaim::CapacityReached
+        ));
+
+        observer
+            .schedule
+            .reconcile_lane(&db, &quote, FederationPaymentScheduleLane::Direct)
+            .await
+            .expect("reconcile lane");
+
+        // After reconciliation, the quote sits unleased in Direct, so available
+        // lanes (including IncomingWait) no longer wake with Duration::ZERO.
+        let available_lanes = observer.task_pool.available_lanes();
+        assert!(available_lanes.contains(&FederationPaymentScheduleLane::IncomingWait));
+        assert!(!available_lanes.contains(&FederationPaymentScheduleLane::Direct));
+        assert_eq!(
+            observer
+                .next_schedule_delay_for_lanes(&db, &available_lanes)
+                .await
+                .expect("available lanes idle"),
+            FEDERATION_PAYMENT_IDLE_DEADLINE
+        );
+
+        // Once a Direct permit is released, the quote is immediately due again.
+        drop(held_direct);
+        let available_lanes = observer.task_pool.available_lanes();
+        assert_eq!(
+            observer
+                .next_schedule_delay_for_lanes(&db, &available_lanes)
+                .await
+                .expect("direct ready"),
+            std::time::Duration::ZERO
+        );
+        assert!(matches!(
+            observer
+                .claim_quote_task_in_lane(
+                    &db,
+                    &quote,
+                    FederationPaymentObservationTrigger::Scheduled,
+                    FederationPaymentScheduleLane::Direct,
+                    now_ms,
+                )
+                .await
+                .expect("claim direct after release"),
             FederationPaymentQuoteTaskClaim::Claimed { .. }
         ));
     }
@@ -2011,8 +2794,14 @@ mod tests {
         entry.application = FederationApplicationState::Applied {};
         assert_eq!(
             payment_wakes_for_entry(&entry),
-            vec![FederationPaymentQuote::mint(quote)]
+            vec![FederationPaymentWake {
+                quote: FederationPaymentQuote::mint(quote),
+                priority: true,
+            }]
         );
-        assert!(!payment_wakes_for_entry(&entry).contains(&FederationPaymentQuote::mint(other)));
+        let other_quote = FederationPaymentQuote::mint(other);
+        assert!(!payment_wakes_for_entry(&entry)
+            .iter()
+            .any(|wake| wake.quote == other_quote));
     }
 }

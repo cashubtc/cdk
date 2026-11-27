@@ -14,7 +14,7 @@ use cdk_common::database::mint::{FederationIndexRange, FederationJournalEntryKey
 use super::FederatedBarkNode;
 use crate::{
     Error, FederatedBarkDegradedReason, FederatedBarkRecoveryDriver, FederatedBarkReplaySource,
-    FederatedBarkRuntime, FederatedBarkRuntimeStatus,
+    FederatedBarkRuntime, FederatedBarkRuntimeStatus, IndexedBarkProjection,
 };
 
 const REPLAY_PRIMARY_NAMESPACE: &str = "cdk_bark";
@@ -53,7 +53,9 @@ pub async fn reconcile_federation_bark_runtime(
         .map(|entry| entry.index)
         .or_else(|| entries.last().map(|entry| entry.index.saturating_add(1)))
         .unwrap_or(next_index);
-    advance_replay_marker(mint, &marker_key, replayed_until).await
+    advance_replay_marker(mint, &marker_key, replayed_until).await?;
+    runtime.invalidate_projection_cache().await;
+    Ok(())
 }
 
 async fn read_replay_marker(mint: &Mint, marker_key: &str) -> Result<u64, cdk::Error> {
@@ -111,22 +113,88 @@ fn decode_replay_marker(bytes: &[u8]) -> Result<u64, cdk::Error> {
     Ok(u64::from_be_bytes(bytes))
 }
 
+/// Load or reuse the frontier-validated indexed Bark projection without full-table
+/// SQL reloads when the database's Bark projection frontier is unchanged.
+async fn load_indexed_projection_for_frontier(
+    mint: &Mint,
+    runtime: &Arc<FederatedBarkRuntime>,
+    frontier: Option<u64>,
+) -> Result<Arc<IndexedBarkProjection>, cdk::Error> {
+    if let Some(cached) = runtime.cached_projection(frontier).await {
+        return Ok(cached);
+    }
+    let snapshot = mint.federation_bark_projection_snapshot().await?;
+    let indexed = Arc::new(IndexedBarkProjection::from_snapshot(snapshot));
+    Ok(runtime.store_cached_projection(indexed).await)
+}
+
+/// Accepted indexed Bark projection after the runtime has replayed up to its frontier.
+///
+/// Uses a lightweight indexed `MAX` frontier check against storage and serves
+/// unchanged frontiers directly from `runtime`'s in-memory [`IndexedBarkProjection`]
+/// cache, eliminating redundant full-table reloads and linear `Vec` scans.
+pub async fn federation_bark_ready_indexed_projection(
+    mint: &Mint,
+    runtime: &Arc<FederatedBarkRuntime>,
+) -> Result<Arc<IndexedBarkProjection>, cdk::Error> {
+    let mut frontier = mint.federation_bark_projection_frontier().await?;
+    let required_frontier = frontier.unwrap_or(0);
+    if runtime.ensure_ready(required_frontier).await.is_err() {
+        Box::pin(reconcile_federation_bark_runtime(mint, runtime)).await?;
+        frontier = mint.federation_bark_projection_frontier().await?;
+    }
+    runtime
+        .ensure_ready(frontier.unwrap_or(0))
+        .await
+        .map_err(|error| error.into_federation_error("verify projection readiness", None))?;
+    let mut projection = load_indexed_projection_for_frontier(mint, runtime, frontier).await?;
+    let loaded_frontier = projection.frontier().unwrap_or(0);
+    if runtime.ensure_ready(loaded_frontier).await.is_err() {
+        Box::pin(reconcile_federation_bark_runtime(mint, runtime)).await?;
+        let refreshed_frontier = mint.federation_bark_projection_frontier().await?;
+        runtime
+            .ensure_ready(refreshed_frontier.unwrap_or(0))
+            .await
+            .map_err(|error| error.into_federation_error("verify projection readiness", None))?;
+        projection =
+            load_indexed_projection_for_frontier(mint, runtime, refreshed_frontier).await?;
+    }
+    Ok(projection)
+}
+
 /// Accepted Bark projection after the runtime has replayed up to its frontier.
 pub async fn federation_bark_ready_projection(
     mint: &Mint,
     runtime: &Arc<FederatedBarkRuntime>,
 ) -> Result<FederationBarkProjectionSnapshot, cdk::Error> {
-    let mut projection = mint.federation_bark_projection_snapshot().await?;
-    let required_frontier = projection.frontier().unwrap_or(0);
-    if runtime.ensure_ready(required_frontier).await.is_err() {
-        Box::pin(reconcile_federation_bark_runtime(mint, runtime)).await?;
-        projection = mint.federation_bark_projection_snapshot().await?;
+    let indexed = federation_bark_ready_indexed_projection(mint, runtime).await?;
+    Ok((*indexed.snapshot_arc()).clone())
+}
+
+/// Return the indexed accepted projection for an ordinary ready runtime or an
+/// exact operator/maintenance recovery flow.
+///
+/// Recovery remains fail-closed unless the member has replayed the complete
+/// accepted frontier and its only degradation is a recovery condition.
+pub async fn federation_bark_recovery_indexed_projection(
+    state: &dyn FederatedBarkNode,
+    runtime: &Arc<FederatedBarkRuntime>,
+) -> Result<Arc<IndexedBarkProjection>, cdk::Error> {
+    match federation_bark_ready_indexed_projection(state.mint(), runtime).await {
+        Ok(projection) => Ok(projection),
+        Err(error) => {
+            let frontier = state.mint().federation_bark_projection_frontier().await?;
+            let projection =
+                load_indexed_projection_for_frontier(state.mint(), runtime, frontier).await?;
+            let required_frontier = projection.frontier().unwrap_or(0);
+            let status = runtime.status(required_frontier).await;
+            if runtime_allows_recovery(status, required_frontier) {
+                Ok(projection)
+            } else {
+                Err(projection_error(error))
+            }
+        }
     }
-    runtime
-        .ensure_ready(projection.frontier().unwrap_or(0))
-        .await
-        .map_err(|error| error.into_federation_error("verify projection readiness", None))?;
-    Ok(projection)
 }
 
 /// Return the accepted projection for an ordinary ready runtime or an exact
@@ -138,19 +206,8 @@ pub async fn federation_bark_recovery_projection(
     state: &dyn FederatedBarkNode,
     runtime: &Arc<FederatedBarkRuntime>,
 ) -> Result<FederationBarkProjectionSnapshot, cdk::Error> {
-    match federation_bark_ready_projection(state.mint(), runtime).await {
-        Ok(projection) => Ok(projection),
-        Err(error) => {
-            let projection = state.mint().federation_bark_projection_snapshot().await?;
-            let required_frontier = projection.frontier().unwrap_or(0);
-            let status = runtime.status(required_frontier).await;
-            if runtime_allows_recovery(status, required_frontier) {
-                Ok(projection)
-            } else {
-                Err(projection_error(error))
-            }
-        }
-    }
+    let indexed = federation_bark_recovery_indexed_projection(state, runtime).await?;
+    Ok((*indexed.snapshot_arc()).clone())
 }
 
 fn runtime_allows_recovery(status: FederatedBarkRuntimeStatus, required_frontier: u64) -> bool {

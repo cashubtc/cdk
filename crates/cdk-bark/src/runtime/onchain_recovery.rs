@@ -361,7 +361,7 @@ impl FederatedBarkRuntime {
             package
                 .validate()
                 .map_err(|_| Error::MaintenanceExecutionFailed)?;
-            let mut signatures = Vec::with_capacity(package.recovery_inputs.len());
+            let mut signing_inputs = Vec::with_capacity(package.recovery_inputs.len());
             for (input_index, selected) in package.recovery_inputs.iter().enumerate() {
                 let branch = match selected.allocation.keychain {
                     cdk_common::federation::FederationAddressKeychain::External => {
@@ -412,13 +412,25 @@ impl FederatedBarkRuntime {
                         .map_err(|_| Error::MaintenanceExecutionFailed)?,
                 )
                 .map_err(|_| Error::MaintenanceExecutionFailed)?;
-                let signature = self
-                    .recovery_signer
-                    .sign_frost(&context, derived.signing_derivation(), &authorization)
-                    .await
-                    .map_err(|_| Error::CustodySignerUnavailable)?;
-                signatures.push(signature.to_bytes());
+                signing_inputs.push((context, derived.signing_derivation().clone(), authorization));
             }
+            // Wait for every started FROST signing request to settle before
+            // returning an error so an abort never races an in-flight request
+            // (see docs/federation/custody.md).
+            let signature_results = futures::future::join_all(signing_inputs.iter().map(
+                |(context, derivation, authorization)| async move {
+                    let signature = self
+                        .recovery_signer
+                        .sign_frost(context, derivation, authorization)
+                        .await
+                        .map_err(|_| Error::CustodySignerUnavailable)?;
+                    Ok::<_, Error>(signature.to_bytes())
+                },
+            ))
+            .await;
+            let signatures = signature_results
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()?;
             let selected_inputs = package
                 .recovery_inputs
                 .iter()

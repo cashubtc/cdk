@@ -326,7 +326,8 @@ impl FederatedBarkRuntime {
             .commitment()
             .map_err(|_| Error::SendExecutionFailed)?;
         let custody_attempt = accepted_custody_attempt(accepted_plan, accepted_authorization)?;
-        self.custody
+        let custody_guard = self
+            .custody
             .activate_send(
                 accepted_plan.clone(),
                 custody_attempt.entry.clone(),
@@ -334,8 +335,8 @@ impl FederatedBarkRuntime {
             )
             .map_err(|_| Error::SendExecutionFailed)?;
         let result = self.wallet.execute_lightning_send_htlcs(&bark_plan).await;
-        let signer_unavailable = self.custody.take_signer_unavailable();
-        self.custody.deactivate_send();
+        let signer_unavailable = custody_guard.take_signer_unavailable();
+        custody_guard.deactivate();
         let evidence =
             result.map_err(|error| classify_send_execution_error(error, signer_unavailable))?;
         send_htlc_transition(
@@ -767,7 +768,8 @@ impl FederatedBarkRuntime {
             .map_err(|_| Error::SendExecutionFailed)?;
         let custody_attempt =
             accepted_custody_attempt(revocation_plan_entry, accepted_authorization)?;
-        self.custody
+        let custody_guard = self
+            .custody
             .activate_revocation(
                 revocation_plan_entry.clone(),
                 custody_attempt.entry.clone(),
@@ -778,8 +780,8 @@ impl FederatedBarkRuntime {
             .wallet
             .execute_lightning_send_revocation(&bark_send, &bark_revocation)
             .await;
-        let signer_unavailable = self.custody.take_signer_unavailable();
-        self.custody.deactivate_revocation();
+        let signer_unavailable = custody_guard.take_signer_unavailable();
+        custody_guard.deactivate();
         let evidence =
             result.map_err(|error| classify_send_execution_error(error, signer_unavailable))?;
         revocation_completed_transition(

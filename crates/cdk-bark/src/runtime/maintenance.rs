@@ -338,7 +338,8 @@ impl FederatedBarkRuntime {
         let commitment = operation
             .commitment()
             .map_err(|_| Error::MaintenanceExecutionFailed)?;
-        self.custody
+        let custody_guard = self
+            .custody
             .activate_refresh(
                 accepted_plan.clone(),
                 custody_attempt.entry.clone(),
@@ -346,8 +347,8 @@ impl FederatedBarkRuntime {
             )
             .map_err(|_| Error::MaintenanceExecutionFailed)?;
         let execution = self.wallet.execute_refresh(&bark_plan).await;
-        let signer_unavailable = self.custody.take_signer_unavailable();
-        self.custody.deactivate_refresh();
+        let signer_unavailable = custody_guard.take_signer_unavailable();
+        custody_guard.deactivate();
         match execution
             .map_err(|error| classify_maintenance_execution_error(error, signer_unavailable))?
         {
@@ -756,7 +757,8 @@ impl FederatedBarkRuntime {
         self.apply_emergency_exit_registered(projection, accepted_plan, registered_entry)
             .await?;
         let bark_plan = self.bark_exit_plan(projection, &plan)?;
-        self.custody
+        let custody_guard = self
+            .custody
             .activate_exit(
                 accepted_plan.clone(),
                 custody_attempt.entry.clone(),
@@ -781,8 +783,8 @@ impl FederatedBarkRuntime {
             }
         }
         .await;
-        let signer_unavailable = self.custody.take_signer_unavailable();
-        self.custody.deactivate_exit();
+        let signer_unavailable = custody_guard.take_signer_unavailable();
+        custody_guard.deactivate();
         let evidence = result
             .map_err(|error| classify_maintenance_execution_error(error, signer_unavailable))?;
         if !matches!(

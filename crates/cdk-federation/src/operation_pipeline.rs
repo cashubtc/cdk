@@ -244,6 +244,30 @@ impl FederationNodeRuntime {
             .unwrap_or_default()
     }
 
+    /// Subscribe to finalized journal application frontier updates for this member.
+    ///
+    /// Returns `None` for standalone runtimes without a configured federation member.
+    pub fn subscribe_applied_frontier(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        self.notifications()
+            .map(|notifications| notifications.subscribe_applied_frontier())
+    }
+
+    /// Return the latest locally applied journal frontier published by this runtime.
+    pub fn applied_frontier(&self) -> u64 {
+        self.notifications()
+            .map(|notifications| notifications.applied_frontier())
+            .unwrap_or_default()
+    }
+
+    fn notify_applied_frontier(&self, next_index: u64, mutated: bool) {
+        if let Some(notifications) = self.notifications() {
+            notifications.notify_applied_frontier(next_index, mutated);
+        }
+        if let Some(frost_signing) = self.frost_signing() {
+            frost_signing.notify_applied_frontier(next_index, mutated);
+        }
+    }
+
     pub fn notify_operation(&self, response: FederationSubmitOperationResponse) {
         let Some(notifications) = &self.notifications() else {
             return;
@@ -1006,6 +1030,7 @@ impl FederationNodeRuntime {
         let db = self.active_mint()?.localstore();
         let mut applied = Vec::new();
         let mut terminal_applications = Vec::with_capacity(entries.len());
+        let mut max_applied_next_index = 0_u64;
         for entry in entries {
             let persisted_before_apply = db
                 .get_federation_journal_entry(
@@ -1023,8 +1048,17 @@ impl FederationNodeRuntime {
                     persisted
                 }
                 _ => {
-                    if self.apply_journal_entry_for_replay(entry).await?.is_some() {
-                        applied.push(entry.operation_id);
+                    match self.apply_journal_entry_for_replay(entry).await {
+                        Ok(Some(_)) => {
+                            applied.push(entry.operation_id);
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            if !applied.is_empty() {
+                                self.notify_applied_frontier(max_applied_next_index, true);
+                            }
+                            return Err(err);
+                        }
                     }
                     db.get_federation_journal_entry(
                         FederationJournalEntryKey::Operation(entry.operation_id),
@@ -1047,10 +1081,14 @@ impl FederationNodeRuntime {
                     entry.operation_id
                 )));
             }
+            max_applied_next_index = max_applied_next_index.max(entry.index.saturating_add(1));
             terminal_applications.push((entry.operation_id, persisted.application.clone()));
         }
         self.mark_operation_applications(&terminal_applications)
             .await?;
+        if !entries.is_empty() {
+            self.notify_applied_frontier(max_applied_next_index, !applied.is_empty());
+        }
         #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
         let mint = self.active_mint()?;
         #[cfg(feature = "federation-bdk")]

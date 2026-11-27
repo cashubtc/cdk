@@ -21,6 +21,8 @@ mod maintenance;
 #[cfg(feature = "federation-bark")]
 mod node;
 #[cfg(feature = "federation-bark")]
+mod projection_index;
+#[cfg(feature = "federation-bark")]
 mod recovery_driver;
 #[cfg(feature = "federation-bark")]
 mod runtime;
@@ -40,7 +42,10 @@ pub use self::config::{
     FederatedBarkStoreAvailability, ValidatedFederatedBarkConfig,
 };
 #[cfg(feature = "federation-bark")]
-pub use self::custody::{CdkFrostVtxoCustody, FederatedBarkCustodyClient};
+pub use self::custody::{
+    CdkFrostVtxoCustody, FederatedBarkCustodyClient, VirtualMusigCommitmentInput,
+    VirtualMusigPartialInput,
+};
 #[cfg(feature = "federation-bark")]
 pub use self::error::Error;
 #[cfg(feature = "federation-bark")]
@@ -52,12 +57,15 @@ pub use self::node::{
     advance_federated_bark_melt_quote, advance_federated_bark_melt_quote_from_evidence_delivery,
     advance_federated_bark_mint_quote, advance_federated_bark_mint_quote_from_evidence_delivery,
     advance_federated_bark_receive_intent, bark_application, bark_federation_operation,
-    bark_operation, federated_bark_quote_id, federation_bark_ready_projection,
+    bark_operation, federated_bark_quote_id, federation_bark_ready_indexed_projection,
+    federation_bark_ready_projection, federation_bark_recovery_indexed_projection,
     federation_bark_recovery_projection, prepare_federated_bark_mint_quote,
     reconcile_federation_bark_runtime, retry_federated_bark_maintenance_action,
     submit_federated_bark_melt_with_plan, FederatedBarkNode, FederatedBarkNodeRecoveryHost,
     FederatedBarkPeers,
 };
+#[cfg(feature = "federation-bark")]
+pub use self::projection_index::IndexedBarkProjection;
 #[cfg(feature = "federation-bark")]
 pub use self::recovery_driver::{
     select_recovery_step, FederatedBarkRecoveryDriver, FederatedBarkReplaySource,
