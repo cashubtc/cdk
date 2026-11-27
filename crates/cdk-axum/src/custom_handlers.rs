@@ -42,10 +42,187 @@ pub struct PreferHeader {
     pub respond_async: bool,
 }
 
-#[cfg(feature = "federation-bark")]
+#[cfg(any(feature = "federation-bark", feature = "federation-bdk"))]
 type RouteFederationMintQuotePredecessor = cdk::federation::FederationOperationEnvelope;
-#[cfg(not(feature = "federation-bark"))]
+#[cfg(not(any(feature = "federation-bark", feature = "federation-bdk")))]
 type RouteFederationMintQuotePredecessor = ();
+
+#[cfg(feature = "federation-bdk")]
+fn ensure_local_onchain_wallet_present(
+    state: &MintState,
+    application_id: cdk::federation::FederationFrostApplicationId,
+    application_key_epoch: u64,
+) -> Result<(), cdk::Error> {
+    let has_wallet = state.federation.onchain_wallets().iter().any(|wallet| {
+        let wallet_scope = wallet.scope();
+        wallet_scope.application_id() == application_id.to_bytes()
+            && wallet_scope.application_key_epoch() == application_key_epoch
+    });
+    if !has_wallet {
+        return Err(cdk::Error::Custom(
+            "accepted federation address allocation has no local descriptor wallet".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "federation-bdk")]
+fn derive_federation_onchain_address(
+    runtime: &cdk::mint::FederationRuntimeConfig,
+    application: &cdk::federation::FederationFrostApplicationConfig,
+    keychain: cdk::federation::FederationAddressKeychain,
+    derivation_index: u32,
+) -> Result<String, cdk::Error> {
+    let wallet = runtime
+        .public_config()
+        .frost_wallet
+        .as_ref()
+        .ok_or(cdk::Error::Internal)?;
+    let script = wallet.derive_cdk_onchain_script(
+        runtime.public_config(),
+        application.application_id,
+        application.application_key_epoch,
+        keychain,
+        derivation_index,
+    )?;
+    cdk_common::bitcoin::Address::from_script(script.as_script(), application.network)
+        .map(|address| address.to_string())
+        .map_err(|_| {
+            cdk::Error::Federation(cdk::federation::FederationError::OperationStateInvalid {
+                reason: "federated on-chain mint quote address is not representable",
+            })
+        })
+}
+
+#[cfg(feature = "federation-bdk")]
+pub(crate) async fn prepare_federated_onchain_mint_quote_group(
+    state: &MintState,
+    request: cdk::mint::MintQuoteRequest,
+) -> Result<
+    (
+        cdk::mint::MintQuoteResponse<QuoteId>,
+        Option<cdk::cdk_payment::PaymentIdentifier>,
+        Option<RouteFederationMintQuotePredecessor>,
+    ),
+    cdk::Error,
+> {
+    let quote_id = QuoteId::new();
+    state.mint.check_mint_request_acceptable(&request).await?;
+    let runtime = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
+    let application = runtime.cdk_onchain_application()?;
+    ensure_local_onchain_wallet_present(
+        state,
+        application.application_id,
+        application.application_key_epoch,
+    )?;
+    let allocation_scope = cdk::federation::FederationAddressAllocationScope {
+        application_id: application.application_id,
+        application_key_epoch: application.application_key_epoch,
+    };
+    let allocation_state = state.mint.federation_address_allocation_state().await?;
+    let predicted_next_index = allocation_state
+        .wallet(allocation_scope)
+        .map_or(0, |wallet| wallet.external_next_index);
+    if predicted_next_index > u64::from(cdk::federation::FEDERATION_MAX_DERIVATION_INDEX) {
+        return Err(cdk::Error::Federation(
+            cdk::federation::FederationError::AddressDerivationExhausted {
+                keychain: cdk::federation::FederationAddressKeychain::External,
+            },
+        ));
+    }
+    let predicted_index = u32::try_from(predicted_next_index).map_err(|_| {
+        cdk::Error::Federation(
+            cdk::federation::FederationError::AddressDerivationExhausted {
+                keychain: cdk::federation::FederationAddressKeychain::External,
+            },
+        )
+    })?;
+    let predicted_address = derive_federation_onchain_address(
+        runtime,
+        application,
+        cdk::federation::FederationAddressKeychain::External,
+        predicted_index,
+    )?;
+    let allocation_envelope = runtime.address_allocation_operation(
+        quote_id.to_string(),
+        application.application_id,
+        application.application_key_epoch,
+        cdk::federation::FederationAddressKeychain::External,
+    )?;
+    let (response, request_lookup_id) = state
+        .mint
+        .prepare_onchain_mint_quote(quote_id, request, predicted_address)
+        .await?;
+    Ok((response, Some(request_lookup_id), Some(allocation_envelope)))
+}
+
+#[cfg(feature = "federation-bdk")]
+async fn onchain_mint_quote_address_raced(
+    state: &MintState,
+    runtime: &cdk::mint::FederationRuntimeConfig,
+    response: &cdk::mint::MintQuoteResponse<QuoteId>,
+) -> Result<bool, cdk::Error> {
+    let application = runtime.cdk_onchain_application()?;
+    let allocation_scope = cdk::federation::FederationAddressAllocationScope {
+        application_id: application.application_id,
+        application_key_epoch: application.application_key_epoch,
+    };
+    let Some(allocation) = state
+        .mint
+        .federation_address_allocation(allocation_scope, &response.quote().to_string())
+        .await?
+    else {
+        return Ok(false);
+    };
+    if allocation.keychain != cdk::federation::FederationAddressKeychain::External {
+        return Ok(false);
+    }
+    let actual_address = derive_federation_onchain_address(
+        runtime,
+        application,
+        allocation.keychain,
+        allocation.derivation_index,
+    )?;
+    if actual_address == response.request() {
+        return Ok(false);
+    }
+    Ok(state
+        .mint
+        .localstore()
+        .get_mint_quote(response.quote())
+        .await?
+        .is_none())
+}
+
+#[cfg(feature = "federation-bdk")]
+async fn submit_fallback_federated_onchain_mint_quote(
+    state: &MintState,
+    runtime: &cdk::mint::FederationRuntimeConfig,
+    request: cdk::mint::MintQuoteRequest,
+) -> Result<cdk::mint::MintQuoteResponse<QuoteId>, cdk::Error> {
+    let fallback_quote_id = QuoteId::new();
+    let application = runtime.cdk_onchain_application()?;
+    let address = state
+        .allocate_federation_onchain_address(
+            &fallback_quote_id.to_string(),
+            application.application_id,
+            application.application_key_epoch,
+            cdk::federation::FederationAddressKeychain::External,
+        )
+        .await?;
+    let (fallback_response, fallback_lookup_id) = state
+        .mint
+        .prepare_onchain_mint_quote(fallback_quote_id, request.clone(), address)
+        .await?;
+    let fallback_envelope = runtime.mint_quote_operation_with_lookup_id(
+        fallback_response.quote().clone(),
+        fallback_lookup_id,
+        request,
+        mint_quote_response_to_string(&fallback_response),
+    );
+    state.submit_federation_envelope(fallback_envelope).await?;
+    Ok(fallback_response)
+}
 
 async fn create_mint_quote_for_route(
     state: &MintState,
@@ -79,23 +256,7 @@ async fn create_mint_quote_for_route(
         }
         #[cfg(feature = "federation-bdk")]
         if matches!(request, cdk::mint::MintQuoteRequest::Onchain(_)) {
-            let quote_id = QuoteId::new();
-            state.mint.check_mint_request_acceptable(&request).await?;
-            let runtime = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
-            let application = runtime.cdk_onchain_application()?;
-            let address = state
-                .allocate_federation_onchain_address(
-                    &quote_id.to_string(),
-                    application.application_id,
-                    application.application_key_epoch,
-                    cdk::federation::FederationAddressKeychain::External,
-                )
-                .await?;
-            let (response, request_lookup_id) = state
-                .mint
-                .prepare_onchain_mint_quote(quote_id, request, address)
-                .await?;
-            return Ok((response, Some(request_lookup_id), None));
+            return prepare_federated_onchain_mint_quote_group(state, request).await;
         }
         let (response, request_lookup_id) = state.mint.prepare_mint_quote(request).await?;
         return Ok((response, Some(request_lookup_id), None));
@@ -425,7 +586,13 @@ async fn wait_for_federation_mint_quotes_paid_locally(
     state: &MintState,
     quote_ids: &[QuoteId],
 ) -> Result<(), cdk::Error> {
+    let mut mint_quote_state_changed = state.federation.subscribe_mint_quote_state_changed();
     loop {
+        if let Some(receiver) = mint_quote_state_changed.as_mut() {
+            // Mark the current generation seen before querying localstore so
+            // any state transition published concurrently triggers a wake.
+            let _ = receiver.borrow_and_update();
+        }
         let mut all_paid = true;
         for quote_id in quote_ids {
             let quote = state
@@ -447,7 +614,49 @@ async fn wait_for_federation_mint_quotes_paid_locally(
             return Ok(());
         }
 
-        tokio::time::sleep(FEDERATION_MINT_PAYMENT_WAIT_POLL_INTERVAL).await;
+        match mint_quote_state_changed.as_mut() {
+            Some(receiver) => {
+                tokio::select! {
+                    changed = receiver.changed() => {
+                        if changed.is_err() {
+                            mint_quote_state_changed = None;
+                            tokio::time::sleep(FEDERATION_MINT_PAYMENT_WAIT_POLL_INTERVAL).await;
+                        }
+                    }
+                    _ = tokio::time::sleep(FEDERATION_MINT_PAYMENT_WAIT_POLL_INTERVAL) => {}
+                }
+            }
+            None => {
+                tokio::time::sleep(FEDERATION_MINT_PAYMENT_WAIT_POLL_INTERVAL).await;
+            }
+        }
+    }
+}
+
+#[cfg(feature = "federation")]
+async fn observe_federation_mint_quote_immediately(state: &MintState, quote_id: &QuoteId) {
+    match Box::pin(
+        state
+            .federation
+            .payment_observer
+            .observe_mint_quotes(state, std::slice::from_ref(quote_id)),
+    )
+    .await
+    {
+        Ok(submitted) if submitted > 0 => {
+            tracing::debug!(
+                quote = %quote_id,
+                "Submitted immediate federation mint payment observation"
+            );
+        }
+        Ok(_) => {}
+        Err(err) => {
+            tracing::debug!(
+                quote = %quote_id,
+                "Immediate federation mint payment observation failed: {}",
+                err
+            );
+        }
     }
 }
 
@@ -469,7 +678,7 @@ async fn submit_federation_mint_quote_operation(
         request,
         mint_quote_response_to_string(response),
     );
-    #[cfg(feature = "federation-bark")]
+    #[cfg(any(feature = "federation-bark", feature = "federation-bdk"))]
     match ordered_predecessor {
         Some(predecessor) => {
             let responses = state
@@ -485,35 +694,83 @@ async fn submit_federation_mint_quote_operation(
             state.submit_federation_envelope(envelope).await?;
         }
     }
-    #[cfg(not(feature = "federation-bark"))]
+    #[cfg(not(any(feature = "federation-bark", feature = "federation-bdk")))]
     {
         let _ = ordered_predecessor;
         state.submit_federation_envelope(envelope).await?;
     }
-    match Box::pin(
-        state
-            .federation
-            .payment_observer
-            .observe_mint_quotes(state, std::slice::from_ref(response.quote())),
+    observe_federation_mint_quote_immediately(state, response.quote()).await;
+    Ok(())
+}
+
+#[cfg(feature = "federation")]
+pub(crate) async fn submit_federation_onchain_mint_quote_operation(
+    state: &MintState,
+    request: cdk::mint::MintQuoteRequest,
+    response: cdk::mint::MintQuoteResponse<QuoteId>,
+    request_lookup_id: Option<cdk::cdk_payment::PaymentIdentifier>,
+    ordered_predecessor: Option<RouteFederationMintQuotePredecessor>,
+) -> Result<cdk::mint::MintQuoteResponse<QuoteId>, cdk::Error> {
+    #[cfg(feature = "federation-bdk")]
+    let has_predecessor = ordered_predecessor.is_some();
+    #[cfg(feature = "federation-bdk")]
+    let fallback_request = request.clone();
+    match submit_federation_mint_quote_operation(
+        state,
+        request,
+        &response,
+        request_lookup_id,
+        ordered_predecessor,
     )
     .await
     {
-        Ok(submitted) if submitted > 0 => {
-            tracing::debug!(
-                quote = %response.quote(),
-                "Submitted immediate federation mint payment observation"
-            );
+        Ok(()) => {
+            #[cfg(feature = "federation-bdk")]
+            if has_predecessor {
+                if let Some(config) = state.mint.federation_config() {
+                    let application = config.cdk_onchain_application()?;
+                    state
+                        .reveal_accepted_federation_onchain_address(
+                            &response.quote().to_string(),
+                            application.application_id,
+                            application.application_key_epoch,
+                            cdk::federation::FederationAddressKeychain::External,
+                        )
+                        .await?
+                        .ok_or_else(|| {
+                            cdk::Error::Custom(
+                                "accepted federation address allocation is not materialized"
+                                    .to_string(),
+                            )
+                        })?;
+                }
+            }
+            Ok(response)
         }
-        Ok(_) => {}
         Err(err) => {
-            tracing::debug!(
-                quote = %response.quote(),
-                "Immediate federation mint payment observation failed: {}",
-                err
-            );
+            #[cfg(feature = "federation-bdk")]
+            if has_predecessor {
+                if let Some(config) = state.mint.federation_config() {
+                    if onchain_mint_quote_address_raced(state, config, &response).await? {
+                        tracing::debug!(
+                            quote = %response.quote(),
+                            "Speculative on-chain mint quote address raced with concurrent allocation; falling back to two-round allocation"
+                        );
+                        let fallback_response = submit_fallback_federated_onchain_mint_quote(
+                            state,
+                            config,
+                            fallback_request,
+                        )
+                        .await?;
+                        observe_federation_mint_quote_immediately(state, fallback_response.quote())
+                            .await;
+                        return Ok(fallback_response);
+                    }
+                }
+            }
+            Err(err)
         }
     }
-    Ok(())
 }
 
 #[cfg(feature = "federation")]
@@ -688,10 +945,10 @@ pub async fn post_mint_custom_quote(
                     .await
                     .map_err(into_response)?;
             #[cfg(feature = "federation")]
-            submit_federation_mint_quote_operation(
+            let quote = submit_federation_onchain_mint_quote_operation(
                 &state,
                 quote_request,
-                &quote,
+                quote,
                 _request_lookup_id,
                 _ordered_predecessor,
             )

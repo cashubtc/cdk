@@ -535,11 +535,24 @@ pub fn validate_federation_submit_response(
     Ok(())
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct FederationOperationNotifications {
     pub inner: Mutex<FederationOperationNotificationState>,
+    mint_quote_state_changed: tokio::sync::watch::Sender<u64>,
     #[cfg(any(test, feature = "test-utils"))]
     pub waiter_count_changed: tokio::sync::Notify,
+}
+
+impl Default for FederationOperationNotifications {
+    fn default() -> Self {
+        let (mint_quote_state_changed, _) = tokio::sync::watch::channel(0_u64);
+        Self {
+            inner: Mutex::new(FederationOperationNotificationState::default()),
+            mint_quote_state_changed,
+            #[cfg(any(test, feature = "test-utils"))]
+            waiter_count_changed: tokio::sync::Notify::new(),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -642,6 +655,18 @@ impl FederationOperationNotifications {
         self.inner
             .lock()
             .expect("federation operation notification state mutex poisoned")
+    }
+
+    /// Signal waiters that durable mint quote state may have advanced.
+    pub fn notify_mint_quote_state_changed(&self) {
+        self.mint_quote_state_changed.send_modify(|version| {
+            *version = version.wrapping_add(1);
+        });
+    }
+
+    /// Subscribe to mint quote state change notifications.
+    pub fn subscribe_mint_quote_state_changed(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.mint_quote_state_changed.subscribe()
     }
 
     pub fn notify(&self, response: FederationSubmitOperationResponse, response_cache_limit: usize) {

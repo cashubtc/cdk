@@ -9094,3 +9094,73 @@ async fn post_melt_custom_quote_accepts_normalized_method_match() {
         "mixed-case body method should create a quote under the normalized payment method"
     );
 }
+
+#[cfg(feature = "federation")]
+#[tokio::test]
+async fn wait_for_federation_mint_quotes_paid_locally_wakes_immediately_on_state_change() {
+    let state = Box::pin(create_federated_test_state()).await;
+    let quote_id = QuoteId::new();
+    let config = state.mint.federation_config().expect("federation config");
+    let quote_envelope = config.mint_quote_operation(
+        quote_id.clone(),
+        cdk::mint::MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
+            amount: Amount::from(1),
+            unit: CurrencyUnit::Sat,
+            description: None,
+            pubkey: None,
+        }),
+        cdk::mint::MintQuoteResponse::Bolt11(MintQuoteBolt11Response {
+            quote: quote_id.to_string(),
+            request: format!("invoice-{quote_id}"),
+            amount: Some(Amount::from(1)),
+            unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            amount_paid: Amount::ZERO,
+            amount_issued: Amount::ZERO,
+            updated_at: 0,
+            state: MintQuoteState::Unpaid,
+            expiry: Some(10_000),
+            pubkey: None,
+        }),
+    );
+    state
+        .submit_federation_envelope(quote_envelope)
+        .await
+        .expect("submit mint quote")
+        .ensure_accepted()
+        .expect("accept mint quote");
+
+    let wait_state = state.clone();
+    let wait_quote_id = quote_id.clone();
+    let waiter = tokio::spawn(async move {
+        wait_for_federation_mint_quotes_paid_locally(&wait_state, &[wait_quote_id]).await
+    });
+
+    // Give the waiter a moment to park on the event-driven watch channel.
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let paid_started = std::time::Instant::now();
+    let paid_envelope = config.mint_quote_payment_observation(
+        quote_id.clone(),
+        PaymentMethod::Known(KnownMethod::Bolt11),
+        MintQuoteState::Paid,
+        Amount::from(1),
+        Amount::ZERO,
+        Some("paid-event-driven".to_string()),
+    );
+    state
+        .submit_federation_envelope(paid_envelope)
+        .await
+        .expect("submit payment observation")
+        .ensure_accepted()
+        .expect("accept payment observation");
+
+    tokio::time::timeout(Duration::from_millis(80), waiter)
+        .await
+        .expect("waiter must wake immediately without waiting for the 100ms fallback poll")
+        .expect("waiter task join")
+        .expect("quote paid");
+    assert!(
+        paid_started.elapsed() < FEDERATION_MINT_PAYMENT_WAIT_POLL_INTERVAL,
+        "event-driven notification should resolve faster than the 100ms fallback interval"
+    );
+}

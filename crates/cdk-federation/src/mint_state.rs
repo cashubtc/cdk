@@ -9,18 +9,18 @@ use cdk::federation::FederationOnchainWalletStatus;
 #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 use cdk::federation::{
     FederationAddressAllocationScope, FederationAddressKeychain, FederationChainObservation,
-    FederationError, FederationFrostApplicationId,
+    FederationFrostApplicationId,
 };
 use cdk::federation::{
     FederationAlephBftUnitPayload, FederationCheckpointError, FederationCheckpointQuorum,
     FederationConsensusRuntimeStatus, FederationDkgActivationRequest,
     FederationDkgFinalizedMemberConfig, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
-    FederationDkgTranscriptSignatureRequest, FederationInvalidOperationAlertSummary,
-    FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
-    FederationOperationStatus, FederationRestMessageKind, FederationSubmitOperationResponse,
-    MemberId,
+    FederationDkgTranscriptSignatureRequest, FederationError,
+    FederationInvalidOperationAlertSummary, FederationJournalAppendOutcome,
+    FederationJournalCatchUpResponse, FederationJournalEntry, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationKind, FederationOperationStatus,
+    FederationRestMessageKind, FederationSubmitOperationResponse, MemberId,
 };
 
 use cdk::mint::Mint;
@@ -451,7 +451,6 @@ impl FederationNode {
         Ok(response)
     }
 
-    #[cfg(feature = "federation-bark")]
     pub async fn submit_federation_ordered_successor_group(
         &self,
         envelopes: Vec<FederationOperationEnvelope>,
