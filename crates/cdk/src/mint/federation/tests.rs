@@ -57,6 +57,7 @@ mod chain_observation;
 mod keyset;
 mod melt;
 mod mint;
+mod onchain_state_perf;
 mod parity;
 mod payment_observation;
 mod quote;

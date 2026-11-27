@@ -1,5 +1,6 @@
 //! Thin persistence boundary for accepted on-chain intents and transactions.
 
+use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use cdk_common::bitcoin::address::NetworkUnchecked;
@@ -8,14 +9,20 @@ use cdk_common::database;
 use cdk_common::database::mint::FederationJournalEntryKey;
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    read_federation_state, FederationAcceptedTransaction, FederationAcceptedTransactionState,
-    FederationChainObservationState, FederationError, FederationJournalEntry,
-    FederationOnchainPaymentIntent, FederationOnchainPaymentIntentRecord, FederationOperation,
-    FederationOperationId, FederationOperationStatus, FederationSignedTransaction,
-    FederationStoredState, FederationTransactionBroadcastIntent,
+    add_pending_federation_onchain_intent_in_tx, authorize_federation_transaction_broadcast_in_tx,
+    load_federation_accepted_transaction_in_tx, load_federation_chain_utxos_in_tx,
+    load_federation_onchain_intent_in_tx, load_federation_utxo_reservation_in_tx,
+    mark_federation_transaction_signed_in_tx, read_federation_accepted_transaction,
+    read_federation_chain_utxos, read_federation_state, read_federation_transaction_lineage,
+    record_federation_transaction_broadcast_observation_in_tx,
+    reserve_federation_chain_utxos_in_tx, FederationAcceptedTransaction,
+    FederationAcceptedTransactionState, FederationChainObservationState, FederationError,
+    FederationJournalEntry, FederationOnchainPaymentIntent, FederationOnchainPaymentIntentRecord,
+    FederationOperation, FederationOperationId, FederationOperationStatus,
+    FederationSignedTransaction, FederationTransactionBroadcastIntent,
     FederationTransactionBroadcastObservation, FederationTransactionProposal,
     FederationTransactionProposalId, FederationTransactionScope, FederationTransactionState,
-    FederationTransactionStateOutcome, MemberId,
+    FederationTransactionStateOutcome, LoadedFederationTransactionLineage, MemberId,
 };
 use cdk_common::mint::{MeltPaymentRequest, MeltQuote};
 
@@ -60,67 +67,99 @@ impl Mint {
         proposal.validate()?;
         let runtime = self.federation_config().ok_or(Error::Internal)?;
         let proposal_id = proposal.proposal_id()?;
+        let outpoints = proposal
+            .selected_inputs
+            .iter()
+            .map(|input| input.outpoint)
+            .collect::<Vec<_>>();
         let mut transaction = self.localstore().begin_transaction().await?;
         let outcome = async {
-            let mut state = load_transaction_state(&mut transaction).await?;
-            let mut chain_state =
-                FederationStoredState::<FederationChainObservationState>::load(&mut transaction)
+            let mut lineage =
+                LoadedFederationTransactionLineage::load(&mut transaction, proposal.batch_id)
                     .await?;
+            let chain_state =
+                load_federation_chain_utxos_in_tx(&mut transaction, &outpoints).await?;
 
-            let outcome = match state.accepted_transaction(proposal_id) {
+            let outcome = match lineage.accepted_transaction(proposal_id) {
                 Some(existing) => {
                     if existing.proposal != *proposal {
                         return Err(invalid(
                             "proposal replay differs from the accepted transaction",
                         ));
                     }
-                    ensure_existing_reservations(&state, &chain_state, existing)?;
-                    FederationTransactionStateOutcome::Existing
+                    ensure_existing_reservations(&lineage, &chain_state, existing)?;
+                    return Ok(FederationTransactionStateOutcome::Existing);
                 }
                 None => match proposal.replacement_of {
                     Some(original_id) => {
-                        let original = state
-                            .accepted_transaction(original_id)
-                            .cloned()
-                            .ok_or_else(|| invalid("replacement predecessor is not accepted"))?;
+                        let original = match lineage.accepted_transaction(original_id).cloned() {
+                            Some(original) => original,
+                            None => load_federation_accepted_transaction_in_tx(
+                                &mut transaction,
+                                original_id,
+                            )
+                            .await?
+                            .ok_or_else(|| invalid("replacement predecessor is not accepted"))?,
+                        };
                         let policy_audit = runtime.validate_onchain_transaction_replacement(
                             &chain_state,
-                            state.intents(),
+                            lineage.intents(),
                             &original,
                             proposal,
                         )?;
-                        state.accept_replacement(
+                        let outcome = lineage.accept_replacement(
                             proposal.clone(),
                             policy_audit,
                             entry.operation_id,
                             entry.index,
-                        )?
+                        )?;
+                        lineage.save(&mut transaction).await?;
+                        outcome
                     }
                     None => {
+                        if !lineage.accepted_transactions().is_empty() {
+                            return Err(invalid(
+                                "on-chain batch is already owned by another accepted transaction",
+                            ));
+                        }
+                        for outpoint in &outpoints {
+                            if load_federation_utxo_reservation_in_tx(&mut transaction, *outpoint)
+                                .await?
+                                .is_some_and(|owner| owner != proposal_id)
+                            {
+                                return Err(invalid(
+                                    "wallet UTXO is already reserved by another accepted transaction",
+                                ));
+                            }
+                        }
+                        let mut target_intents = BTreeMap::new();
+                        for intent_id in &proposal.intent_ids {
+                            if let Some(record) =
+                                load_federation_onchain_intent_in_tx(&mut transaction, *intent_id)
+                                    .await?
+                            {
+                                target_intents.insert(*intent_id, record);
+                            }
+                        }
                         let policy_audit = runtime.validate_onchain_transaction_proposal(
                             &chain_state,
-                            state.intents(),
+                            &target_intents,
                             proposal,
                         )?;
-                        let outcome = state.accept_transaction(
+                        lineage.insert_pending_intents(target_intents)?;
+                        let outcome = lineage.accept_transaction(
                             proposal.clone(),
                             policy_audit,
                             entry.operation_id,
                             entry.index,
                         )?;
-                        let outpoints = proposal
-                            .selected_inputs
-                            .iter()
-                            .map(|input| input.outpoint)
-                            .collect::<Vec<_>>();
-                        chain_state.reserve_utxos(&outpoints)?;
+                        lineage.save(&mut transaction).await?;
+                        reserve_federation_chain_utxos_in_tx(&mut transaction, &outpoints).await?;
                         outcome
                     }
                 },
             };
 
-            state.save(&mut transaction).await?;
-            chain_state.save(&mut transaction).await?;
             Ok(outcome)
         }
         .await;
@@ -132,9 +171,8 @@ impl Mint {
         &self,
         proposal_id: FederationTransactionProposalId,
     ) -> Result<FederationAcceptedTransaction, Error> {
-        let state = self.federation_transaction_state().await?;
-        let accepted = state
-            .accepted_transaction(proposal_id)
+        let accepted = read_federation_accepted_transaction(&self.localstore(), proposal_id)
+            .await?
             .ok_or_else(|| invalid("transaction is not accepted for signing"))?;
         if accepted.state != FederationAcceptedTransactionState::Accepted {
             return Err(invalid("transaction is not active for signing"));
@@ -178,23 +216,32 @@ impl Mint {
                 "accepted transaction journal payload differs from durable state",
             ));
         }
-        let chain_state = self.federation_chain_observation_state().await?;
-        ensure_existing_reservations(&state, &chain_state, accepted)?;
+        let lineage =
+            read_federation_transaction_lineage(&self.localstore(), accepted.proposal.batch_id)
+                .await?;
+        let outpoints = accepted
+            .proposal
+            .selected_inputs
+            .iter()
+            .map(|input| input.outpoint)
+            .collect::<Vec<_>>();
+        let chain_state = read_federation_chain_utxos(&self.localstore(), &outpoints).await?;
+        ensure_existing_reservations(&lineage, &chain_state, &accepted)?;
         let recomputed = runtime.revalidate_accepted_onchain_transaction_proposal(
             &chain_state,
-            state.intents(),
+            lineage.intents(),
             &accepted.proposal,
             accepted
                 .proposal
                 .replacement_of
-                .and_then(|original_id| state.accepted_transaction(original_id)),
+                .and_then(|original_id| lineage.accepted_transaction(original_id)),
         )?;
         if recomputed != accepted.policy_audit {
             return Err(invalid(
                 "accepted transaction policy audit differs from local recomputation",
             ));
         }
-        Ok(accepted.clone())
+        Ok(accepted)
     }
 
     /// Validate a signed transaction against the exact local accepted proposal.
@@ -202,9 +249,8 @@ impl Mint {
         &self,
         signed: &FederationSignedTransaction,
     ) -> Result<(), Error> {
-        let state = self.federation_transaction_state().await?;
-        let accepted = state
-            .accepted_transaction(signed.proposal_id)
+        let accepted = read_federation_accepted_transaction(&self.localstore(), signed.proposal_id)
+            .await?
             .ok_or_else(|| invalid("signed transaction has no accepted proposal"))?;
         if signed.policy_audit != accepted.policy_audit {
             return Err(invalid(
@@ -277,15 +323,17 @@ impl Mint {
             .await?;
         let mut transaction = self.localstore().begin_transaction().await?;
         let outcome = async {
-            let mut state = load_transaction_state(&mut transaction).await?;
-            let accepted = state
-                .accepted_transaction(signed.proposal_id)
-                .ok_or_else(|| invalid("cannot apply signing for an unknown transaction"))?
-                .clone();
+            let accepted =
+                load_federation_accepted_transaction_in_tx(&mut transaction, signed.proposal_id)
+                    .await?
+                    .ok_or_else(|| invalid("cannot apply signing for an unknown transaction"))?;
             signed.verify_signatures(&accepted.proposal)?;
-            let outcome = state.mark_transaction_signed(signed.proposal_id, signed.clone())?;
-            state.save(&mut transaction).await?;
-            Ok(outcome)
+            mark_federation_transaction_signed_in_tx(
+                &mut transaction,
+                signed.proposal_id,
+                signed.clone(),
+            )
+            .await
         }
         .await;
         finish_federation_apply_transaction(transaction, entry, outcome).await
@@ -297,9 +345,8 @@ impl Mint {
         intent: &FederationTransactionBroadcastIntent,
     ) -> Result<(), Error> {
         intent.settlement_policy.validate()?;
-        let state = self.federation_transaction_state().await?;
-        let accepted = state
-            .accepted_transaction(intent.proposal_id)
+        let accepted = read_federation_accepted_transaction(&self.localstore(), intent.proposal_id)
+            .await?
             .ok_or_else(|| invalid("broadcast intent has no accepted transaction"))?;
         let signed = accepted
             .signed
@@ -346,10 +393,10 @@ impl Mint {
         {
             return Err(invalid("broadcast observer is not a federation member"));
         }
-        let state = self.federation_transaction_state().await?;
-        let accepted = state
-            .accepted_transaction(observation.proposal_id)
-            .ok_or_else(|| invalid("broadcast observation has no accepted transaction"))?;
+        let accepted =
+            read_federation_accepted_transaction(&self.localstore(), observation.proposal_id)
+                .await?
+                .ok_or_else(|| invalid("broadcast observation has no accepted transaction"))?;
         let signed = accepted
             .signed
             .as_ref()
@@ -380,13 +427,12 @@ impl Mint {
         self.validate_federation_transaction_broadcast_intent_submission(intent)
             .await?;
         let mut transaction = self.localstore().begin_transaction().await?;
-        let outcome = async {
-            let mut state = load_transaction_state(&mut transaction).await?;
-            let outcome =
-                state.authorize_transaction_broadcast(*intent, entry.operation_id, entry.index)?;
-            state.save(&mut transaction).await?;
-            Ok(outcome)
-        }
+        let outcome = authorize_federation_transaction_broadcast_in_tx(
+            &mut transaction,
+            *intent,
+            entry.operation_id,
+            entry.index,
+        )
         .await;
         finish_federation_apply_transaction(transaction, entry, outcome).await
     }
@@ -399,16 +445,12 @@ impl Mint {
         self.validate_federation_transaction_broadcast_observation_submission(observation)
             .await?;
         let mut transaction = self.localstore().begin_transaction().await?;
-        let outcome = async {
-            let mut state = load_transaction_state(&mut transaction).await?;
-            let outcome = state.record_transaction_broadcast_observation(
-                observation.clone(),
-                entry.operation_id,
-                entry.index,
-            )?;
-            state.save(&mut transaction).await?;
-            Ok(outcome)
-        }
+        let outcome = record_federation_transaction_broadcast_observation_in_tx(
+            &mut transaction,
+            observation.clone(),
+            entry.operation_id,
+            entry.index,
+        )
         .await;
         finish_federation_apply_transaction(transaction, entry, outcome).await
     }
@@ -461,15 +503,12 @@ pub(super) async fn persist_pending_onchain_intent(
             policy_version: application.fee_policy_version,
         },
     )?;
-    let mut state = load_transaction_state(transaction).await?;
-    state.add_pending_intent(FederationOnchainPaymentIntentRecord::pending(intent)?)?;
-    state.save(transaction).await
-}
-
-async fn load_transaction_state(
-    transaction: &mut database::mint::DynMintTransaction,
-) -> Result<FederationStoredState<FederationTransactionState>, Error> {
-    FederationStoredState::load(transaction).await
+    add_pending_federation_onchain_intent_in_tx(
+        transaction,
+        FederationOnchainPaymentIntentRecord::pending(intent)?,
+    )
+    .await?;
+    Ok(())
 }
 
 fn ensure_existing_reservations(

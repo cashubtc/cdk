@@ -57,9 +57,11 @@ pub const FEDERATION_MAX_DKG_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 pub const FEDERATION_MAX_FROST_SIGNING_REQUEST_BODY_BYTES: usize = 512 * 1024;
 
 pub use self::address_allocation::{
-    FederationAddressAllocation, FederationAddressAllocationOperation,
-    FederationAddressAllocationOutcome, FederationAddressAllocationScope,
-    FederationAddressAllocationState, FederationAddressKeychain, FederationAddressWalletState,
+    apply_federation_address_allocation_in_tx, load_federation_address_allocation_in_tx,
+    read_federation_address_allocation, FederationAddressAllocation,
+    FederationAddressAllocationOperation, FederationAddressAllocationOutcome,
+    FederationAddressAllocationScope, FederationAddressAllocationState, FederationAddressKeychain,
+    FederationAddressWalletState, FEDERATION_ADDRESS_ALLOCATION_INDEX_NAMESPACE,
     FEDERATION_MAX_DERIVATION_INDEX,
 };
 pub use self::backup::{
@@ -67,12 +69,17 @@ pub use self::backup::{
     FEDERATION_DATABASE_BACKUP_SCHEMA_VERSION,
 };
 pub use self::chain_observation::{
-    FederationAllocatedAddressRef, FederationChainObservation, FederationChainObservationEvidence,
+    apply_federation_deposit_observation_in_tx, apply_federation_reorg_observation_in_tx,
+    load_federation_chain_utxos_in_tx, load_federation_quote_payment_at_or_before_in_tx,
+    mark_federation_quote_liability_issued_at_or_before_in_tx, read_federation_chain_utxos,
+    read_federation_quote_payment_at_or_before, reserve_federation_chain_utxos_in_tx,
+    spend_reserved_federation_chain_utxos_in_tx, FederationAllocatedAddressRef,
+    FederationChainObservation, FederationChainObservationEvidence,
     FederationChainObservationOutcome, FederationChainObservationState,
     FederationChainSourceDescriptor, FederationChainSourceScope, FederationChainSourceSummary,
     FederationDepositConfirmation, FederationDepositObservation, FederationDepositReorgObservation,
     FederationOnchainQuotePayment, FederationSpentWalletUtxo, FederationSpentWalletUtxoPayment,
-    FederationWalletUtxo, FederationWalletUtxoState,
+    FederationWalletUtxo, FederationWalletUtxoState, FEDERATION_CHAIN_OBSERVATION_INDEX_NAMESPACE,
 };
 pub use self::checkpoint::{
     federation_checkpoint_batch_canonical_bytes, FederationAlephBftRecoveryCursor,
@@ -217,9 +224,9 @@ pub use self::signing::{
 pub use self::state_table::{
     decode_row, digest_row_key, federation_state_rows_at_floor, hex_row_key, insert_row,
     load_federation_state_rows, outpoint_row_key, read_federation_state,
-    read_federation_state_rows, retire_federation_state_below, row_kind, unknown_row_kind,
-    write_federation_state, FederationStateRows, FederationStateTable, FederationStoredState,
-    FEDERATION_STATE_PRIMARY_NAMESPACE,
+    read_federation_state_rows, retire_federation_state_below, row_kind,
+    sync_federation_state_indexes, unknown_row_kind, write_federation_state, FederationStateRows,
+    FederationStateTable, FederationStoredState, FEDERATION_STATE_PRIMARY_NAMESPACE,
 };
 pub use self::state_transfer::{
     ensure_federation_state_snapshot_rows_sorted, federation_state_snapshot_digest,
@@ -232,6 +239,13 @@ pub use self::state_transfer::{
 };
 pub use self::suffix_verifier::{FederationSuffixVerifier, VerifiedFederationSuffix};
 pub use self::transaction_proposal::{
+    add_pending_federation_onchain_intent_in_tx, authorize_federation_transaction_broadcast_in_tx,
+    load_federation_accepted_transaction_in_tx, load_federation_completed_payment_for_quote_in_tx,
+    load_federation_onchain_intent_in_tx,
+    load_federation_transaction_lineage_for_quote_settlement_in_tx,
+    load_federation_utxo_reservation_in_tx, mark_federation_transaction_signed_in_tx,
+    read_federation_accepted_transaction, read_federation_completed_payment_for_quote,
+    read_federation_transaction_lineage, record_federation_transaction_broadcast_observation_in_tx,
     FederationAcceptedTransaction, FederationAcceptedTransactionState,
     FederationCdkOnchainFrostAuthorization, FederationFrostInputSignatureAudit,
     FederationFrostSigningAuthorizationReference, FederationOnchainBatchId,
@@ -246,10 +260,11 @@ pub use self::transaction_proposal::{
     FederationTransactionProposalId, FederationTransactionRecipientOutput,
     FederationTransactionScope, FederationTransactionSettlement,
     FederationTransactionSettlementPolicy, FederationTransactionState,
-    FederationTransactionStateOutcome, FEDERATION_MAX_ONCHAIN_BATCH_INTENTS,
-    FEDERATION_MAX_ONCHAIN_PROPOSAL_BYTES, FEDERATION_MAX_ONCHAIN_PROPOSAL_INPUTS,
-    FEDERATION_MAX_ONCHAIN_PROPOSAL_OUTPUTS, FEDERATION_MAX_ONCHAIN_PSBT_CONSENSUS_BYTES,
-    FEDERATION_MAX_ONCHAIN_TRANSACTION_WEIGHT,
+    FederationTransactionStateOutcome, LoadedFederationTransactionLineage,
+    FEDERATION_MAX_ONCHAIN_BATCH_INTENTS, FEDERATION_MAX_ONCHAIN_PROPOSAL_BYTES,
+    FEDERATION_MAX_ONCHAIN_PROPOSAL_INPUTS, FEDERATION_MAX_ONCHAIN_PROPOSAL_OUTPUTS,
+    FEDERATION_MAX_ONCHAIN_PSBT_CONSENSUS_BYTES, FEDERATION_MAX_ONCHAIN_TRANSACTION_WEIGHT,
+    FEDERATION_TRANSACTION_INDEX_NAMESPACE,
 };
 pub use self::transport::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
