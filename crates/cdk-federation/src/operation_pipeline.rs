@@ -1590,6 +1590,11 @@ impl FederationNodeRuntime {
         entries: &[FederationJournalEntry],
     ) -> Result<Vec<FederationOperationId>, cdk::Error> {
         let mint = self.active_mint()?;
+        if !entries.is_empty() {
+            if let Some(config) = mint.effective_federation_config().await? {
+                config.preverify_journal_entries(entries).await?;
+            }
+        }
         let label = format!(
             "Federation journal batch apply of {} operations",
             entries.len()

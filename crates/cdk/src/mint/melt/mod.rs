@@ -1440,6 +1440,7 @@ impl Mint {
 
         let verification = self
             .verify_federation_inputs_with_context(
+                federation_operation_id,
                 melt_request.inputs(),
                 super::federation::FederationProofVerificationContext::MeltApply,
             )

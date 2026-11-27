@@ -1027,7 +1027,7 @@ async fn process_federation_melt_request(
     let Some(config) = state.mint.effective_federation_config().await? else {
         return Ok(None);
     };
-    let envelope = config.melt_operation(payload.clone())?;
+    let envelope = config.melt_operation_async(payload.clone()).await?;
     let timer = crate::federation::latency::FederationLatencyTimer::start(
         crate::federation::latency::FederationLatencyCorrelation::Quote,
         payload.quote().to_string(),

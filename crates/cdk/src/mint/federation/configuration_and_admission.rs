@@ -1202,7 +1202,6 @@ impl FederationRuntimeConfig {
         Ok(())
     }
 
-    #[allow(dead_code)] // Integration hook for mint/federation/application.rs (owned by storage-pipeline).
     pub(in crate::mint) fn verify_proofs_for_operation_with_performance_context(
         &self,
         operation_id: FederationOperationId,

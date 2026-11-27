@@ -13,16 +13,16 @@ use cdk_common::database::mint::{
 use cdk_common::error::Error;
 use cdk_common::federation::{
     FederatedKeyset, FederationAddressAllocationScope, FederationAddressAllocationState,
-    FederationAddressKeychain, FederationApplicationState, FederationError, FederationJournalEntry,
-    FederationKeysetRotationOperation, FederationMaterializedStateKey,
-    FederationMaterializedStateKind, FederationMeltOperation, FederationMeltQuoteOperation,
-    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
-    FederationMintQuotePaymentObservation, FederationOnchainMeltPaymentReceipt,
-    FederationOperation, FederationOperationConflictKey, FederationOperationId,
-    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationPaymentObservationReport,
-    FederationSignatureShareRecord, FederationStoredState, FederationSwapOperation,
-    FederationTransactionState, MemberId,
+    FederationAddressKeychain, FederationApplicationState, FederationBlindSignatureShareSet,
+    FederationError, FederationJournalEntry, FederationKeysetRotationOperation,
+    FederationMaterializedStateKey, FederationMaterializedStateKind, FederationMeltOperation,
+    FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation, FederationMintOperation,
+    FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
+    FederationOnchainMeltPaymentReceipt, FederationOperation, FederationOperationConflictKey,
+    FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
+    FederationPaymentObservationContext, FederationPaymentObservationRecord,
+    FederationPaymentObservationReport, FederationSignatureShareRecord, FederationStoredState,
+    FederationSwapOperation, FederationTransactionState, MemberId,
 };
 use cdk_common::mint::{
     MeltQuote, MeltSagaState, MintQuote, Operation, OperationKind, SagaStateEnum,
@@ -271,6 +271,7 @@ struct PreparedBatchSwap {
     swap_plan: SwapPlan,
     input_ys: Vec<PublicKey>,
     blinded_secrets: Vec<PublicKey>,
+    pre_signed_shares: Option<Result<FederationBlindSignatureShareSet, Error>>,
 }
 
 struct PreparedBatchMint {
@@ -278,6 +279,7 @@ struct PreparedBatchMint {
     outputs_amount: Amount<CurrencyUnit>,
     blinded_secrets: Vec<PublicKey>,
     quote_ids: Vec<QuoteId>,
+    pre_signed_shares: Option<Result<FederationBlindSignatureShareSet, Error>>,
 }
 
 enum PreparedBatchEntry {
@@ -1780,6 +1782,7 @@ impl Mint {
                     let input_verification = self
                         .verify_federation_inputs_with_config_and_context(
                             config,
+                            entry.operation_id,
                             input_proofs,
                             FederationProofVerificationContext::SwapApply,
                         )?;
@@ -1805,6 +1808,7 @@ impl Mint {
                         swap_plan,
                         input_ys,
                         blinded_secrets,
+                        pre_signed_shares: None,
                     })
                 })();
                 PreparedBatchEntry::Swap(prepared)
@@ -1829,6 +1833,7 @@ impl Mint {
                         outputs_amount: output_verification.amount,
                         blinded_secrets,
                         quote_ids,
+                        pre_signed_shares: None,
                     })
                 })();
                 PreparedBatchEntry::Mint(prepared)
@@ -1909,6 +1914,53 @@ impl Mint {
                 .iter()
                 .map(|entry| Some(self.prepare_batch_entry(&config, entry)))
                 .collect::<Vec<_>>();
+
+            // Pre-sign valid Swap and Mint outputs off the async worker threads
+            // and outside the DB write transaction. Shares for entries that
+            // later fail stateful DB checks are dropped without persistence.
+            let mut signing_indices = Vec::new();
+            let mut signing_requests = Vec::new();
+            for (idx, (entry, prepared)) in entries.iter().zip(&prepared_entries).enumerate() {
+                match (&entry.envelope.operation, prepared.as_ref()) {
+                    (
+                        FederationOperation::Swap(operation),
+                        Some(PreparedBatchEntry::Swap(Ok(_))),
+                    ) => {
+                        signing_indices.push(idx);
+                        signing_requests.push((
+                            (*entry).clone(),
+                            operation.request.outputs().to_vec(),
+                            "swap",
+                        ));
+                    }
+                    (
+                        FederationOperation::Mint(_),
+                        Some(PreparedBatchEntry::Mint(Ok(prepared_mint))),
+                    ) => {
+                        signing_indices.push(idx);
+                        signing_requests.push((
+                            (*entry).clone(),
+                            prepared_mint.input.outputs().to_vec(),
+                            "mint",
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            if !signing_requests.is_empty() {
+                let signed_results = config.batch_sign_accepted_outputs(signing_requests).await?;
+                for (idx, signed_result) in signing_indices.into_iter().zip(signed_results) {
+                    match prepared_entries[idx].as_mut() {
+                        Some(PreparedBatchEntry::Swap(Ok(prepared_swap))) => {
+                            prepared_swap.pre_signed_shares = Some(signed_result);
+                        }
+                        Some(PreparedBatchEntry::Mint(Ok(prepared_mint))) => {
+                            prepared_mint.pre_signed_shares = Some(signed_result);
+                        }
+                        _ => {}
+                    }
+                }
+            }
 
             let mut results = Vec::with_capacity(entries.len());
             let mut offset = 0usize;
@@ -2195,7 +2247,10 @@ impl Mint {
 
                 let mut signature_share_records = Vec::new();
                 if signatures_present == 0 {
-                    let share_set = config.swap_signature_shares(entry, &operation.request)?;
+                    let share_set = match prepared.pre_signed_shares {
+                        Some(share_set) => share_set?,
+                        None => config.swap_signature_shares(entry, &operation.request)?,
+                    };
                     signature_share_records =
                         FederationSignatureShareRecord::from_accepted_journal_entry(
                             &share_set, entry,
@@ -2355,7 +2410,10 @@ impl Mint {
                     )
                 };
 
-                let share_set = config.mint_signature_shares(entry, &prepared.input)?;
+                let share_set = match prepared.pre_signed_shares {
+                    Some(share_set) => share_set?,
+                    None => config.mint_signature_shares(entry, &prepared.input)?,
+                };
                 let signature_share_records =
                     FederationSignatureShareRecord::from_accepted_journal_entry(&share_set, entry)?;
                 tx.add_federation_signature_shares(&signature_share_records)
@@ -4119,6 +4177,7 @@ impl Mint {
 
         let input_verification = self.verify_federation_inputs_with_config_and_context(
             &config,
+            operation_id,
             input_proofs,
             FederationProofVerificationContext::SwapApply,
         )?;
@@ -4697,6 +4756,7 @@ impl Mint {
 
     pub(in crate::mint) async fn verify_federation_inputs_with_context(
         &self,
+        operation_id: FederationOperationId,
         inputs: &Proofs,
         context: FederationProofVerificationContext,
     ) -> Result<Verification, Error> {
@@ -4704,7 +4764,12 @@ impl Mint {
             .effective_federation_config()
             .await?
             .ok_or(Error::Internal)?;
-        self.verify_federation_inputs_with_config_and_context(&config, inputs, context)
+        self.verify_federation_inputs_with_config_and_context(
+            &config,
+            operation_id,
+            inputs,
+            context,
+        )
     }
 
     #[cfg(test)]
@@ -4713,29 +4778,47 @@ impl Mint {
         config: &FederationRuntimeConfig,
         inputs: &Proofs,
     ) -> Result<Verification, Error> {
-        self.verify_federation_inputs_with_config_inner(config, inputs, None)
+        self.verify_federation_inputs_with_config_inner(config, None, inputs, None)
     }
 
     fn verify_federation_inputs_with_config_and_context(
         &self,
         config: &FederationRuntimeConfig,
+        operation_id: FederationOperationId,
         inputs: &Proofs,
         context: FederationProofVerificationContext,
     ) -> Result<Verification, Error> {
-        self.verify_federation_inputs_with_config_inner(config, inputs, Some(context))
+        self.verify_federation_inputs_with_config_inner(
+            config,
+            Some(operation_id),
+            inputs,
+            Some(context),
+        )
     }
 
     fn verify_federation_inputs_with_config_inner(
         &self,
         config: &FederationRuntimeConfig,
+        operation_id: Option<FederationOperationId>,
         inputs: &Proofs,
         context: Option<FederationProofVerificationContext>,
     ) -> Result<Verification, Error> {
         verification::verify_inputs_bounds(self.max_inputs, inputs)?;
 
-        match context {
-            Some(context) => config.verify_proofs_with_performance_context(inputs, context)?,
-            None => config.verify_proofs(inputs)?,
+        match (operation_id, context) {
+            (Some(operation_id), Some(context)) => config
+                .verify_proofs_for_operation_with_performance_context(
+                    operation_id,
+                    inputs,
+                    context,
+                )?,
+            (Some(operation_id), None) => {
+                config.verify_proofs_for_operation(operation_id, inputs)?
+            }
+            (None, Some(context)) => {
+                config.verify_proofs_with_performance_context(inputs, context)?
+            }
+            (None, None) => config.verify_proofs(inputs)?,
         }
 
         verification::verify_inputs_amount(&config.keysets(), inputs)
