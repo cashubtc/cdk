@@ -10,11 +10,15 @@
 //! backends. Every operation either succeeds completely or leaves the table
 //! unchanged.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Mutex;
 
-use crate::{Error, SigningSessionContext, SigningSessionId, SigningSlotId};
+use crate::types::MAX_SIGNING_BATCH_SIZE;
+use crate::{
+    Error, NonceBurnReason, NonceLifecycle, NonceRecord, NonceReservation, NonceTransitionChain,
+    SigningSessionContext, SigningSessionId, SigningSlotId,
+};
 
 /// Every store failure whose error depends on the record kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -357,6 +361,14 @@ where
         self.with_table(|table| table.load_key(key))
     }
 
+    /// Load a batch of detailed records by key in one lock acquisition.
+    pub(crate) fn load_keys_batch(
+        &self,
+        keys: &[R::Key],
+    ) -> Result<Vec<Result<Option<R>, Error>>, Error> {
+        self.with_table(|table| Ok(keys.iter().map(|key| table.load_key(*key)).collect()))
+    }
+
     /// Load a detailed record by session.
     pub(crate) fn load_session(&self, session_id: SigningSessionId) -> Result<Option<R>, Error> {
         self.with_table(|table| table.load_session(session_id))
@@ -377,6 +389,194 @@ where
     pub(crate) fn compact_terminal(&self, retain_detailed: usize) -> Result<usize, Error> {
         self.with_table(|table| table.compact_terminal(retain_detailed))
     }
+}
+
+impl<S> MemoryStoreTable<'_, S, NonceRecord> {
+    /// Atomically activate, reserve, and publish commitments for a batch of
+    /// freshly generated nonce records.
+    pub(crate) fn commit_nonce_batch(
+        &self,
+        records: Vec<NonceRecord>,
+    ) -> Result<Vec<NonceReservation>, Error> {
+        validate_nonce_commit_batch(&records)?;
+        self.with_table(|table| {
+            let mut staged = table.clone();
+            let mut reservations = Vec::with_capacity(records.len());
+            for generated in records {
+                staged.activate_attempt(generated.context())?;
+                match staged.reserve(generated.clone())? {
+                    NonceReservation::Existing(existing) => {
+                        validate_retryable_existing_nonce(&existing, &generated)?;
+                        reservations.push(NonceReservation::Existing(existing));
+                    }
+                    NonceReservation::Inserted => {
+                        let reserved =
+                            generated.transition(NonceLifecycle::Reserved, true, None)?;
+                        NonceRecord::validate_transition(&generated, &reserved)?;
+                        staged.compare_and_swap(&generated, reserved.clone())?;
+                        let sent =
+                            reserved.transition(NonceLifecycle::CommitmentSent, true, None)?;
+                        NonceRecord::validate_transition(&reserved, &sent)?;
+                        staged.compare_and_swap(&reserved, sent)?;
+                        reservations.push(NonceReservation::Inserted);
+                    }
+                }
+            }
+            *table = staged;
+            Ok(reservations)
+        })
+    }
+
+    /// Atomically apply a batch of validated nonce transition chains.
+    pub(crate) fn apply_nonce_batch_transitions(
+        &self,
+        chains: Vec<NonceTransitionChain>,
+    ) -> Result<(), Error> {
+        validate_nonce_transition_batch(&chains)?;
+        self.with_table(|table| {
+            let mut staged = table.clone();
+            for chain in chains {
+                let expected = chain.expected();
+                let replacement = chain.final_record();
+                let key = expected.key();
+                let current = staged
+                    .records
+                    .get(&key)
+                    .ok_or_else(|| NonceRecord::error(Failure::RecordDisappeared))?;
+                if current != expected {
+                    return Err(NonceRecord::error(Failure::ChangedConcurrently));
+                }
+                if !expected.is_terminal() && replacement.is_terminal() {
+                    staged.active_slots.remove(&expected.context().slot_id());
+                    staged.terminal_order.push(key);
+                }
+                staged.records.insert(key, replacement.clone());
+            }
+            *table = staged;
+            Ok(())
+        })
+    }
+
+    /// Atomically burn every nonterminal record for a batch of sessions.
+    pub(crate) fn burn_nonce_sessions_batch(
+        &self,
+        sessions: &[SigningSessionId],
+        reason: NonceBurnReason,
+    ) -> Result<(), Error> {
+        validate_session_burn_batch(sessions)?;
+        self.with_table(|table| {
+            let mut staged = table.clone();
+            for session_id in sessions {
+                let Some(record) = staged.load_session(*session_id)? else {
+                    continue;
+                };
+                if record.is_terminal() {
+                    continue;
+                }
+                let burned = record.transition(NonceLifecycle::Burned { reason }, false, None)?;
+                NonceRecord::validate_transition(&record, &burned)?;
+                staged.compare_and_swap(&record, burned)?;
+            }
+            *table = staged;
+            Ok(())
+        })
+    }
+}
+
+pub(crate) fn validate_nonce_commit_batch(records: &[NonceRecord]) -> Result<(), Error> {
+    if records.is_empty() {
+        return Err(Error::InvalidSigningSession(
+            "signing batch cannot be empty".to_string(),
+        ));
+    }
+    if records.len() > MAX_SIGNING_BATCH_SIZE {
+        return Err(Error::OversizedInput {
+            kind: "signing batch",
+            max: MAX_SIGNING_BATCH_SIZE,
+        });
+    }
+    let mut sessions = BTreeSet::new();
+    let mut slots = BTreeSet::new();
+    let mut nonces = BTreeSet::new();
+    for record in records {
+        NonceRecord::validate_activation(record.context())?;
+        record.validate_new()?;
+        if !sessions.insert(record.context().session_id())
+            || !slots.insert(record.context().slot_id())
+            || !nonces.insert(record.nonce_id())
+        {
+            return Err(Error::InvalidSigningSession(
+                "duplicate signing session, slot, or nonce in batch".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_retryable_existing_nonce(
+    existing: &NonceRecord,
+    generated: &NonceRecord,
+) -> Result<(), Error> {
+    if existing.context() != generated.context()
+        || existing.derivation() != generated.derivation()
+        || !matches!(
+            existing.lifecycle(),
+            NonceLifecycle::CommitmentSent | NonceLifecycle::Consumed { .. }
+        )
+    {
+        return Err(Error::InvalidCommitment(
+            "signing session already exists in a non-retryable state".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_nonce_transition_batch(
+    chains: &[NonceTransitionChain],
+) -> Result<(), Error> {
+    if chains.is_empty() {
+        return Err(Error::InvalidSigningSession(
+            "nonce transition batch cannot be empty".to_string(),
+        ));
+    }
+    if chains.len() > MAX_SIGNING_BATCH_SIZE {
+        return Err(Error::OversizedInput {
+            kind: "nonce transition batch",
+            max: MAX_SIGNING_BATCH_SIZE,
+        });
+    }
+    let mut nonces = BTreeSet::new();
+    for chain in chains {
+        if !nonces.insert(chain.expected().nonce_id()) {
+            return Err(Error::InvalidSigningSession(
+                "duplicate nonce in transition batch".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_session_burn_batch(sessions: &[SigningSessionId]) -> Result<(), Error> {
+    if sessions.is_empty() {
+        return Err(Error::InvalidSigningSession(
+            "session burn batch cannot be empty".to_string(),
+        ));
+    }
+    if sessions.len() > MAX_SIGNING_BATCH_SIZE {
+        return Err(Error::OversizedInput {
+            kind: "session burn batch",
+            max: MAX_SIGNING_BATCH_SIZE,
+        });
+    }
+    let mut seen = BTreeSet::new();
+    for session_id in sessions {
+        if !seen.insert(*session_id) {
+            return Err(Error::InvalidSigningSession(
+                "duplicate session in burn batch".to_string(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

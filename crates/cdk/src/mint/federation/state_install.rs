@@ -15,14 +15,15 @@ use cdk_common::database::mint::{
 use cdk_common::error::Error;
 use cdk_common::federation::{
     ensure_federation_state_snapshot_rows_sorted, federation_state_snapshot_digest,
-    FederatedKeyset, FederationAddressAllocationState, FederationChainObservationState,
-    FederationCheckpointError, FederationCheckpointKind, FederationCheckpointQuorum,
-    FederationError, FederationKeysetRotationOperation, FederationMaterializedStateKey,
-    FederationMaterializedStateKeyRecord, FederationMaterializedStateRow, FederationOperationId,
-    FederationPaymentObservation, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationSignatureShareRecord, FederationStateRows,
-    FederationStateSnapshotRow, FederationStateTable, FederationStateTransferWindow,
-    FederationTransactionState, FEDERATION_STATE_PRIMARY_NAMESPACE,
+    sync_federation_state_indexes, FederatedKeyset, FederationAddressAllocationState,
+    FederationChainObservationState, FederationCheckpointError, FederationCheckpointKind,
+    FederationCheckpointQuorum, FederationError, FederationKeysetRotationOperation,
+    FederationMaterializedStateKey, FederationMaterializedStateKeyRecord,
+    FederationMaterializedStateRow, FederationOperationId, FederationPaymentObservation,
+    FederationPaymentObservationContext, FederationPaymentObservationRecord,
+    FederationSignatureShareRecord, FederationStateRows, FederationStateSnapshotRow,
+    FederationStateTable, FederationStateTransferWindow, FederationTransactionState,
+    FEDERATION_STATE_PRIMARY_NAMESPACE,
 };
 use cdk_common::mint::{MeltPaymentRequest, MeltQuote, MintQuote, Operation, OperationKind};
 use cdk_common::nuts::{BlindedMessage, MeltQuoteState, PaymentMethod, State};
@@ -543,10 +544,16 @@ impl Mint {
             && source.payment_observations.is_empty()
             && source.application_rows.is_empty();
         for namespace in [
-            FederationAddressAllocationState::SECONDARY_NAMESPACE,
-            FederationChainObservationState::SECONDARY_NAMESPACE,
-            FederationTransactionState::SECONDARY_NAMESPACE,
-        ] {
+            Some(FederationAddressAllocationState::SECONDARY_NAMESPACE),
+            FederationAddressAllocationState::INDEX_SECONDARY_NAMESPACE,
+            Some(FederationChainObservationState::SECONDARY_NAMESPACE),
+            FederationChainObservationState::INDEX_SECONDARY_NAMESPACE,
+            Some(FederationTransactionState::SECONDARY_NAMESPACE),
+            FederationTransactionState::INDEX_SECONDARY_NAMESPACE,
+        ]
+        .into_iter()
+        .flatten()
+        {
             empty &= tx
                 .kv_entries(FEDERATION_STATE_PRIMARY_NAMESPACE, namespace)
                 .await?
@@ -599,6 +606,28 @@ impl Mint {
                     .await?;
             }
         }
+        let empty_rows = FederationStateRows::new();
+        sync_federation_state_indexes::<FederationAddressAllocationState>(
+            tx,
+            plan.projections
+                .get(FederationAddressAllocationState::SECONDARY_NAMESPACE)
+                .unwrap_or(&empty_rows),
+        )
+        .await?;
+        sync_federation_state_indexes::<FederationChainObservationState>(
+            tx,
+            plan.projections
+                .get(FederationChainObservationState::SECONDARY_NAMESPACE)
+                .unwrap_or(&empty_rows),
+        )
+        .await?;
+        sync_federation_state_indexes::<FederationTransactionState>(
+            tx,
+            plan.projections
+                .get(FederationTransactionState::SECONDARY_NAMESPACE)
+                .unwrap_or(&empty_rows),
+        )
+        .await?;
         if !plan.application_rows.is_empty() {
             tx.install_federation_application_rows(&plan.application_rows)
                 .await?;

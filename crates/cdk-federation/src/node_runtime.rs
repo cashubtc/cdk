@@ -449,6 +449,12 @@ impl FederationNodeRuntime {
             .map(|member| &member.notifications)
     }
 
+    /// Subscribe to notifications fired when applied operations update mint quote state.
+    pub fn subscribe_mint_quote_state_changed(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        self.notifications()
+            .map(|notifications| notifications.subscribe_mint_quote_state_changed())
+    }
+
     pub fn peer_sync_config(&self) -> Option<FederationPeerSyncConfig> {
         self.membership
             .context()

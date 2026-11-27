@@ -18,12 +18,22 @@ use bitcoin::{BlockHash, Network, OutPoint, ScriptBuf, Transaction, TxOut, Txid}
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::canonical::canonical_json_bytes;
+use super::state_table::{
+    ensure_federation_state_index_initialized_kv, is_federation_state_index_initialized_kv,
+    read_federation_state_kv,
+};
 use super::{
-    decode_row, hex_row_key, insert_row, outpoint_row_key, row_kind, unknown_row_kind,
-    FederationAllocatedAddressRef, FederationError, FederationFrostApplicationId,
+    decode_row, digest_row_key, hex_row_key, insert_row, outpoint_row_key, row_kind,
+    unknown_row_kind, FederationAllocatedAddressRef, FederationError, FederationFrostApplicationId,
     FederationOperationConflictKey, FederationOperationId, FederationStateRows,
     FederationStateTable, MemberId, Result, FEDERATION_MAX_DERIVATION_INDEX,
+    FEDERATION_STATE_PRIMARY_NAMESPACE,
 };
+use crate::database;
+use crate::database::mint::{
+    DynMintDatabase, DynMintTransaction, KVStoreDatabase, KVStoreTransaction,
+};
+use crate::error::Error;
 
 const PAYMENT_INTENT_VERSION: u16 = 3;
 const PAYMENT_BATCH_VERSION: u16 = 1;
@@ -2351,144 +2361,9 @@ impl FederationTransactionState {
             }
         }
         for (proposal_id, accepted) in &self.accepted_transactions {
-            accepted.proposal.validate()?;
-            if accepted.accepted_operation_index == 0
-                || accepted.proposal.proposal_id()? != *proposal_id
-                || !self.batch_owners.contains_key(&accepted.proposal.batch_id)
-            {
+            validate_accepted_transaction_self(*proposal_id, accepted)?;
+            if !self.batch_owners.contains_key(&accepted.proposal.batch_id) {
                 return Err(invalid("accepted transaction durable identity mismatch"));
-            }
-            validate_policy_audit(&accepted.proposal, &accepted.policy_audit)?;
-            match (&accepted.state, &accepted.signed, &accepted.broadcast) {
-                (FederationAcceptedTransactionState::Accepted, Some(_), _)
-                | (FederationAcceptedTransactionState::Accepted, _, Some(_))
-                | (FederationAcceptedTransactionState::Signed, None, _)
-                | (FederationAcceptedTransactionState::Signed, _, Some(_))
-                | (FederationAcceptedTransactionState::BroadcastPending, None, _)
-                | (FederationAcceptedTransactionState::BroadcastPending, _, None)
-                | (FederationAcceptedTransactionState::Broadcast, None, _)
-                | (FederationAcceptedTransactionState::Broadcast, _, None)
-                | (FederationAcceptedTransactionState::Confirmed, None, _)
-                | (FederationAcceptedTransactionState::Confirmed, _, None) => {
-                    return Err(invalid("accepted transaction signed-state mismatch"));
-                }
-                (_, Some(signed), _) => {
-                    if signed.policy_audit != accepted.policy_audit {
-                        return Err(invalid(
-                            "signed transaction policy audit differs from accepted state",
-                        ));
-                    }
-                    signed.validate(&accepted.proposal)?;
-                }
-                (_, None, _) => {}
-            }
-            if let Some(broadcast) = &accepted.broadcast {
-                broadcast.settlement_policy.validate()?;
-                if broadcast.intent_operation_index == 0 {
-                    return Err(invalid("broadcast intent operation index is zero"));
-                }
-                let mut observers = BTreeSet::new();
-                for record in &broadcast.observations {
-                    record.observation.validate()?;
-                    if record.observation.proposal_id != *proposal_id
-                        || accepted
-                            .signed
-                            .as_ref()
-                            .is_none_or(|signed| record.observation.txid != signed.txid)
-                        || record.operation_index <= broadcast.intent_operation_index
-                        || !observers.insert(record.observation.observer)
-                    {
-                        return Err(invalid("broadcast observation durable identity mismatch"));
-                    }
-                }
-                if !broadcast
-                    .observations
-                    .windows(2)
-                    .all(|window| window[0].observation.observer < window[1].observation.observer)
-                {
-                    return Err(invalid("broadcast observers are not canonical"));
-                }
-                if let Some(success) = &broadcast.first_success {
-                    success.observation.validate()?;
-                    if success.observation.proposal_id != *proposal_id
-                        || accepted
-                            .signed
-                            .as_ref()
-                            .is_none_or(|signed| success.observation.txid != signed.txid)
-                        || success.operation_index <= broadcast.intent_operation_index
-                        || !success.observation.result.is_success_equivalent()
-                    {
-                        return Err(invalid("broadcast success durable identity mismatch"));
-                    }
-                }
-                if let Some(settlement) = &broadcast.settlement {
-                    if settlement.confirmations.len()
-                        != usize::from(broadcast.settlement_policy.required_observers)
-                    {
-                        return Err(invalid("transaction settlement has the wrong quorum size"));
-                    }
-                    let mut settlement_observers = BTreeSet::new();
-                    for confirmation in &settlement.confirmations {
-                        confirmation.observation.validate()?;
-                        let FederationTransactionBroadcastResult::Confirmed {
-                            block_hash,
-                            block_height,
-                            confirmation_depth,
-                        } = confirmation.observation.result
-                        else {
-                            return Err(invalid(
-                                "transaction settlement contains non-confirmation evidence",
-                            ));
-                        };
-                        if confirmation.observation.proposal_id != *proposal_id
-                            || accepted
-                                .signed
-                                .as_ref()
-                                .is_none_or(|signed| confirmation.observation.txid != signed.txid)
-                            || confirmation.operation_index <= broadcast.intent_operation_index
-                            || block_hash != settlement.block_hash
-                            || block_height != settlement.block_height
-                            || confirmation_depth
-                                < broadcast.settlement_policy.minimum_confirmations
-                            || !settlement_observers.insert(confirmation.observation.observer)
-                        {
-                            return Err(invalid(
-                                "transaction settlement confirmation is inconsistent",
-                            ));
-                        }
-                    }
-                    if !settlement.confirmations.windows(2).all(|window| {
-                        window[0].observation.observer < window[1].observation.observer
-                    }) {
-                        return Err(invalid(
-                            "transaction settlement confirmations are not canonical",
-                        ));
-                    }
-                }
-                match accepted.state {
-                    FederationAcceptedTransactionState::Broadcast
-                        if broadcast.first_success.is_none() =>
-                    {
-                        return Err(invalid("broadcast lifecycle does not match observations"));
-                    }
-                    FederationAcceptedTransactionState::BroadcastPending
-                        if broadcast.first_success.is_some() =>
-                    {
-                        return Err(invalid("broadcast lifecycle does not match observations"));
-                    }
-                    FederationAcceptedTransactionState::Confirmed
-                        if broadcast.first_success.is_none() || broadcast.settlement.is_none() =>
-                    {
-                        return Err(invalid("confirmed lifecycle lacks settlement evidence"));
-                    }
-                    FederationAcceptedTransactionState::Broadcast
-                    | FederationAcceptedTransactionState::BroadcastPending
-                        if broadcast.settlement.is_some() =>
-                    {
-                        return Err(invalid("unconfirmed lifecycle carries settlement evidence"));
-                    }
-                    _ => {}
-                }
             }
             let head = self
                 .batch_owners
@@ -2606,6 +2481,148 @@ impl FederationTransactionState {
         }
         Ok(())
     }
+}
+
+fn validate_accepted_transaction_self(
+    proposal_id: FederationTransactionProposalId,
+    accepted: &FederationAcceptedTransaction,
+) -> Result<()> {
+    accepted.proposal.validate()?;
+    if accepted.accepted_operation_index == 0 || accepted.proposal.proposal_id()? != proposal_id {
+        return Err(invalid("accepted transaction durable identity mismatch"));
+    }
+    validate_policy_audit(&accepted.proposal, &accepted.policy_audit)?;
+    match (&accepted.state, &accepted.signed, &accepted.broadcast) {
+        (FederationAcceptedTransactionState::Accepted, Some(_), _)
+        | (FederationAcceptedTransactionState::Accepted, _, Some(_))
+        | (FederationAcceptedTransactionState::Signed, None, _)
+        | (FederationAcceptedTransactionState::Signed, _, Some(_))
+        | (FederationAcceptedTransactionState::BroadcastPending, None, _)
+        | (FederationAcceptedTransactionState::BroadcastPending, _, None)
+        | (FederationAcceptedTransactionState::Broadcast, None, _)
+        | (FederationAcceptedTransactionState::Broadcast, _, None)
+        | (FederationAcceptedTransactionState::Confirmed, None, _)
+        | (FederationAcceptedTransactionState::Confirmed, _, None) => {
+            return Err(invalid("accepted transaction signed-state mismatch"));
+        }
+        (_, Some(signed), _) => {
+            if signed.policy_audit != accepted.policy_audit {
+                return Err(invalid(
+                    "signed transaction policy audit differs from accepted state",
+                ));
+            }
+            signed.validate(&accepted.proposal)?;
+        }
+        (_, None, _) => {}
+    }
+    if let Some(broadcast) = &accepted.broadcast {
+        broadcast.settlement_policy.validate()?;
+        if broadcast.intent_operation_index == 0 {
+            return Err(invalid("broadcast intent operation index is zero"));
+        }
+        let mut observers = BTreeSet::new();
+        for record in &broadcast.observations {
+            record.observation.validate()?;
+            if record.observation.proposal_id != proposal_id
+                || accepted
+                    .signed
+                    .as_ref()
+                    .is_none_or(|signed| record.observation.txid != signed.txid)
+                || record.operation_index <= broadcast.intent_operation_index
+                || !observers.insert(record.observation.observer)
+            {
+                return Err(invalid("broadcast observation durable identity mismatch"));
+            }
+        }
+        if !broadcast
+            .observations
+            .windows(2)
+            .all(|window| window[0].observation.observer < window[1].observation.observer)
+        {
+            return Err(invalid("broadcast observers are not canonical"));
+        }
+        if let Some(success) = &broadcast.first_success {
+            success.observation.validate()?;
+            if success.observation.proposal_id != proposal_id
+                || accepted
+                    .signed
+                    .as_ref()
+                    .is_none_or(|signed| success.observation.txid != signed.txid)
+                || success.operation_index <= broadcast.intent_operation_index
+                || !success.observation.result.is_success_equivalent()
+            {
+                return Err(invalid("broadcast success durable identity mismatch"));
+            }
+        }
+        if let Some(settlement) = &broadcast.settlement {
+            if settlement.confirmations.len()
+                != usize::from(broadcast.settlement_policy.required_observers)
+            {
+                return Err(invalid("transaction settlement has the wrong quorum size"));
+            }
+            let mut settlement_observers = BTreeSet::new();
+            for confirmation in &settlement.confirmations {
+                confirmation.observation.validate()?;
+                let FederationTransactionBroadcastResult::Confirmed {
+                    block_hash,
+                    block_height,
+                    confirmation_depth,
+                } = confirmation.observation.result
+                else {
+                    return Err(invalid(
+                        "transaction settlement contains non-confirmation evidence",
+                    ));
+                };
+                if confirmation.observation.proposal_id != proposal_id
+                    || accepted
+                        .signed
+                        .as_ref()
+                        .is_none_or(|signed| confirmation.observation.txid != signed.txid)
+                    || confirmation.operation_index <= broadcast.intent_operation_index
+                    || block_hash != settlement.block_hash
+                    || block_height != settlement.block_height
+                    || confirmation_depth < broadcast.settlement_policy.minimum_confirmations
+                    || !settlement_observers.insert(confirmation.observation.observer)
+                {
+                    return Err(invalid(
+                        "transaction settlement confirmation is inconsistent",
+                    ));
+                }
+            }
+            if !settlement
+                .confirmations
+                .windows(2)
+                .all(|window| window[0].observation.observer < window[1].observation.observer)
+            {
+                return Err(invalid(
+                    "transaction settlement confirmations are not canonical",
+                ));
+            }
+        }
+        match accepted.state {
+            FederationAcceptedTransactionState::Broadcast if broadcast.first_success.is_none() => {
+                return Err(invalid("broadcast lifecycle does not match observations"));
+            }
+            FederationAcceptedTransactionState::BroadcastPending
+                if broadcast.first_success.is_some() =>
+            {
+                return Err(invalid("broadcast lifecycle does not match observations"));
+            }
+            FederationAcceptedTransactionState::Confirmed
+                if broadcast.first_success.is_none() || broadcast.settlement.is_none() =>
+            {
+                return Err(invalid("confirmed lifecycle lacks settlement evidence"));
+            }
+            FederationAcceptedTransactionState::Broadcast
+            | FederationAcceptedTransactionState::BroadcastPending
+                if broadcast.settlement.is_some() =>
+            {
+                return Err(invalid("unconfirmed lifecycle carries settlement evidence"));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn validate_policy_audit(
@@ -2726,6 +2743,55 @@ const INTENT_ROW: &str = "intent";
 const TRANSACTION_ROW: &str = "transaction";
 const BATCH_OWNER_ROW: &str = "batch";
 const RESERVATION_ROW: &str = "reservation";
+const QUOTE_INDEX_ROW: &str = "quote";
+const BATCH_TXS_INDEX_ROW: &str = "batch_txs";
+const INTENT_BATCH_INDEX_ROW: &str = "intent_batch";
+
+/// Secondary key-value namespace holding O(1) transaction lookup indexes.
+pub const FEDERATION_TRANSACTION_INDEX_NAMESPACE: &str = "transaction_idx";
+
+fn quote_index_key(quote: &str) -> String {
+    digest_row_key(QUOTE_INDEX_ROW, &[quote.as_bytes()])
+}
+
+fn batch_txs_index_key(batch_id: FederationOnchainBatchId) -> String {
+    hex_row_key(BATCH_TXS_INDEX_ROW, &batch_id.to_hex())
+}
+
+fn intent_batch_index_key(intent_id: FederationOnchainPaymentIntentId) -> String {
+    hex_row_key(INTENT_BATCH_INDEX_ROW, &intent_id.to_hex())
+}
+
+fn decode_intent_row(key: &str, bytes: &[u8]) -> Result<FederationOnchainPaymentIntentRecord> {
+    decode_row(
+        key,
+        bytes,
+        |record: &FederationOnchainPaymentIntentRecord| {
+            Ok(hex_row_key(INTENT_ROW, &record.intent_id.to_hex()))
+        },
+    )
+}
+
+fn decode_transaction_row(key: &str, bytes: &[u8]) -> Result<FederationAcceptedTransaction> {
+    decode_row(key, bytes, |accepted: &FederationAcceptedTransaction| {
+        Ok(hex_row_key(
+            TRANSACTION_ROW,
+            &accepted.proposal.proposal_id()?.to_hex(),
+        ))
+    })
+}
+
+fn decode_batch_owner_row(key: &str, bytes: &[u8]) -> Result<BatchOwnerRow> {
+    decode_row(key, bytes, |row: &BatchOwnerRow| {
+        Ok(hex_row_key(BATCH_OWNER_ROW, &row.batch_id.to_hex()))
+    })
+}
+
+fn decode_reservation_row(key: &str, bytes: &[u8]) -> Result<ReservationRow> {
+    decode_row(key, bytes, |row: &ReservationRow| {
+        Ok(outpoint_row_key(RESERVATION_ROW, &row.outpoint))
+    })
+}
 
 /// Stored lineage head of one payment batch.
 #[derive(Serialize, Deserialize)]
@@ -2741,6 +2807,1060 @@ struct BatchOwnerRow {
 struct ReservationRow {
     outpoint: OutPoint,
     owner: FederationTransactionProposalId,
+}
+
+/// One active transaction lineage loaded inside a database transaction,
+/// together with its baseline entity rows so [`Self::save`] performs O(1)
+/// targeted writes proportional only to that single batch lineage.
+#[derive(Debug)]
+pub struct LoadedFederationTransactionLineage {
+    batch_id: FederationOnchainBatchId,
+    state: FederationTransactionState,
+    baseline: FederationStateRows,
+    initial_tx_ids: Vec<FederationTransactionProposalId>,
+}
+
+impl std::ops::Deref for LoadedFederationTransactionLineage {
+    type Target = FederationTransactionState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl std::ops::DerefMut for LoadedFederationTransactionLineage {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
+}
+
+impl LoadedFederationTransactionLineage {
+    /// Load one active batch lineage inside `transaction` in O(lineage size).
+    ///
+    /// Terminal lineages are treated as absent, matching
+    /// [`FederationTransactionState::retire_terminal_rows`].
+    pub async fn load(
+        transaction: &mut DynMintTransaction,
+        batch_id: FederationOnchainBatchId,
+    ) -> std::result::Result<Self, Error> {
+        Self::load_kv(&mut **transaction, batch_id).await
+    }
+
+    pub(crate) async fn load_kv<T>(
+        transaction: &mut T,
+        batch_id: FederationOnchainBatchId,
+    ) -> std::result::Result<Self, Error>
+    where
+        T: KVStoreTransaction<database::Error> + ?Sized + Send,
+    {
+        ensure_federation_state_index_initialized_kv::<FederationTransactionState, _>(transaction)
+            .await?;
+        let batch_key = hex_row_key(BATCH_OWNER_ROW, &batch_id.to_hex());
+        let Some(batch_bytes) = transaction
+            .kv_read(
+                FEDERATION_STATE_PRIMARY_NAMESPACE,
+                FederationTransactionState::SECONDARY_NAMESPACE,
+                &batch_key,
+            )
+            .await?
+        else {
+            return Ok(Self {
+                batch_id,
+                state: FederationTransactionState::new(),
+                baseline: FederationStateRows::new(),
+                initial_tx_ids: Vec::new(),
+            });
+        };
+        let batch_row = decode_batch_owner_row(&batch_key, &batch_bytes)?;
+
+        let mut proposal_ids = BTreeSet::new();
+        proposal_ids.insert(batch_row.owner);
+        if let Some(bytes) = transaction
+            .kv_read(
+                FEDERATION_STATE_PRIMARY_NAMESPACE,
+                FEDERATION_TRANSACTION_INDEX_NAMESPACE,
+                &batch_txs_index_key(batch_id),
+            )
+            .await?
+        {
+            let indexed: Vec<FederationTransactionProposalId> =
+                serde_json::from_slice(&bytes).map_err(FederationError::from)?;
+            proposal_ids.extend(indexed);
+        }
+
+        let mut baseline = FederationStateRows::new();
+        let mut state = FederationTransactionState::new();
+        let mut terminal_index: Option<Option<u64>> = None;
+        let mut intent_ids = BTreeSet::new();
+        let mut outpoints = BTreeSet::new();
+
+        for proposal_id in proposal_ids {
+            let tx_key = hex_row_key(TRANSACTION_ROW, &proposal_id.to_hex());
+            let tx_bytes = transaction
+                .kv_read(
+                    FEDERATION_STATE_PRIMARY_NAMESPACE,
+                    FederationTransactionState::SECONDARY_NAMESPACE,
+                    &tx_key,
+                )
+                .await?
+                .ok_or_else(|| invalid("transaction lineage index references a missing row"))?;
+            let accepted = decode_transaction_row(&tx_key, &tx_bytes)?;
+            match terminal_index {
+                None => terminal_index = Some(accepted.terminal_operation_index),
+                Some(expected) if expected != accepted.terminal_operation_index => {
+                    return Err(invalid("transaction lineage is partly terminal").into());
+                }
+                Some(_) => {}
+            }
+            for intent_id in &accepted.proposal.intent_ids {
+                intent_ids.insert(*intent_id);
+            }
+            for input in &accepted.proposal.selected_inputs {
+                outpoints.insert(input.outpoint);
+            }
+            baseline.insert(tx_key, tx_bytes);
+            state.accepted_transactions.insert(proposal_id, accepted);
+        }
+
+        if matches!(terminal_index, Some(Some(_))) {
+            return Ok(Self {
+                batch_id,
+                state: FederationTransactionState::new(),
+                baseline: FederationStateRows::new(),
+                initial_tx_ids: Vec::new(),
+            });
+        }
+
+        baseline.insert(batch_key, batch_bytes);
+        state
+            .batch_owners
+            .insert(batch_row.batch_id, batch_row.owner);
+
+        for intent_id in intent_ids {
+            let intent_key = hex_row_key(INTENT_ROW, &intent_id.to_hex());
+            if let Some(intent_bytes) = transaction
+                .kv_read(
+                    FEDERATION_STATE_PRIMARY_NAMESPACE,
+                    FederationTransactionState::SECONDARY_NAMESPACE,
+                    &intent_key,
+                )
+                .await?
+            {
+                let record = decode_intent_row(&intent_key, &intent_bytes)?;
+                if state
+                    .quote_intents
+                    .insert(record.intent.quote.clone(), record.intent_id)
+                    .is_some()
+                {
+                    return Err(invalid("two on-chain intents share one quote").into());
+                }
+                baseline.insert(intent_key, intent_bytes);
+                state.intents.insert(record.intent_id, record);
+            }
+        }
+
+        for outpoint in outpoints {
+            let res_key = outpoint_row_key(RESERVATION_ROW, &outpoint);
+            if let Some(res_bytes) = transaction
+                .kv_read(
+                    FEDERATION_STATE_PRIMARY_NAMESPACE,
+                    FederationTransactionState::SECONDARY_NAMESPACE,
+                    &res_key,
+                )
+                .await?
+            {
+                let row = decode_reservation_row(&res_key, &res_bytes)?;
+                baseline.insert(res_key, res_bytes);
+                state
+                    .utxo_reservations
+                    .insert(row.outpoint.to_string(), row.owner);
+            }
+        }
+
+        state.validate()?;
+        let initial_tx_ids = state.accepted_transactions.keys().copied().collect();
+        Ok(Self {
+            batch_id,
+            state,
+            baseline,
+            initial_tx_ids,
+        })
+    }
+
+    /// Stage verified pending intents into an empty or active lineage before
+    /// calling [`FederationTransactionState::accept_transaction`].
+    pub fn insert_pending_intents(
+        &mut self,
+        intents: BTreeMap<FederationOnchainPaymentIntentId, FederationOnchainPaymentIntentRecord>,
+    ) -> Result<()> {
+        for (intent_id, record) in intents {
+            if self.state.intents.contains_key(&intent_id) {
+                continue;
+            }
+            if record.intent_id != intent_id {
+                return Err(invalid("on-chain intent durable identity mismatch"));
+            }
+            if self
+                .state
+                .quote_intents
+                .insert(record.intent.quote.clone(), intent_id)
+                .is_some()
+            {
+                return Err(invalid("two on-chain intents share one quote"));
+            }
+            let key = hex_row_key(INTENT_ROW, &intent_id.to_hex());
+            self.baseline.insert(key, canonical_json_bytes(&record)?);
+            self.state.intents.insert(intent_id, record);
+        }
+        Ok(())
+    }
+
+    /// Persist only the rows that changed in this lineage and keep the
+    /// auxiliary O(1) index namespace synchronized.
+    pub async fn save(
+        self,
+        transaction: &mut DynMintTransaction,
+    ) -> std::result::Result<(), Error> {
+        self.save_kv(&mut **transaction).await
+    }
+
+    pub(crate) async fn save_kv<T>(self, transaction: &mut T) -> std::result::Result<(), Error>
+    where
+        T: KVStoreTransaction<database::Error> + ?Sized + Send,
+    {
+        let rows = self.state.to_rows()?;
+        for (key, value) in &rows {
+            if self.baseline.get(key) != Some(value) {
+                transaction
+                    .kv_write(
+                        FEDERATION_STATE_PRIMARY_NAMESPACE,
+                        FederationTransactionState::SECONDARY_NAMESPACE,
+                        key,
+                        value,
+                    )
+                    .await?;
+            }
+        }
+        for key in self.baseline.keys() {
+            if !rows.contains_key(key) {
+                transaction
+                    .kv_remove(
+                        FEDERATION_STATE_PRIMARY_NAMESPACE,
+                        FederationTransactionState::SECONDARY_NAMESPACE,
+                        key,
+                    )
+                    .await?;
+            }
+        }
+
+        let is_terminal = self
+            .state
+            .accepted_transactions
+            .values()
+            .any(|accepted| accepted.terminal_operation_index.is_some());
+        if is_terminal {
+            transaction
+                .kv_remove(
+                    FEDERATION_STATE_PRIMARY_NAMESPACE,
+                    FEDERATION_TRANSACTION_INDEX_NAMESPACE,
+                    &batch_txs_index_key(self.batch_id),
+                )
+                .await?;
+            for record in self.state.intents.values() {
+                transaction
+                    .kv_remove(
+                        FEDERATION_STATE_PRIMARY_NAMESPACE,
+                        FEDERATION_TRANSACTION_INDEX_NAMESPACE,
+                        &quote_index_key(&record.intent.quote),
+                    )
+                    .await?;
+            }
+        } else if !self.state.accepted_transactions.is_empty() {
+            let current_tx_ids: Vec<FederationTransactionProposalId> =
+                self.state.accepted_transactions.keys().copied().collect();
+            if current_tx_ids != self.initial_tx_ids {
+                let encoded_txs = canonical_json_bytes(&current_tx_ids)?;
+                transaction
+                    .kv_write(
+                        FEDERATION_STATE_PRIMARY_NAMESPACE,
+                        FEDERATION_TRANSACTION_INDEX_NAMESPACE,
+                        &batch_txs_index_key(self.batch_id),
+                        &encoded_txs,
+                    )
+                    .await?;
+                if self.initial_tx_ids.is_empty() {
+                    let encoded_batch = canonical_json_bytes(&self.batch_id)?;
+                    for intent_id in self.state.intents.keys() {
+                        transaction
+                            .kv_write(
+                                FEDERATION_STATE_PRIMARY_NAMESPACE,
+                                FEDERATION_TRANSACTION_INDEX_NAMESPACE,
+                                &intent_batch_index_key(*intent_id),
+                                &encoded_batch,
+                            )
+                            .await?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Read one active accepted transaction outside a database transaction in O(1).
+///
+/// Returns `None` if absent or belonging to a terminal lineage.
+pub async fn read_federation_accepted_transaction(
+    db: &DynMintDatabase,
+    proposal_id: FederationTransactionProposalId,
+) -> std::result::Result<Option<FederationAcceptedTransaction>, Error> {
+    read_federation_accepted_transaction_kv(db.as_ref(), proposal_id).await
+}
+
+pub(crate) async fn read_federation_accepted_transaction_kv<D>(
+    db: &D,
+    proposal_id: FederationTransactionProposalId,
+) -> std::result::Result<Option<FederationAcceptedTransaction>, Error>
+where
+    D: KVStoreDatabase<Err = database::Error> + ?Sized + Sync,
+{
+    let key = hex_row_key(TRANSACTION_ROW, &proposal_id.to_hex());
+    let Some(bytes) = db
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FederationTransactionState::SECONDARY_NAMESPACE,
+            &key,
+        )
+        .await?
+    else {
+        return Ok(None);
+    };
+    let accepted = decode_transaction_row(&key, &bytes)?;
+    if accepted.terminal_operation_index.is_some() {
+        return Ok(None);
+    }
+    validate_accepted_transaction_self(proposal_id, &accepted)?;
+    Ok(Some(accepted))
+}
+
+/// Load one active accepted transaction inside `transaction` in O(1).
+///
+/// Returns `None` if absent or belonging to a terminal lineage.
+pub async fn load_federation_accepted_transaction_in_tx(
+    transaction: &mut DynMintTransaction,
+    proposal_id: FederationTransactionProposalId,
+) -> std::result::Result<Option<FederationAcceptedTransaction>, Error> {
+    load_federation_accepted_transaction_kv(&mut **transaction, proposal_id).await
+}
+
+pub(crate) async fn load_federation_accepted_transaction_kv<T>(
+    transaction: &mut T,
+    proposal_id: FederationTransactionProposalId,
+) -> std::result::Result<Option<FederationAcceptedTransaction>, Error>
+where
+    T: KVStoreTransaction<database::Error> + ?Sized + Send,
+{
+    let key = hex_row_key(TRANSACTION_ROW, &proposal_id.to_hex());
+    let Some(bytes) = transaction
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FederationTransactionState::SECONDARY_NAMESPACE,
+            &key,
+        )
+        .await?
+    else {
+        return Ok(None);
+    };
+    let accepted = decode_transaction_row(&key, &bytes)?;
+    if accepted.terminal_operation_index.is_some() {
+        return Ok(None);
+    }
+    validate_accepted_transaction_self(proposal_id, &accepted)?;
+    Ok(Some(accepted))
+}
+
+/// Read one active batch lineage outside a database transaction in O(lineage size).
+pub async fn read_federation_transaction_lineage(
+    db: &DynMintDatabase,
+    batch_id: FederationOnchainBatchId,
+) -> std::result::Result<FederationTransactionState, Error> {
+    read_federation_transaction_lineage_kv(db.as_ref(), batch_id).await
+}
+
+pub(crate) async fn read_federation_transaction_lineage_kv<D>(
+    db: &D,
+    batch_id: FederationOnchainBatchId,
+) -> std::result::Result<FederationTransactionState, Error>
+where
+    D: KVStoreDatabase<Err = database::Error> + ?Sized + Sync,
+{
+    if !is_federation_state_index_initialized_kv::<FederationTransactionState, _>(db).await? {
+        return read_federation_state_kv::<FederationTransactionState, _>(db).await;
+    }
+    let batch_key = hex_row_key(BATCH_OWNER_ROW, &batch_id.to_hex());
+    let Some(batch_bytes) = db
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FederationTransactionState::SECONDARY_NAMESPACE,
+            &batch_key,
+        )
+        .await?
+    else {
+        return Ok(FederationTransactionState::new());
+    };
+    let batch_row = decode_batch_owner_row(&batch_key, &batch_bytes)?;
+
+    let mut proposal_ids = BTreeSet::new();
+    proposal_ids.insert(batch_row.owner);
+    if let Some(bytes) = db
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FEDERATION_TRANSACTION_INDEX_NAMESPACE,
+            &batch_txs_index_key(batch_id),
+        )
+        .await?
+    {
+        let indexed: Vec<FederationTransactionProposalId> =
+            serde_json::from_slice(&bytes).map_err(FederationError::from)?;
+        proposal_ids.extend(indexed);
+    }
+
+    let mut state = FederationTransactionState::new();
+    let mut terminal_index: Option<Option<u64>> = None;
+    let mut intent_ids = BTreeSet::new();
+    let mut outpoints = BTreeSet::new();
+
+    for proposal_id in proposal_ids {
+        let tx_key = hex_row_key(TRANSACTION_ROW, &proposal_id.to_hex());
+        let tx_bytes = db
+            .kv_read(
+                FEDERATION_STATE_PRIMARY_NAMESPACE,
+                FederationTransactionState::SECONDARY_NAMESPACE,
+                &tx_key,
+            )
+            .await?
+            .ok_or_else(|| invalid("transaction lineage index references a missing row"))?;
+        let accepted = decode_transaction_row(&tx_key, &tx_bytes)?;
+        match terminal_index {
+            None => terminal_index = Some(accepted.terminal_operation_index),
+            Some(expected) if expected != accepted.terminal_operation_index => {
+                return Err(invalid("transaction lineage is partly terminal").into());
+            }
+            Some(_) => {}
+        }
+        for intent_id in &accepted.proposal.intent_ids {
+            intent_ids.insert(*intent_id);
+        }
+        for input in &accepted.proposal.selected_inputs {
+            outpoints.insert(input.outpoint);
+        }
+        state.accepted_transactions.insert(proposal_id, accepted);
+    }
+
+    if matches!(terminal_index, Some(Some(_))) {
+        return Ok(FederationTransactionState::new());
+    }
+
+    state
+        .batch_owners
+        .insert(batch_row.batch_id, batch_row.owner);
+
+    for intent_id in intent_ids {
+        let intent_key = hex_row_key(INTENT_ROW, &intent_id.to_hex());
+        if let Some(intent_bytes) = db
+            .kv_read(
+                FEDERATION_STATE_PRIMARY_NAMESPACE,
+                FederationTransactionState::SECONDARY_NAMESPACE,
+                &intent_key,
+            )
+            .await?
+        {
+            let record = decode_intent_row(&intent_key, &intent_bytes)?;
+            if state
+                .quote_intents
+                .insert(record.intent.quote.clone(), record.intent_id)
+                .is_some()
+            {
+                return Err(invalid("two on-chain intents share one quote").into());
+            }
+            state.intents.insert(record.intent_id, record);
+        }
+    }
+
+    for outpoint in outpoints {
+        let res_key = outpoint_row_key(RESERVATION_ROW, &outpoint);
+        if let Some(res_bytes) = db
+            .kv_read(
+                FEDERATION_STATE_PRIMARY_NAMESPACE,
+                FederationTransactionState::SECONDARY_NAMESPACE,
+                &res_key,
+            )
+            .await?
+        {
+            let row = decode_reservation_row(&res_key, &res_bytes)?;
+            state
+                .utxo_reservations
+                .insert(row.outpoint.to_string(), row.owner);
+        }
+    }
+
+    state.validate()?;
+    Ok(state)
+}
+
+/// Load one active payment intent inside `transaction` in O(1), returning
+/// `None` if absent or belonging to a terminal lineage.
+pub async fn load_federation_onchain_intent_in_tx(
+    transaction: &mut DynMintTransaction,
+    intent_id: FederationOnchainPaymentIntentId,
+) -> std::result::Result<Option<FederationOnchainPaymentIntentRecord>, Error> {
+    load_federation_onchain_intent_kv(&mut **transaction, intent_id).await
+}
+
+pub(crate) async fn load_federation_onchain_intent_kv<T>(
+    transaction: &mut T,
+    intent_id: FederationOnchainPaymentIntentId,
+) -> std::result::Result<Option<FederationOnchainPaymentIntentRecord>, Error>
+where
+    T: KVStoreTransaction<database::Error> + ?Sized + Send,
+{
+    ensure_federation_state_index_initialized_kv::<FederationTransactionState, _>(transaction)
+        .await?;
+    let key = hex_row_key(INTENT_ROW, &intent_id.to_hex());
+    let Some(bytes) = transaction
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FederationTransactionState::SECONDARY_NAMESPACE,
+            &key,
+        )
+        .await?
+    else {
+        return Ok(None);
+    };
+    let record = decode_intent_row(&key, &bytes)?;
+    record.validate()?;
+    if record.settled_operation_index.is_some() {
+        if let Some(batch_bytes) = transaction
+            .kv_read(
+                FEDERATION_STATE_PRIMARY_NAMESPACE,
+                FEDERATION_TRANSACTION_INDEX_NAMESPACE,
+                &intent_batch_index_key(intent_id),
+            )
+            .await?
+        {
+            let batch_id: FederationOnchainBatchId =
+                serde_json::from_slice(&batch_bytes).map_err(FederationError::from)?;
+            let batch_key = hex_row_key(BATCH_OWNER_ROW, &batch_id.to_hex());
+            if let Some(owner_bytes) = transaction
+                .kv_read(
+                    FEDERATION_STATE_PRIMARY_NAMESPACE,
+                    FederationTransactionState::SECONDARY_NAMESPACE,
+                    &batch_key,
+                )
+                .await?
+            {
+                let batch_row = decode_batch_owner_row(&batch_key, &owner_bytes)?;
+                let tx_key = hex_row_key(TRANSACTION_ROW, &batch_row.owner.to_hex());
+                if let Some(tx_bytes) = transaction
+                    .kv_read(
+                        FEDERATION_STATE_PRIMARY_NAMESPACE,
+                        FederationTransactionState::SECONDARY_NAMESPACE,
+                        &tx_key,
+                    )
+                    .await?
+                {
+                    let accepted = decode_transaction_row(&tx_key, &tx_bytes)?;
+                    if accepted.terminal_operation_index.is_some() {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+    }
+    Ok(Some(record))
+}
+
+/// Load one active UTXO reservation owner inside `transaction` in O(1),
+/// returning `None` if absent or belonging to a terminal lineage.
+pub async fn load_federation_utxo_reservation_in_tx(
+    transaction: &mut DynMintTransaction,
+    outpoint: OutPoint,
+) -> std::result::Result<Option<FederationTransactionProposalId>, Error> {
+    load_federation_utxo_reservation_kv(&mut **transaction, outpoint).await
+}
+
+pub(crate) async fn load_federation_utxo_reservation_kv<T>(
+    transaction: &mut T,
+    outpoint: OutPoint,
+) -> std::result::Result<Option<FederationTransactionProposalId>, Error>
+where
+    T: KVStoreTransaction<database::Error> + ?Sized + Send,
+{
+    let key = outpoint_row_key(RESERVATION_ROW, &outpoint);
+    let Some(bytes) = transaction
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FederationTransactionState::SECONDARY_NAMESPACE,
+            &key,
+        )
+        .await?
+    else {
+        return Ok(None);
+    };
+    let row = decode_reservation_row(&key, &bytes)?;
+    let tx_key = hex_row_key(TRANSACTION_ROW, &row.owner.to_hex());
+    if let Some(tx_bytes) = transaction
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FederationTransactionState::SECONDARY_NAMESPACE,
+            &tx_key,
+        )
+        .await?
+    {
+        let accepted = decode_transaction_row(&tx_key, &tx_bytes)?;
+        if accepted.terminal_operation_index.is_some() {
+            return Ok(None);
+        }
+    }
+    Ok(Some(row.owner))
+}
+
+/// Add one consensus-authorized pending melt intent inside `transaction` in O(1).
+pub async fn add_pending_federation_onchain_intent_in_tx(
+    transaction: &mut DynMintTransaction,
+    record: FederationOnchainPaymentIntentRecord,
+) -> std::result::Result<FederationTransactionStateOutcome, Error> {
+    add_pending_federation_onchain_intent_kv(&mut **transaction, record).await
+}
+
+pub(crate) async fn add_pending_federation_onchain_intent_kv<T>(
+    transaction: &mut T,
+    record: FederationOnchainPaymentIntentRecord,
+) -> std::result::Result<FederationTransactionStateOutcome, Error>
+where
+    T: KVStoreTransaction<database::Error> + ?Sized + Send,
+{
+    record.validate()?;
+    if record.state != FederationOnchainPaymentIntentState::Pending {
+        return Err(invalid("new on-chain payment intent is not pending").into());
+    }
+    ensure_federation_state_index_initialized_kv::<FederationTransactionState, _>(transaction)
+        .await?;
+
+    let quote_key = quote_index_key(&record.intent.quote);
+    if let Some(existing_id_bytes) = transaction
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FEDERATION_TRANSACTION_INDEX_NAMESPACE,
+            &quote_key,
+        )
+        .await?
+    {
+        let existing_id: FederationOnchainPaymentIntentId =
+            serde_json::from_slice(&existing_id_bytes).map_err(FederationError::from)?;
+        let existing = load_federation_onchain_intent_kv(transaction, existing_id)
+            .await?
+            .ok_or_else(|| invalid("on-chain quote index is corrupt"))?;
+        if existing == record {
+            return Ok(FederationTransactionStateOutcome::Existing);
+        }
+        return Err(
+            invalid("on-chain melt quote already authorizes a different payment intent").into(),
+        );
+    }
+
+    if load_federation_onchain_intent_kv(transaction, record.intent_id)
+        .await?
+        .is_some()
+    {
+        return Err(invalid(
+            "on-chain payment intent identity is already assigned to another quote",
+        )
+        .into());
+    }
+
+    let intent_key = hex_row_key(INTENT_ROW, &record.intent_id.to_hex());
+    let encoded_record = canonical_json_bytes(&record)?;
+    let encoded_id = canonical_json_bytes(&record.intent_id)?;
+    transaction
+        .kv_write(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FederationTransactionState::SECONDARY_NAMESPACE,
+            &intent_key,
+            &encoded_record,
+        )
+        .await?;
+    transaction
+        .kv_write(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FEDERATION_TRANSACTION_INDEX_NAMESPACE,
+            &quote_key,
+            &encoded_id,
+        )
+        .await?;
+    Ok(FederationTransactionStateOutcome::Updated)
+}
+
+/// Persist a finalized signed transaction idempotently inside `transaction` in
+/// O(1) (1 point read, 0-1 point writes).
+pub async fn mark_federation_transaction_signed_in_tx(
+    transaction: &mut DynMintTransaction,
+    proposal_id: FederationTransactionProposalId,
+    signed: FederationSignedTransaction,
+) -> std::result::Result<FederationTransactionStateOutcome, Error> {
+    mark_federation_transaction_signed_kv(&mut **transaction, proposal_id, signed).await
+}
+
+pub(crate) async fn mark_federation_transaction_signed_kv<T>(
+    transaction: &mut T,
+    proposal_id: FederationTransactionProposalId,
+    signed: FederationSignedTransaction,
+) -> std::result::Result<FederationTransactionStateOutcome, Error>
+where
+    T: KVStoreTransaction<database::Error> + ?Sized + Send,
+{
+    let mut accepted = load_federation_accepted_transaction_kv(transaction, proposal_id)
+        .await?
+        .ok_or_else(|| invalid("cannot sign an unknown accepted transaction"))?;
+    if let Some(existing) = &accepted.signed {
+        if existing == &signed {
+            return Ok(FederationTransactionStateOutcome::Existing);
+        }
+        return Err(invalid("signed transaction replay conflicts with durable bytes").into());
+    }
+    if accepted.state != FederationAcceptedTransactionState::Accepted {
+        return Err(invalid("transaction is not eligible for signed persistence").into());
+    }
+    if signed.policy_audit != accepted.policy_audit {
+        return Err(invalid("signed transaction policy audit differs from accepted state").into());
+    }
+    signed.validate(&accepted.proposal)?;
+    accepted.signed = Some(signed);
+    accepted.state = FederationAcceptedTransactionState::Signed;
+    validate_accepted_transaction_self(proposal_id, &accepted)?;
+
+    let key = hex_row_key(TRANSACTION_ROW, &proposal_id.to_hex());
+    let encoded = canonical_json_bytes(&accepted)?;
+    transaction
+        .kv_write(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FederationTransactionState::SECONDARY_NAMESPACE,
+            &key,
+            &encoded,
+        )
+        .await?;
+    Ok(FederationTransactionStateOutcome::Updated)
+}
+
+/// Persist broadcast authorization inside `transaction` in O(1) (1 point read,
+/// 0-1 point writes).
+pub async fn authorize_federation_transaction_broadcast_in_tx(
+    transaction: &mut DynMintTransaction,
+    intent: FederationTransactionBroadcastIntent,
+    operation_id: FederationOperationId,
+    operation_index: u64,
+) -> std::result::Result<FederationTransactionStateOutcome, Error> {
+    authorize_federation_transaction_broadcast_kv(
+        &mut **transaction,
+        intent,
+        operation_id,
+        operation_index,
+    )
+    .await
+}
+
+pub(crate) async fn authorize_federation_transaction_broadcast_kv<T>(
+    transaction: &mut T,
+    intent: FederationTransactionBroadcastIntent,
+    operation_id: FederationOperationId,
+    operation_index: u64,
+) -> std::result::Result<FederationTransactionStateOutcome, Error>
+where
+    T: KVStoreTransaction<database::Error> + ?Sized + Send,
+{
+    if operation_index == 0 {
+        return Err(invalid("broadcast intent operation index is zero").into());
+    }
+    intent.settlement_policy.validate()?;
+    let mut accepted = load_federation_accepted_transaction_kv(transaction, intent.proposal_id)
+        .await?
+        .ok_or_else(|| invalid("cannot broadcast an unknown accepted transaction"))?;
+    let signed = accepted
+        .signed
+        .as_ref()
+        .ok_or_else(|| invalid("cannot broadcast a transaction before signed persistence"))?;
+    if signed.txid != intent.txid {
+        return Err(invalid("broadcast intent txid differs from signed transaction").into());
+    }
+    if let Some(existing) = &accepted.broadcast {
+        if existing.settlement_policy != intent.settlement_policy {
+            return Err(
+                invalid("broadcast intent conflicts with durable settlement policy").into(),
+            );
+        }
+        return Ok(FederationTransactionStateOutcome::Existing);
+    }
+    if accepted.state != FederationAcceptedTransactionState::Signed {
+        return Err(invalid("transaction is not eligible for broadcast authorization").into());
+    }
+    accepted.broadcast = Some(FederationTransactionBroadcastState {
+        intent_operation_id: operation_id,
+        intent_operation_index: operation_index,
+        settlement_policy: intent.settlement_policy,
+        observations: Vec::new(),
+        first_success: None,
+        settlement: None,
+    });
+    accepted.state = FederationAcceptedTransactionState::BroadcastPending;
+    validate_accepted_transaction_self(intent.proposal_id, &accepted)?;
+
+    let key = hex_row_key(TRANSACTION_ROW, &intent.proposal_id.to_hex());
+    let encoded = canonical_json_bytes(&accepted)?;
+    transaction
+        .kv_write(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FederationTransactionState::SECONDARY_NAMESPACE,
+            &key,
+            &encoded,
+        )
+        .await?;
+    Ok(FederationTransactionStateOutcome::Updated)
+}
+
+/// Record one authenticated member broadcast observation inside `transaction`
+/// in O(lineage size).
+pub async fn record_federation_transaction_broadcast_observation_in_tx(
+    transaction: &mut DynMintTransaction,
+    observation: FederationTransactionBroadcastObservation,
+    operation_id: FederationOperationId,
+    operation_index: u64,
+) -> std::result::Result<FederationTransactionStateOutcome, Error> {
+    record_federation_transaction_broadcast_observation_kv(
+        &mut **transaction,
+        observation,
+        operation_id,
+        operation_index,
+    )
+    .await
+}
+
+pub(crate) async fn record_federation_transaction_broadcast_observation_kv<T>(
+    transaction: &mut T,
+    observation: FederationTransactionBroadcastObservation,
+    operation_id: FederationOperationId,
+    operation_index: u64,
+) -> std::result::Result<FederationTransactionStateOutcome, Error>
+where
+    T: KVStoreTransaction<database::Error> + ?Sized + Send,
+{
+    observation.validate()?;
+    if operation_index == 0 {
+        return Err(invalid("broadcast observation operation index is zero").into());
+    }
+    ensure_federation_state_index_initialized_kv::<FederationTransactionState, _>(transaction)
+        .await?;
+    let observed = load_federation_accepted_transaction_kv(transaction, observation.proposal_id)
+        .await?
+        .ok_or_else(|| invalid("broadcast observation references an unknown transaction"))?;
+    if observed.broadcast.as_ref().is_some_and(|broadcast| {
+        broadcast
+            .observations
+            .iter()
+            .any(|existing| existing.observation == observation)
+    }) {
+        return Ok(FederationTransactionStateOutcome::Existing);
+    }
+    let mut lineage =
+        LoadedFederationTransactionLineage::load_kv(transaction, observed.proposal.batch_id)
+            .await?;
+    let outcome = lineage.record_transaction_broadcast_observation(
+        observation,
+        operation_id,
+        operation_index,
+    )?;
+    if outcome == FederationTransactionStateOutcome::Updated {
+        lineage.save_kv(transaction).await?;
+    }
+    Ok(outcome)
+}
+
+/// Read the confirmed on-chain payment receipt for one melt quote outside a
+/// transaction in O(lineage size).
+pub async fn read_federation_completed_payment_for_quote(
+    db: &DynMintDatabase,
+    quote: &str,
+) -> std::result::Result<Option<FederationOnchainMeltPaymentReceipt>, Error> {
+    read_federation_completed_payment_for_quote_kv(db.as_ref(), quote).await
+}
+
+pub(crate) async fn read_federation_completed_payment_for_quote_kv<D>(
+    db: &D,
+    quote: &str,
+) -> std::result::Result<Option<FederationOnchainMeltPaymentReceipt>, Error>
+where
+    D: KVStoreDatabase<Err = database::Error> + ?Sized + Sync,
+{
+    if !is_federation_state_index_initialized_kv::<FederationTransactionState, _>(db).await? {
+        return Ok(
+            read_federation_state_kv::<FederationTransactionState, _>(db)
+                .await?
+                .completed_payment_for_quote(quote)?,
+        );
+    }
+    let Some(intent_id_bytes) = db
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FEDERATION_TRANSACTION_INDEX_NAMESPACE,
+            &quote_index_key(quote),
+        )
+        .await?
+    else {
+        return Ok(None);
+    };
+    let intent_id: FederationOnchainPaymentIntentId =
+        serde_json::from_slice(&intent_id_bytes).map_err(FederationError::from)?;
+    let intent_key = hex_row_key(INTENT_ROW, &intent_id.to_hex());
+    let Some(intent_bytes) = db
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FederationTransactionState::SECONDARY_NAMESPACE,
+            &intent_key,
+        )
+        .await?
+    else {
+        return Ok(None);
+    };
+    let record = decode_intent_row(&intent_key, &intent_bytes)?;
+    record.validate()?;
+    if !matches!(
+        record.state,
+        FederationOnchainPaymentIntentState::Completed { .. }
+    ) {
+        return Ok(None);
+    }
+    let batch_bytes = db
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FEDERATION_TRANSACTION_INDEX_NAMESPACE,
+            &intent_batch_index_key(intent_id),
+        )
+        .await?
+        .ok_or_else(|| invalid("completed payment intent has no accepted transaction"))?;
+    let batch_id: FederationOnchainBatchId =
+        serde_json::from_slice(&batch_bytes).map_err(FederationError::from)?;
+    let lineage = read_federation_transaction_lineage_kv(db, batch_id).await?;
+    Ok(lineage.completed_payment_for_quote(quote)?)
+}
+
+/// Load the confirmed on-chain payment receipt for one melt quote inside
+/// `transaction` in O(lineage size).
+pub async fn load_federation_completed_payment_for_quote_in_tx(
+    transaction: &mut DynMintTransaction,
+    quote: &str,
+) -> std::result::Result<Option<FederationOnchainMeltPaymentReceipt>, Error> {
+    load_federation_completed_payment_for_quote_kv(&mut **transaction, quote).await
+}
+
+pub(crate) async fn load_federation_completed_payment_for_quote_kv<T>(
+    transaction: &mut T,
+    quote: &str,
+) -> std::result::Result<Option<FederationOnchainMeltPaymentReceipt>, Error>
+where
+    T: KVStoreTransaction<database::Error> + ?Sized + Send,
+{
+    ensure_federation_state_index_initialized_kv::<FederationTransactionState, _>(transaction)
+        .await?;
+    let Some(intent_id_bytes) = transaction
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FEDERATION_TRANSACTION_INDEX_NAMESPACE,
+            &quote_index_key(quote),
+        )
+        .await?
+    else {
+        return Ok(None);
+    };
+    let intent_id: FederationOnchainPaymentIntentId =
+        serde_json::from_slice(&intent_id_bytes).map_err(FederationError::from)?;
+    let Some(record) = load_federation_onchain_intent_kv(transaction, intent_id).await? else {
+        return Ok(None);
+    };
+    if !matches!(
+        record.state,
+        FederationOnchainPaymentIntentState::Completed { .. }
+    ) {
+        return Ok(None);
+    }
+    let batch_bytes = transaction
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FEDERATION_TRANSACTION_INDEX_NAMESPACE,
+            &intent_batch_index_key(intent_id),
+        )
+        .await?
+        .ok_or_else(|| invalid("completed payment intent has no accepted transaction"))?;
+    let batch_id: FederationOnchainBatchId =
+        serde_json::from_slice(&batch_bytes).map_err(FederationError::from)?;
+    let lineage = LoadedFederationTransactionLineage::load_kv(transaction, batch_id).await?;
+    Ok(lineage.completed_payment_for_quote(quote)?)
+}
+
+/// Load the active transaction lineage owning `quote`'s intent inside
+/// `transaction` in O(lineage size) when the intent is ready to be settled.
+///
+/// Returns `Ok(None)` if `quote` has no active intent or is already settled.
+pub async fn load_federation_transaction_lineage_for_quote_settlement_in_tx(
+    transaction: &mut DynMintTransaction,
+    quote: &str,
+) -> std::result::Result<Option<LoadedFederationTransactionLineage>, Error> {
+    load_federation_transaction_lineage_for_quote_settlement_kv(&mut **transaction, quote).await
+}
+
+pub(crate) async fn load_federation_transaction_lineage_for_quote_settlement_kv<T>(
+    transaction: &mut T,
+    quote: &str,
+) -> std::result::Result<Option<LoadedFederationTransactionLineage>, Error>
+where
+    T: KVStoreTransaction<database::Error> + ?Sized + Send,
+{
+    ensure_federation_state_index_initialized_kv::<FederationTransactionState, _>(transaction)
+        .await?;
+    let Some(intent_id_bytes) = transaction
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FEDERATION_TRANSACTION_INDEX_NAMESPACE,
+            &quote_index_key(quote),
+        )
+        .await?
+    else {
+        return Ok(None);
+    };
+    let intent_id: FederationOnchainPaymentIntentId =
+        serde_json::from_slice(&intent_id_bytes).map_err(FederationError::from)?;
+    let Some(record) = load_federation_onchain_intent_kv(transaction, intent_id).await? else {
+        return Ok(None);
+    };
+    if record.settled_operation_index.is_some() {
+        return Ok(None);
+    }
+    if !matches!(
+        record.state,
+        FederationOnchainPaymentIntentState::Completed { .. }
+    ) {
+        return Err(invalid("settled on-chain intent is not completed").into());
+    }
+    let batch_bytes = transaction
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FEDERATION_TRANSACTION_INDEX_NAMESPACE,
+            &intent_batch_index_key(intent_id),
+        )
+        .await?
+        .ok_or_else(|| invalid("completed payment intent has no accepted transaction"))?;
+    let batch_id: FederationOnchainBatchId =
+        serde_json::from_slice(&batch_bytes).map_err(FederationError::from)?;
+    let lineage = LoadedFederationTransactionLineage::load_kv(transaction, batch_id).await?;
+    Ok(Some(lineage))
 }
 
 /// Rows one terminal lineage occupies.
@@ -2766,13 +3886,7 @@ where
         if row_kind(key)? != TRANSACTION_ROW {
             continue;
         }
-        let accepted: FederationAcceptedTransaction =
-            decode_row(key, bytes, |accepted: &FederationAcceptedTransaction| {
-                Ok(hex_row_key(
-                    TRANSACTION_ROW,
-                    &accepted.proposal.proposal_id()?.to_hex(),
-                ))
-            })?;
+        let accepted = decode_transaction_row(key, bytes)?;
         let Some(terminal_operation_index) = accepted
             .terminal_operation_index
             .filter(|terminal| retire(*terminal))
@@ -2811,6 +3925,8 @@ where
 
 impl FederationStateTable for FederationTransactionState {
     const SECONDARY_NAMESPACE: &'static str = "transaction";
+    const INDEX_SECONDARY_NAMESPACE: Option<&'static str> =
+        Some(FEDERATION_TRANSACTION_INDEX_NAMESPACE);
 
     /// A terminal lineage is read no more: it is removed whole, and the
     /// chain projection's tombstones keep its spent inputs from being
@@ -2825,6 +3941,64 @@ impl FederationStateTable for FederationTransactionState {
         limit: Option<usize>,
     ) -> Result<FederationStateRows> {
         retire_terminal_lineage_rows(rows, limit, |terminal| terminal < floor)
+    }
+
+    fn build_index_rows(stored_rows: &FederationStateRows) -> Result<FederationStateRows> {
+        let active_rows = Self::retire_terminal_rows(stored_rows.clone())?;
+        let active = Self::from_rows(&active_rows)?;
+        let mut index_rows = FederationStateRows::new();
+
+        for (intent_id, record) in &active.intents {
+            insert_row(
+                &mut index_rows,
+                quote_index_key(&record.intent.quote),
+                intent_id,
+            )?;
+        }
+
+        let mut batch_txs =
+            BTreeMap::<FederationOnchainBatchId, BTreeSet<FederationTransactionProposalId>>::new();
+        let mut intent_batches =
+            BTreeMap::<FederationOnchainPaymentIntentId, FederationOnchainBatchId>::new();
+        for (proposal_id, accepted) in &active.accepted_transactions {
+            batch_txs
+                .entry(accepted.proposal.batch_id)
+                .or_default()
+                .insert(*proposal_id);
+            for intent_id in &accepted.proposal.intent_ids {
+                intent_batches.insert(*intent_id, accepted.proposal.batch_id);
+            }
+        }
+        for (batch_id, tx_ids) in batch_txs {
+            let ordered = tx_ids.into_iter().collect::<Vec<_>>();
+            insert_row(&mut index_rows, batch_txs_index_key(batch_id), &ordered)?;
+        }
+
+        // Preserve intent -> batch pointers for terminal lineages still stored
+        // above the retention floor so point lookups of terminal intents see
+        // them as absent until history retention removes their entity rows.
+        for (key, bytes) in stored_rows {
+            if row_kind(key)? != TRANSACTION_ROW {
+                continue;
+            }
+            let accepted = decode_transaction_row(key, bytes)?;
+            if accepted.terminal_operation_index.is_some() {
+                for intent_id in &accepted.proposal.intent_ids {
+                    intent_batches
+                        .entry(*intent_id)
+                        .or_insert(accepted.proposal.batch_id);
+                }
+            }
+        }
+        for (intent_id, batch_id) in intent_batches {
+            insert_row(
+                &mut index_rows,
+                intent_batch_index_key(intent_id),
+                &batch_id,
+            )?;
+        }
+
+        Ok(index_rows)
     }
 
     /// One row per intent, accepted transaction, batch lineage head and UTXO
@@ -2876,13 +4050,7 @@ impl FederationStateTable for FederationTransactionState {
         for (key, bytes) in rows {
             match row_kind(key)? {
                 INTENT_ROW => {
-                    let record: FederationOnchainPaymentIntentRecord = decode_row(
-                        key,
-                        bytes,
-                        |record: &FederationOnchainPaymentIntentRecord| {
-                            Ok(hex_row_key(INTENT_ROW, &record.intent_id.to_hex()))
-                        },
-                    )?;
+                    let record = decode_intent_row(key, bytes)?;
                     if state
                         .quote_intents
                         .insert(record.intent.quote.clone(), record.intent_id)
@@ -2893,27 +4061,17 @@ impl FederationStateTable for FederationTransactionState {
                     state.intents.insert(record.intent_id, record);
                 }
                 TRANSACTION_ROW => {
-                    let accepted: FederationAcceptedTransaction =
-                        decode_row(key, bytes, |accepted: &FederationAcceptedTransaction| {
-                            Ok(hex_row_key(
-                                TRANSACTION_ROW,
-                                &accepted.proposal.proposal_id()?.to_hex(),
-                            ))
-                        })?;
+                    let accepted = decode_transaction_row(key, bytes)?;
                     state
                         .accepted_transactions
                         .insert(accepted.proposal.proposal_id()?, accepted);
                 }
                 BATCH_OWNER_ROW => {
-                    let row: BatchOwnerRow = decode_row(key, bytes, |row: &BatchOwnerRow| {
-                        Ok(hex_row_key(BATCH_OWNER_ROW, &row.batch_id.to_hex()))
-                    })?;
+                    let row = decode_batch_owner_row(key, bytes)?;
                     state.batch_owners.insert(row.batch_id, row.owner);
                 }
                 RESERVATION_ROW => {
-                    let row: ReservationRow = decode_row(key, bytes, |row: &ReservationRow| {
-                        Ok(outpoint_row_key(RESERVATION_ROW, &row.outpoint))
-                    })?;
+                    let row = decode_reservation_row(key, bytes)?;
                     state
                         .utxo_reservations
                         .insert(row.outpoint.to_string(), row.owner);

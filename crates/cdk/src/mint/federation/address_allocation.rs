@@ -2,9 +2,10 @@
 
 use cdk_common::error::Error;
 use cdk_common::federation::{
+    apply_federation_address_allocation_in_tx, read_federation_address_allocation,
     read_federation_state, FederationAddressAllocationOperation,
     FederationAddressAllocationOutcome, FederationAddressAllocationScope,
-    FederationAddressAllocationState, FederationJournalEntry, FederationStoredState,
+    FederationAddressAllocationState, FederationJournalEntry,
 };
 
 use super::super::Mint;
@@ -24,11 +25,7 @@ impl Mint {
         scope: FederationAddressAllocationScope,
         quote: &str,
     ) -> Result<Option<cdk_common::federation::FederationAddressAllocation>, Error> {
-        Ok(self
-            .federation_address_allocation_state()
-            .await?
-            .allocation(scope, quote)
-            .cloned())
+        read_federation_address_allocation(&self.localstore(), scope, quote).await
     }
 
     pub(super) async fn apply_federation_address_allocation(
@@ -40,14 +37,12 @@ impl Mint {
             .ok_or(Error::Internal)?
             .validate_federated_address_allocation_submission(operation)?;
         let mut transaction = self.localstore().begin_transaction().await?;
-        let outcome = async {
-            let mut state =
-                FederationStoredState::<FederationAddressAllocationState>::load(&mut transaction)
-                    .await?;
-            let outcome = state.apply(operation, entry.operation_id, entry.index)?;
-            state.save(&mut transaction).await?;
-            Ok(outcome)
-        }
+        let outcome = apply_federation_address_allocation_in_tx(
+            &mut transaction,
+            operation,
+            entry.operation_id,
+            entry.index,
+        )
         .await;
         finish_federation_apply_transaction(transaction, entry, outcome).await
     }

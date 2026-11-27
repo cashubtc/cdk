@@ -1,18 +1,30 @@
 use std::collections::BTreeMap;
+#[cfg(any(test, feature = "federation-bdk", feature = "federation-bark"))]
+use std::collections::{BTreeSet, HashSet};
 use std::str::FromStr;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use cdk::cdk_payment::Event;
+use cdk::federation::{
+    FederationAcceptedTransactionState, FederationChainObservation,
+    FederationOnchainPaymentIntentState, FederationOperation, FederationOperationStatus,
+    FederationPaymentObservation, FederationPaymentObservationReport,
+    FederationPaymentObservationReportSummary, FederationWalletUtxoState,
+    FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS,
+};
 #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 use cdk::federation::{
     FederationAddressAllocationScope, FederationAddressKeychain, FederationAllocatedAddressRef,
     FederationChainSourceDescriptor, FederationChainSourceScope, FederationDepositConfirmation,
-    FederationDepositObservation, FederationDepositReorgObservation, FederationWalletUtxoState,
+    FederationDepositObservation, FederationDepositReorgObservation,
 };
+#[cfg(any(test, feature = "federation-bdk", feature = "federation-bark"))]
 use cdk::federation::{
-    FederationChainObservation, FederationOperation, FederationOperationStatus,
-    FederationPaymentObservation, FederationPaymentObservationReport,
-    FederationPaymentObservationReportSummary,
+    FederationAlephBftError, FederationConsensusItem, FederationError,
+    FederationJournalAppendOutcome, FederationOperationConflictKey, FederationOperationEnvelope,
+    FederationOperationId, FederationSubmitOperationResponse,
+    FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES,
 };
 use cdk::mint::QuoteId;
 use cdk::nuts::{MeltQuoteState, MintQuoteState};
@@ -27,8 +39,13 @@ use super::payment_schedule::{
 use crate::FederationNode;
 
 const FEDERATION_STALE_PAYMENT_OBSERVATION_SECS: u64 = 15 * 60;
-const FEDERATION_ONCHAIN_OBSERVER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
-const FEDERATION_PAYMENT_REPAIR_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+/// Active on-chain observation cadence when unpaid on-chain mint quotes or
+/// pending/unconfirmed on-chain transactions are present.
+pub const FEDERATION_ONCHAIN_OBSERVER_ACTIVE_INTERVAL: Duration = Duration::from_secs(1);
+/// Idle on-chain observation cadence when no active on-chain work is pending.
+pub const FEDERATION_ONCHAIN_OBSERVER_IDLE_INTERVAL: Duration = Duration::from_secs(5);
+const FEDERATION_ONCHAIN_ACTIVITY_MINT_QUOTE_SCAN_LIMIT: usize = 64;
+const FEDERATION_PAYMENT_REPAIR_INTERVAL: Duration = Duration::from_secs(60);
 const FEDERATION_PAYMENT_IDLE_DEADLINE: std::time::Duration =
     std::time::Duration::from_secs(24 * 60 * 60);
 const FEDERATION_PAYMENT_MAX_ADVANCEMENTS_PER_WAKE: usize = 8;
@@ -154,12 +171,157 @@ enum FederationPaymentQuoteTaskClaim {
     },
 }
 
+#[cfg(any(test, feature = "federation-bdk", feature = "federation-bark"))]
+#[derive(Debug, Clone)]
+struct ObservationEnvelopeChunkItem {
+    index: usize,
+    envelope: FederationOperationEnvelope,
+}
+
+#[cfg(any(test, feature = "federation-bdk", feature = "federation-bark"))]
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ObservationBatchSubmitResult {
+    applied_indices: Vec<usize>,
+    newly_submitted: usize,
+}
+
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
+struct PendingChainObservation {
+    envelope: FederationOperationEnvelope,
+    quote: String,
+    outpoint: cdk_common::bitcoin::OutPoint,
+    is_reorg: bool,
+    confirmed_external_mint_quote: Option<QuoteId>,
+    confirmed: bool,
+    observation_epoch: u64,
+}
+
+#[cfg(any(test, feature = "federation-bdk", feature = "federation-bark"))]
+fn chunk_operation_envelopes(
+    envelopes: Vec<FederationOperationEnvelope>,
+    max_items: usize,
+    max_body_bytes: usize,
+) -> Result<Vec<Vec<ObservationEnvelopeChunkItem>>, cdk::Error> {
+    let max_items = max_items.clamp(1, FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS);
+    let mut chunks = Vec::new();
+    let mut current_chunk = Vec::new();
+    let mut current_bytes = 0_usize;
+    let mut seen_operation_ids = BTreeSet::<FederationOperationId>::new();
+    let mut current_conflict_keys = HashSet::<FederationOperationConflictKey>::new();
+
+    for (index, envelope) in envelopes.into_iter().enumerate() {
+        let operation_id = envelope.operation_id()?;
+        if !seen_operation_ids.insert(operation_id) {
+            continue;
+        }
+        let item_bytes = FederationConsensusItem::operation(envelope.clone()).canonical_size()?;
+        let conflict_keys = envelope.operation.conflict_keys();
+        let conflicts_with_current = conflict_keys
+            .iter()
+            .any(|key| current_conflict_keys.contains(key));
+        let would_exceed_items = current_chunk.len() >= max_items;
+        let would_exceed_bytes =
+            !current_chunk.is_empty() && current_bytes.saturating_add(item_bytes) > max_body_bytes;
+
+        if !current_chunk.is_empty()
+            && (would_exceed_items || would_exceed_bytes || conflicts_with_current)
+        {
+            chunks.push(std::mem::take(&mut current_chunk));
+            current_bytes = 0;
+            current_conflict_keys.clear();
+        }
+
+        current_bytes = current_bytes.saturating_add(item_bytes);
+        current_conflict_keys.extend(conflict_keys);
+        current_chunk.push(ObservationEnvelopeChunkItem { index, envelope });
+    }
+
+    if !current_chunk.is_empty() {
+        chunks.push(current_chunk);
+    }
+    Ok(chunks)
+}
+
+#[cfg(any(test, feature = "federation-bdk", feature = "federation-bark"))]
+fn is_recoverable_observation_batch_error(error: &cdk::Error) -> bool {
+    matches!(
+        error,
+        cdk::Error::Federation(
+            FederationError::ConflictingOperation { .. }
+                | FederationError::RejectedOperation { .. }
+                | FederationError::OperationStateInvalid { .. }
+                | FederationError::ChainObservationInvalid { .. }
+                | FederationError::ChainObservationStateInvalid { .. }
+                | FederationError::ConsensusItemTooLarge { .. }
+                | FederationError::OperationEnvelopeTooLarge { .. }
+                | FederationError::AlephBft(
+                    FederationAlephBftError::OrderedGroupInvalid { .. }
+                        | FederationAlephBftError::OrderedGroupTooManyItems { .. }
+                        | FederationAlephBftError::OrderedGroupBodyTooLarge { .. }
+                )
+        )
+    )
+}
+
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
+fn expected_deposit_script(
+    runtime: &cdk::mint::FederationRuntimeConfig,
+    wallet_config: &cdk::federation::FederationFrostWalletConfig,
+    allocation: &FederationAllocatedAddressRef,
+) -> Result<cdk_common::bitcoin::ScriptBuf, cdk::Error> {
+    let expected_script = wallet_config
+        .cdk_onchain_application
+        .as_ref()
+        .filter(|application| {
+            application.application_id == allocation.application_id
+                && application.application_key_epoch == allocation.application_key_epoch
+        })
+        .map(|_| {
+            wallet_config.derive_cdk_onchain_script(
+                runtime.public_config(),
+                allocation.application_id,
+                allocation.application_key_epoch,
+                allocation.keychain,
+                allocation.derivation_index,
+            )
+        })
+        .transpose()?;
+    #[cfg(feature = "federation-bark")]
+    let expected_script = match expected_script {
+        Some(script) => Some(script),
+        None => cdk_federation_bark::federation_bark_recovery_application(runtime.public_config())?
+            .filter(|application| {
+                application.application_id() == allocation.application_id
+                    && application.application_key_epoch() == allocation.application_key_epoch
+            })
+            .map(|application| {
+                application.derive_script(
+                    runtime.public_config(),
+                    &wallet_config.root,
+                    allocation.keychain == FederationAddressKeychain::Internal,
+                    allocation.derivation_index,
+                )
+            })
+            .transpose()?,
+    };
+    expected_script.ok_or_else(|| {
+        cdk::Error::Federation(FederationError::ChainObservationInvalid {
+            reason: "deposit scope is not a configured descriptor application",
+        })
+    })
+}
+
+/// Coordinates federation payment and on-chain wallet observation.
 #[derive(Debug, Clone)]
 pub struct FederationPaymentObserver {
     schedule: FederationPaymentObservationSchedule,
     accepted_operation_wakes:
         tokio::sync::broadcast::Sender<(FederationPaymentQuote, u64, Instant)>,
-    quote_tasks: std::sync::Arc<tokio::sync::Semaphore>,
+    onchain_activity_wake: Arc<tokio::sync::Notify>,
+    quote_tasks: Arc<tokio::sync::Semaphore>,
+    onchain_active_interval: Duration,
+    onchain_idle_interval: Duration,
+    onchain_max_batch_items: usize,
 }
 
 impl Default for FederationPaymentObserver {
@@ -169,14 +331,356 @@ impl Default for FederationPaymentObserver {
         Self {
             schedule: FederationPaymentObservationSchedule::default(),
             accepted_operation_wakes,
-            quote_tasks: std::sync::Arc::new(tokio::sync::Semaphore::new(
+            onchain_activity_wake: Arc::new(tokio::sync::Notify::new()),
+            quote_tasks: Arc::new(tokio::sync::Semaphore::new(
                 FEDERATION_PAYMENT_CONCURRENT_QUOTE_TASKS,
             )),
+            onchain_active_interval: FEDERATION_ONCHAIN_OBSERVER_ACTIVE_INTERVAL,
+            onchain_idle_interval: FEDERATION_ONCHAIN_OBSERVER_IDLE_INTERVAL,
+            onchain_max_batch_items: FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS,
         }
     }
 }
 
 impl FederationPaymentObserver {
+    /// Configure the active and idle polling intervals for on-chain wallet observation.
+    ///
+    /// Zero durations are clamped to 1 millisecond, and `idle_interval` is at
+    /// least `active_interval`.
+    #[must_use]
+    pub fn with_onchain_intervals(
+        mut self,
+        active_interval: Duration,
+        idle_interval: Duration,
+    ) -> Self {
+        let min_interval = Duration::from_millis(1);
+        let active = active_interval.max(min_interval);
+        let idle = idle_interval.max(active);
+        self.onchain_active_interval = active;
+        self.onchain_idle_interval = idle;
+        self
+    }
+
+    /// Return the configured active on-chain observation interval.
+    #[must_use]
+    pub fn onchain_active_interval(&self) -> Duration {
+        self.onchain_active_interval
+    }
+
+    /// Return the configured idle on-chain observation interval.
+    #[must_use]
+    pub fn onchain_idle_interval(&self) -> Duration {
+        self.onchain_idle_interval
+    }
+
+    /// Configure the maximum number of observation envelopes submitted in one consensus batch.
+    ///
+    /// Values are clamped to `1..=FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS`.
+    #[must_use]
+    pub fn with_onchain_max_batch_items(mut self, max_batch_items: usize) -> Self {
+        self.onchain_max_batch_items =
+            max_batch_items.clamp(1, FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS);
+        self
+    }
+
+    /// Whether the federation currently has active on-chain work that benefits
+    /// from the faster on-chain observation cadence.
+    pub async fn has_active_onchain_work(state: &FederationNode) -> Result<bool, cdk::Error> {
+        let Some(runtime) = state.mint.federation_config() else {
+            return Ok(false);
+        };
+        if runtime.public_config().frost_wallet.is_none() {
+            return Ok(false);
+        }
+        let transaction_state = state.mint.federation_transaction_state().await?;
+        if transaction_state
+            .intents()
+            .values()
+            .any(|record| record.state == FederationOnchainPaymentIntentState::Pending)
+        {
+            return Ok(true);
+        }
+        if transaction_state
+            .accepted_transactions()
+            .values()
+            .any(|accepted| {
+                matches!(
+                    accepted.state,
+                    FederationAcceptedTransactionState::Accepted
+                        | FederationAcceptedTransactionState::Signed
+                        | FederationAcceptedTransactionState::BroadcastPending
+                        | FederationAcceptedTransactionState::Broadcast
+                )
+            })
+        {
+            return Ok(true);
+        }
+
+        let chain_state = state.mint.federation_chain_observation_state().await?;
+        if chain_state.utxos().any(|utxo| {
+            matches!(
+                utxo.state,
+                FederationWalletUtxoState::Observed | FederationWalletUtxoState::Confirmed
+            )
+        }) {
+            return Ok(true);
+        }
+
+        let db = state.mint.localstore();
+        let mint_ids = db
+            .get_federation_mint_quote_ids_for_payment_observation(
+                None,
+                FEDERATION_ONCHAIN_ACTIVITY_MINT_QUOTE_SCAN_LIMIT,
+            )
+            .await?;
+        for quote_id in mint_ids {
+            if let Some(quote) = db.get_mint_quote(&quote_id).await? {
+                if quote.payment_method.is_onchain()
+                    && !matches!(quote.state(), MintQuoteState::Paid | MintQuoteState::Issued)
+                {
+                    return Ok(true);
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
+    /// Select the next on-chain observation polling interval based on current
+    /// on-chain quote, UTXO, and transaction activity.
+    pub async fn next_onchain_observer_interval(
+        &self,
+        state: &FederationNode,
+    ) -> Result<Duration, cdk::Error> {
+        if Self::has_active_onchain_work(state).await? {
+            Ok(self.onchain_active_interval)
+        } else {
+            Ok(self.onchain_idle_interval)
+        }
+    }
+
+    #[cfg(any(test, feature = "federation-bdk", feature = "federation-bark"))]
+    async fn submit_observation_envelope_batch(
+        &self,
+        state: &FederationNode,
+        envelopes: Vec<FederationOperationEnvelope>,
+    ) -> Result<ObservationBatchSubmitResult, cdk::Error> {
+        if envelopes.is_empty() {
+            return Ok(ObservationBatchSubmitResult::default());
+        }
+        let chunks = chunk_operation_envelopes(
+            envelopes,
+            self.onchain_max_batch_items,
+            FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES,
+        )?;
+        let mut result = ObservationBatchSubmitResult::default();
+
+        for chunk in chunks {
+            let mut admitted = Vec::with_capacity(chunk.len());
+            for item in chunk {
+                match state
+                    .validate_federation_envelope_admission(&item.envelope)
+                    .await
+                {
+                    Ok(()) => admitted.push(item),
+                    Err(error) if is_recoverable_observation_batch_error(&error) => {
+                        tracing::debug!(
+                            error = %error,
+                            "Skipping federation observation that failed local admission"
+                        );
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            if admitted.is_empty() {
+                continue;
+            }
+            state.ensure_federation_ready_for_public_submit().await?;
+            if admitted.len() == 1 {
+                let item = admitted.pop().expect("single admitted observation");
+                Self::submit_single_observation_item(state, item, &mut result).await?;
+                continue;
+            }
+
+            let expected_ids = admitted
+                .iter()
+                .map(|item| item.envelope.operation_id())
+                .collect::<Result<Vec<_>, _>>()?;
+            let group_envelopes = admitted
+                .iter()
+                .map(|item| item.envelope.clone())
+                .collect::<Vec<_>>();
+            match state
+                .federation
+                .submit_envelope_group(group_envelopes)
+                .await
+            {
+                Ok(responses) => {
+                    if responses.len() != admitted.len() {
+                        return Err(FederationError::AlephBft(
+                            FederationAlephBftError::OrderedGroupInvalid {
+                                reason:
+                                    "ordered group response count did not match submitted batch",
+                            },
+                        )
+                        .into());
+                    }
+                    for ((item, expected_id), response) in
+                        admitted.into_iter().zip(expected_ids).zip(responses)
+                    {
+                        Self::record_observation_response(
+                            item.index,
+                            expected_id,
+                            &response,
+                            &mut result,
+                        )?;
+                    }
+                }
+                Err(error) if is_recoverable_observation_batch_error(&error) => {
+                    tracing::debug!(
+                        chunk_len = admitted.len(),
+                        error = %error,
+                        "Batched federation observation group failed; falling back to per-item submission"
+                    );
+                    for item in admitted {
+                        Self::submit_single_observation_item(state, item, &mut result).await?;
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        Ok(result)
+    }
+
+    #[cfg(any(test, feature = "federation-bdk", feature = "federation-bark"))]
+    async fn submit_single_observation_item(
+        state: &FederationNode,
+        item: ObservationEnvelopeChunkItem,
+        result: &mut ObservationBatchSubmitResult,
+    ) -> Result<(), cdk::Error> {
+        let expected_id = item.envelope.operation_id()?;
+        match state.federation.submit_envelope(item.envelope).await {
+            Ok(response) => {
+                Self::record_observation_response(item.index, expected_id, &response, result)
+            }
+            Err(error) if is_recoverable_observation_batch_error(&error) => {
+                tracing::debug!(
+                    operation_id = %expected_id,
+                    error = %error,
+                    "Skipping conflicting or rejected federation observation during per-item submission"
+                );
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    #[cfg(any(test, feature = "federation-bdk", feature = "federation-bark"))]
+    fn record_observation_response(
+        index: usize,
+        expected_id: FederationOperationId,
+        response: &FederationSubmitOperationResponse,
+        result: &mut ObservationBatchSubmitResult,
+    ) -> Result<(), cdk::Error> {
+        let entry = response.outcome.entry();
+        if entry.operation_id != expected_id {
+            return Err(FederationError::SubmitOperationResponseMismatch {
+                expected: expected_id,
+                found: entry.operation_id,
+            }
+            .into());
+        }
+        match entry.status() {
+            FederationOperationStatus::Applied => {
+                result.applied_indices.push(index);
+                if matches!(
+                    response.outcome,
+                    FederationJournalAppendOutcome::Appended(_)
+                ) {
+                    result.newly_submitted = result.newly_submitted.saturating_add(1);
+                }
+                Ok(())
+            }
+            FederationOperationStatus::Rejected => {
+                tracing::debug!(
+                    operation_id = %expected_id,
+                    "Federation observation finalized as rejected; skipping"
+                );
+                Ok(())
+            }
+            status => Err(FederationError::RejectedOperation {
+                operation_id: expected_id,
+                status,
+            }
+            .into()),
+        }
+    }
+
+    #[cfg(any(test, feature = "federation-bdk", feature = "federation-bark"))]
+    async fn submit_confirmed_mint_quote_payments(
+        &self,
+        state: &FederationNode,
+        quote_ids: &BTreeSet<QuoteId>,
+    ) -> Result<usize, cdk::Error> {
+        if quote_ids.is_empty() {
+            return Ok(0);
+        }
+        let Some(config) = state.mint.federation_config() else {
+            return Ok(0);
+        };
+        let mut envelopes = Vec::new();
+        for quote_id in quote_ids {
+            let Some(quote) = state.mint.localstore().get_mint_quote(quote_id).await? else {
+                continue;
+            };
+            if !quote.payment_method.is_onchain()
+                || matches!(quote.state(), MintQuoteState::Paid | MintQuoteState::Issued)
+            {
+                continue;
+            }
+            let observation = match state
+                .mint
+                .probe_federation_mint_quote_payment(quote_id)
+                .await
+            {
+                Ok(Some(observation)) => FederationPaymentObservation::MintQuote(observation),
+                Ok(None) => continue,
+                Err(error) => {
+                    tracing::debug!(
+                        quote = %quote_id,
+                        error = %error,
+                        "Federation on-chain mint quote probe failed after deposit batch; will retry"
+                    );
+                    continue;
+                }
+            };
+            if !payment_observation_needs_submission(state, &observation).await? {
+                continue;
+            }
+            if let FederationPaymentObservation::MintQuote(mint_observation) = observation {
+                envelopes.push(
+                    config.operation_envelope(FederationOperation::MintQuotePayment(
+                        mint_observation,
+                    )),
+                );
+            }
+        }
+        if envelopes.is_empty() {
+            return Ok(0);
+        }
+        let batch_result = self
+            .submit_observation_envelope_batch(state, envelopes)
+            .await?;
+        if batch_result.newly_submitted > 0 {
+            tracing::debug!(
+                submitted = batch_result.newly_submitted,
+                "Federation payment observer submitted batched on-chain mint quote payment observations"
+            );
+        }
+        Ok(batch_result.newly_submitted)
+    }
+
     #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
     pub async fn observe_onchain_wallets(
         &self,
@@ -215,7 +719,7 @@ impl FederationPaymentObserver {
         let allocations = state.mint.federation_address_allocation_state().await?;
         let canonical = state.mint.federation_chain_observation_state().await?;
         let observer = runtime.member_id();
-        let mut submitted = 0_usize;
+        let mut pending_observations = Vec::<PendingChainObservation>::new();
         let mut wallets = Vec::<(cdk_bitcoin_wallet::FederatedDescriptorWallet, bool)>::new();
 
         #[cfg(feature = "federation-bdk")]
@@ -382,15 +886,45 @@ impl FederationPaymentObserver {
                 }) {
                     continue;
                 }
+                let allocation_ref = FederationAllocatedAddressRef {
+                    application_id: scope.application_id,
+                    application_key_epoch: scope.application_key_epoch,
+                    quote: allocation.quote.clone(),
+                    keychain,
+                    derivation_index: allocation.derivation_index,
+                };
+                allocation_ref.validate_allocation(allocation)?;
+                let expected_script =
+                    expected_deposit_script(runtime, wallet_config, &allocation_ref)?;
+                if output.txout.script_pubkey != expected_script {
+                    tracing::warn!(
+                        quote = %allocation.quote,
+                        outpoint = %output.outpoint,
+                        "Skipping federation deposit observation whose script does not match accepted allocation"
+                    );
+                    continue;
+                }
+                let required_height = confirmation.map_or(0, |confirmation| {
+                    confirmation
+                        .block_height
+                        .saturating_add(confirmation.confirmation_depth.saturating_sub(1))
+                });
+                if wallet.ensure_ready(required_height).await.is_err() {
+                    continue;
+                }
+                let confirmed_external_mint_quote = match keychain {
+                    FederationAddressKeychain::External
+                        if confirmation.is_some_and(|value| {
+                            value.confirmation_depth >= minimum_confirmations
+                        }) =>
+                    {
+                        allocation.quote.parse::<QuoteId>().ok()
+                    }
+                    _ => None,
+                };
                 let observation =
                     FederationChainObservation::Deposit(FederationDepositObservation {
-                        allocation: FederationAllocatedAddressRef {
-                            application_id: scope.application_id,
-                            application_key_epoch: scope.application_key_epoch,
-                            quote: allocation.quote.clone(),
-                            keychain,
-                            derivation_index: allocation.derivation_index,
-                        },
+                        allocation: allocation_ref,
                         outpoint: output.outpoint,
                         txout: output.txout.clone(),
                         confirmation,
@@ -398,17 +932,16 @@ impl FederationPaymentObserver {
                         observer,
                         source: source.clone(),
                     });
-                state
-                    .submit_federation_chain_observation(observation)
-                    .await?;
-                tracing::debug!(
-                    quote = %allocation.quote,
-                    outpoint = %output.outpoint,
-                    confirmed = confirmation.is_some(),
+                let envelope = runtime.chain_observation_operation(observation)?;
+                pending_observations.push(PendingChainObservation {
+                    envelope,
+                    quote: allocation.quote.clone(),
+                    outpoint: output.outpoint,
+                    is_reorg: false,
+                    confirmed_external_mint_quote,
+                    confirmed: confirmation.is_some(),
                     observation_epoch,
-                    "Federation payment observer submitted deposit observation"
-                );
-                submitted = submitted.saturating_add(1);
+                });
             }
 
             for utxo in canonical.utxos().filter(|utxo| {
@@ -449,27 +982,73 @@ impl FederationPaymentObserver {
                 if !reorg_disconnection_is_proven(still_confirmed_in_block, membership) {
                     continue;
                 }
-                state
-                    .submit_federation_chain_observation(FederationChainObservation::Reorg(
-                        FederationDepositReorgObservation {
-                            outpoint: utxo.outpoint,
-                            disconnected_block_hash: block_hash,
-                            disconnected_block_height: block_height,
-                            observation_epoch: utxo.observation_epoch,
-                            observer,
-                            source: source.clone(),
-                        },
-                    ))
-                    .await?;
-                tracing::debug!(
-                    quote = %utxo.allocation.quote,
-                    outpoint = %utxo.outpoint,
-                    "Federation payment observer submitted deposit reorg observation"
-                );
-                submitted = submitted.saturating_add(1);
+                let observation =
+                    FederationChainObservation::Reorg(FederationDepositReorgObservation {
+                        outpoint: utxo.outpoint,
+                        disconnected_block_hash: block_hash,
+                        disconnected_block_height: block_height,
+                        observation_epoch: utxo.observation_epoch,
+                        observer,
+                        source: source.clone(),
+                    });
+                let envelope = runtime.chain_observation_operation(observation)?;
+                pending_observations.push(PendingChainObservation {
+                    envelope,
+                    quote: utxo.allocation.quote.clone(),
+                    outpoint: utxo.outpoint,
+                    is_reorg: true,
+                    confirmed_external_mint_quote: None,
+                    confirmed: false,
+                    observation_epoch: utxo.observation_epoch,
+                });
             }
         }
-        Ok(submitted)
+
+        if pending_observations.is_empty() {
+            return Ok(0);
+        }
+
+        let envelopes = pending_observations
+            .iter()
+            .map(|pending| pending.envelope.clone())
+            .collect::<Vec<_>>();
+        let batch_result = self
+            .submit_observation_envelope_batch(state, envelopes)
+            .await?;
+
+        let mut confirmed_mint_quotes = BTreeSet::new();
+        for index in &batch_result.applied_indices {
+            if let Some(pending) = pending_observations.get(*index) {
+                if pending.is_reorg {
+                    tracing::debug!(
+                        quote = %pending.quote,
+                        outpoint = %pending.outpoint,
+                        "Federation payment observer submitted deposit reorg observation"
+                    );
+                } else {
+                    tracing::debug!(
+                        quote = %pending.quote,
+                        outpoint = %pending.outpoint,
+                        confirmed = pending.confirmed,
+                        observation_epoch = pending.observation_epoch,
+                        "Federation payment observer submitted deposit observation"
+                    );
+                    if let Some(quote_id) = &pending.confirmed_external_mint_quote {
+                        confirmed_mint_quotes.insert(quote_id.clone());
+                    }
+                }
+            }
+        }
+
+        let payment_submitted = self
+            .submit_confirmed_mint_quote_payments(state, &confirmed_mint_quotes)
+            .await?;
+
+        if batch_result.newly_submitted > 0 {
+            Ok(batch_result.newly_submitted)
+        } else {
+            Ok(payment_submitted)
+        }
     }
 
     #[cfg(not(any(feature = "federation-bdk", feature = "federation-bark")))]
@@ -1226,6 +1805,19 @@ impl FederationPaymentObserver {
     }
 
     pub fn notify_accepted_operation(&self, entry: &cdk::federation::FederationJournalEntry) {
+        if entry.status() == FederationOperationStatus::Applied
+            && matches!(
+                entry.envelope.operation,
+                FederationOperation::AddressAllocation(_)
+                    | FederationOperation::MintQuote(_)
+                    | FederationOperation::ChainObservation(_)
+                    | FederationOperation::TransactionProposal(_)
+                    | FederationOperation::TransactionSigned(_)
+                    | FederationOperation::TransactionBroadcastIntent(_)
+            )
+        {
+            self.onchain_activity_wake.notify_one();
+        }
         for quote in payment_wakes_for_entry(entry) {
             let _ = self
                 .accepted_operation_wakes
@@ -1258,8 +1850,7 @@ impl FederationPaymentObserver {
         tasks.spawn("payment observer", true, async move {
             let mut repair_interval = tokio::time::interval(FEDERATION_PAYMENT_REPAIR_INTERVAL);
             repair_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            let mut onchain_interval = tokio::time::interval(FEDERATION_ONCHAIN_OBSERVER_INTERVAL);
-            onchain_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut next_onchain_at = tokio::time::Instant::now();
             let mut failure_backoff = FederationPaymentWorkerFailureBackoff::default();
 
             loop {
@@ -1301,8 +1892,28 @@ impl FederationPaymentObserver {
                             (Ok(0), false)
                         }
                         _ = repair_interval.tick() => (self.run_round(&state).await, false),
-                        _ = onchain_interval.tick() => {
-                            (self.observe_onchain_wallets(&state).await, false)
+                        _ = tokio::time::sleep_until(next_onchain_at) => {
+                            let observe_result = self.observe_onchain_wallets(&state).await;
+                            let delay = match self.next_onchain_observer_interval(&state).await {
+                                Ok(delay) => delay,
+                                Err(error) => {
+                                    tracing::warn!(
+                                        error = %error,
+                                        "Could not inspect federation on-chain activity; using idle interval"
+                                    );
+                                    self.onchain_idle_interval
+                                }
+                            };
+                            next_onchain_at = tokio::time::Instant::now() + delay;
+                            (observe_result, false)
+                        }
+                        _ = self.onchain_activity_wake.notified() => {
+                            let active_deadline =
+                                tokio::time::Instant::now() + self.onchain_active_interval;
+                            if active_deadline < next_onchain_at {
+                                next_onchain_at = active_deadline;
+                            }
+                            (Ok(0), false)
                         }
                         changed = schedule_changes.changed() => {
                             (changed.map(|_| 0).map_err(|_| cdk::Error::Internal), false)
@@ -1476,9 +2087,9 @@ fn payment_wakes_for_entry(
     }
 }
 
-async fn submit_observation(
+async fn payment_observation_needs_submission(
     state: &FederationNode,
-    candidate: FederationPaymentObservation,
+    candidate: &FederationPaymentObservation,
 ) -> Result<bool, cdk::Error> {
     let Some(config) = state.mint.federation_config() else {
         return Ok(false);
@@ -1520,6 +2131,20 @@ async fn submit_observation(
         if policy.evaluate_quorum(&quorum).is_ok() {
             return Ok(false);
         }
+    }
+
+    Ok(true)
+}
+
+async fn submit_observation(
+    state: &FederationNode,
+    candidate: FederationPaymentObservation,
+) -> Result<bool, cdk::Error> {
+    let Some(config) = state.mint.federation_config() else {
+        return Ok(false);
+    };
+    if !payment_observation_needs_submission(state, &candidate).await? {
+        return Ok(false);
     }
 
     let operation = match candidate {
@@ -2014,5 +2639,960 @@ mod tests {
             vec![FederationPaymentQuote::mint(quote)]
         );
         assert!(!payment_wakes_for_entry(&entry).contains(&FederationPaymentQuote::mint(other)));
+    }
+
+    #[test]
+    fn onchain_observer_intervals_default_and_clamp() {
+        let default_observer = FederationPaymentObserver::default();
+        assert_eq!(
+            default_observer.onchain_active_interval(),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            default_observer.onchain_idle_interval(),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            default_observer.onchain_max_batch_items,
+            FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS
+        );
+
+        let custom = FederationPaymentObserver::default()
+            .with_onchain_intervals(Duration::from_millis(250), Duration::from_secs(3))
+            .with_onchain_max_batch_items(8);
+        assert_eq!(custom.onchain_active_interval(), Duration::from_millis(250));
+        assert_eq!(custom.onchain_idle_interval(), Duration::from_secs(3));
+        assert_eq!(custom.onchain_max_batch_items, 8);
+
+        let clamped_zero = FederationPaymentObserver::default()
+            .with_onchain_intervals(Duration::ZERO, Duration::ZERO)
+            .with_onchain_max_batch_items(0);
+        assert_eq!(
+            clamped_zero.onchain_active_interval(),
+            Duration::from_millis(1)
+        );
+        assert_eq!(
+            clamped_zero.onchain_idle_interval(),
+            Duration::from_millis(1)
+        );
+        assert_eq!(clamped_zero.onchain_max_batch_items, 1);
+
+        let clamped_inverted = FederationPaymentObserver::default()
+            .with_onchain_intervals(Duration::from_secs(4), Duration::from_secs(2))
+            .with_onchain_max_batch_items(FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS + 100);
+        assert_eq!(
+            clamped_inverted.onchain_active_interval(),
+            Duration::from_secs(4)
+        );
+        assert_eq!(
+            clamped_inverted.onchain_idle_interval(),
+            Duration::from_secs(4)
+        );
+        assert_eq!(
+            clamped_inverted.onchain_max_batch_items,
+            FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS
+        );
+    }
+
+    const TEST_APP_KEY_EPOCH: u64 = 3;
+
+    async fn local_onchain_test_node() -> (
+        FederationNode,
+        cdk::mint::FederationRuntimeConfig,
+        cdk::federation::FederationFrostApplicationId,
+    ) {
+        use std::collections::{HashMap, HashSet};
+
+        use cdk::federation::{
+            generate_trusted_dealer_configs, FederationConsensusRecoveryBase,
+            FederationConsensusRuntime, FederationDkgCeremonyId, FederationFrostApplicationConfig,
+            FederationFrostRootPublicConfig, FederationFrostWalletConfig,
+            FederationOnchainConfirmationPolicy, FederationPaymentObservationPolicy,
+            FederationRestSequenceTracker, FederationSuffixVerifier, ThresholdParams,
+            TrustedDealerKeysetSpec, TrustedDealerMember,
+        };
+        use cdk::mint::{FederationRuntimeConfig, MintBuilder, MintMeltLimits};
+        use cdk_common::common::FeeReserve;
+        use cdk_common::mint_url::MintUrl;
+        use cdk_common::nuts::nut00::KnownMethod;
+        use cdk_common::nuts::nut01::BlsSecretKey;
+        use cdk_common::{CurrencyUnit, SecretKey};
+
+        let members = (1..=2)
+            .map(|id| {
+                TrustedDealerMember::new(
+                    MemberId::new(id).expect("member id"),
+                    MintUrl::from_str(&format!("https://mint{id}.example.com"))
+                        .expect("public mint url"),
+                    MintUrl::from_str(&format!("https://fed{id}.example.com"))
+                        .expect("federation api url"),
+                    SecretKey::from_slice(&[id as u8; 32]).expect("identity secret"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let keyset = TrustedDealerKeysetSpec::new(
+            CurrencyUnit::Sat,
+            true,
+            0,
+            None,
+            BTreeMap::from([(
+                Amount::from(1),
+                vec![
+                    BlsSecretKey::from_reduced_bytes(&[2; 32]),
+                    BlsSecretKey::from_reduced_bytes(&[3; 32]),
+                ],
+            )]),
+        );
+        let mut bundle = generate_trusted_dealer_configs(
+            ThresholdParams::with_bft_consensus(2, 2).expect("params"),
+            members,
+            vec![keyset],
+        )
+        .expect("trusted dealer bundle");
+        bundle.public_config.payment_observation_policy =
+            FederationPaymentObservationPolicy::development_single_observation_for_testing();
+
+        let verification_share = [
+            2, 121, 190, 102, 126, 249, 220, 187, 172, 85, 160, 98, 149, 206, 135, 11, 7, 2, 155,
+            252, 219, 45, 206, 40, 217, 89, 242, 129, 91, 22, 248, 23, 152,
+        ];
+        let participant_mapping = bundle
+            .public_config
+            .members
+            .keys()
+            .map(|member| (*member, member.get()))
+            .collect::<BTreeMap<_, _>>();
+        let verification_shares = bundle
+            .public_config
+            .members
+            .keys()
+            .map(|member| (*member, verification_share))
+            .collect::<BTreeMap<_, _>>();
+        let mut canonical_public_package = b"CDKFRT01".to_vec();
+        canonical_public_package.extend_from_slice(&1_u64.to_be_bytes());
+        canonical_public_package.extend_from_slice(&1_u16.to_be_bytes());
+        canonical_public_package.extend_from_slice(&1_u16.to_be_bytes());
+        canonical_public_package.extend_from_slice(
+            &bundle
+                .public_config
+                .threshold_params
+                .signature_threshold
+                .to_be_bytes(),
+        );
+        canonical_public_package.extend_from_slice(
+            &u16::try_from(verification_shares.len())
+                .expect("test FROST roster fits u16")
+                .to_be_bytes(),
+        );
+        for (member, share) in &verification_shares {
+            canonical_public_package.extend_from_slice(&member.get().to_be_bytes());
+            canonical_public_package.extend_from_slice(share);
+        }
+        canonical_public_package.extend_from_slice(&verification_share);
+        canonical_public_package.extend_from_slice(&[5; 32]);
+
+        let root = FederationFrostRootPublicConfig {
+            version: 2,
+            federation_id: bundle.public_config.federation_id,
+            setup_authorization: bundle.public_config.setup_authorization,
+            ceremony_id: FederationDkgCeremonyId::from_bytes([6; 32]),
+            root_key_epoch: 1,
+            dkg_protocol_version: 1,
+            ciphersuite_version: 1,
+            threshold: bundle.public_config.threshold_params.signature_threshold,
+            participant_mapping,
+            verification_shares,
+            untweaked_group_key: verification_share,
+            transcript_binding: [5; 32],
+            canonical_public_package,
+        };
+        let application = FederationFrostApplicationConfig::new_cdk_onchain(
+            &bundle.public_config,
+            &root,
+            TEST_APP_KEY_EPOCH,
+            cdk_common::bitcoin::Network::Regtest,
+            FederationOnchainConfirmationPolicy::new(2).expect("confirmation policy"),
+            1,
+        )
+        .expect("valid test CDK on-chain application");
+        let application_id = application.application_id;
+        bundle.public_config.frost_wallet = Some(
+            FederationFrostWalletConfig::new(
+                &bundle.public_config,
+                root,
+                Some(application),
+                BTreeMap::new(),
+            )
+            .expect("valid test FROST wallet"),
+        );
+
+        let private_config = bundle
+            .private_configs
+            .get(&MemberId::new(1).expect("member 1"))
+            .expect("member 1 private config")
+            .clone();
+        let runtime_config =
+            FederationRuntimeConfig::new(bundle.public_config, private_config).expect("runtime");
+
+        let localstore = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("sqlite database"),
+        );
+        let fake_wallet = cdk_fake_wallet::FakeWallet::new(
+            FeeReserve {
+                min_fee_reserve: Amount::from(1),
+                percent_fee_reserve: 1.0,
+            },
+            HashMap::new(),
+            HashSet::new(),
+            0,
+            CurrencyUnit::Sat,
+        );
+        let mut builder =
+            MintBuilder::new(localstore.clone()).with_federation_config(runtime_config.clone());
+        builder
+            .add_payment_processor(
+                CurrencyUnit::Sat,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                MintMeltLimits::new(1, 10_000),
+                Arc::new(fake_wallet),
+            )
+            .await
+            .expect("payment processor");
+        let mint = Arc::new(
+            builder
+                .build_with_seed(localstore, &[9; 64])
+                .await
+                .expect("mint"),
+        );
+
+        let frontier = mint
+            .localstore()
+            .get_federation_checkpoint_frontier()
+            .await
+            .expect("checkpoint frontier");
+        let verifier = FederationSuffixVerifier::new_for_validated_config(
+            runtime_config.public_config(),
+            runtime_config.member_id(),
+            0,
+            FederationConsensusRecoveryBase::Genesis,
+        )
+        .expect("suffix verifier");
+        let consensus = FederationConsensusRuntime::recover_verified_suffix(
+            verifier
+                .finish_for_durable_frontier(&frontier)
+                .expect("verified empty suffix"),
+        );
+        let member = crate::FederationMemberContext::new(
+            Arc::clone(&mint),
+            Arc::new(tokio::sync::Mutex::new(consensus)),
+            Arc::new(tokio::sync::Mutex::new(
+                FederationRestSequenceTracker::default(),
+            )),
+            crate::FederationPeerSyncConfig::default(),
+        );
+        let mut node = FederationNode {
+            mint,
+            federation: crate::FederationNodeRuntime::new(
+                crate::default_federation_transport(),
+                crate::FederationMembership::configured(member),
+                #[cfg(feature = "federation-bdk")]
+                None,
+                crate::runtime_components::FederationRuntimeComponents::new(
+                    Some(Arc::new(tokio::sync::Mutex::new(
+                        crate::FederationSyncState::default(),
+                    ))),
+                    None,
+                    None,
+                    #[cfg(feature = "federation-bdk")]
+                    Vec::new(),
+                    None,
+                    #[cfg(feature = "federation-bark")]
+                    None,
+                ),
+            ),
+        };
+        node.federation.finality = crate::FederationFinalityMode::Local;
+        (node, runtime_config, application_id)
+    }
+
+    async fn allocate_and_create_onchain_mint_quote(
+        node: &FederationNode,
+        runtime: &cdk::mint::FederationRuntimeConfig,
+        application_id: cdk::federation::FederationFrostApplicationId,
+        key_seed: u8,
+    ) -> (QuoteId, cdk::federation::FederationAddressAllocation) {
+        use cdk::federation::{
+            FederationAddressAllocationScope, FederationAddressKeychain,
+            FederationMintQuoteOperation,
+        };
+        use cdk_common::nuts::nut00::KnownMethod;
+        use cdk_common::nuts::nut30::{MintQuoteOnchainRequest, MintQuoteOnchainResponse};
+        use cdk_common::payment::PaymentIdentifier;
+        use cdk_common::{CurrencyUnit, MintQuoteRequest, MintQuoteResponse, SecretKey};
+
+        let quote_id = QuoteId::new();
+        let alloc_envelope = runtime
+            .address_allocation_operation(
+                quote_id.to_string(),
+                application_id,
+                TEST_APP_KEY_EPOCH,
+                FederationAddressKeychain::External,
+            )
+            .expect("allocation envelope");
+        node.submit_federation_envelope(alloc_envelope)
+            .await
+            .expect("submit address allocation");
+        let scope = FederationAddressAllocationScope {
+            application_id,
+            application_key_epoch: TEST_APP_KEY_EPOCH,
+        };
+        let allocation = node
+            .mint
+            .federation_address_allocation(scope, &quote_id.to_string())
+            .await
+            .expect("allocation lookup")
+            .expect("accepted allocation");
+        let wallet_config = runtime
+            .public_config()
+            .frost_wallet
+            .as_ref()
+            .expect("wallet config");
+        let script = wallet_config
+            .derive_cdk_onchain_script(
+                runtime.public_config(),
+                application_id,
+                TEST_APP_KEY_EPOCH,
+                allocation.keychain,
+                allocation.derivation_index,
+            )
+            .expect("derived script");
+        let address = cdk_common::bitcoin::Address::from_script(
+            script.as_script(),
+            cdk_common::bitcoin::Network::Regtest,
+        )
+        .expect("address")
+        .to_string();
+        let wallet_key = SecretKey::from_slice(&[key_seed; 32]).expect("wallet key");
+        let quote_envelope = runtime.operation_envelope(FederationOperation::MintQuote(
+            FederationMintQuoteOperation {
+                quote: quote_id.to_string(),
+                request_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
+                request: MintQuoteRequest::Onchain(MintQuoteOnchainRequest {
+                    unit: CurrencyUnit::Sat,
+                    pubkey: wallet_key.public_key(),
+                }),
+                response: MintQuoteResponse::Onchain(MintQuoteOnchainResponse {
+                    quote: quote_id.to_string(),
+                    request: address,
+                    unit: CurrencyUnit::Sat,
+                    method: PaymentMethod::Known(KnownMethod::Onchain),
+                    expiry: None,
+                    pubkey: wallet_key.public_key(),
+                    amount_paid: Amount::ZERO,
+                    amount_issued: Amount::ZERO,
+                    updated_at: 0,
+                }),
+            },
+        ));
+        node.submit_federation_envelope(quote_envelope)
+            .await
+            .expect("submit mint quote");
+        (quote_id, allocation)
+    }
+
+    fn deposit_envelope_for_allocation(
+        runtime: &cdk::mint::FederationRuntimeConfig,
+        application_id: cdk::federation::FederationFrostApplicationId,
+        allocation: &cdk::federation::FederationAddressAllocation,
+        tx_seed: u8,
+        vout: u32,
+        amount_sat: u64,
+        confirmation: Option<cdk::federation::FederationDepositConfirmation>,
+    ) -> (FederationOperationEnvelope, cdk_common::bitcoin::OutPoint) {
+        use cdk::federation::{
+            FederationAllocatedAddressRef, FederationChainSourceDescriptor,
+            FederationChainSourceScope, FederationDepositObservation,
+        };
+        use cdk_common::bitcoin::hashes::Hash as _;
+        use cdk_common::bitcoin::{Amount as BitcoinAmount, OutPoint, TxOut, Txid};
+
+        let wallet_config = runtime
+            .public_config()
+            .frost_wallet
+            .as_ref()
+            .expect("wallet config");
+        let script = wallet_config
+            .derive_cdk_onchain_script(
+                runtime.public_config(),
+                application_id,
+                TEST_APP_KEY_EPOCH,
+                allocation.keychain,
+                allocation.derivation_index,
+            )
+            .expect("derived script");
+        let outpoint = OutPoint::new(Txid::from_byte_array([tx_seed; 32]), vout);
+        let observation = FederationChainObservation::Deposit(FederationDepositObservation {
+            allocation: FederationAllocatedAddressRef {
+                application_id,
+                application_key_epoch: TEST_APP_KEY_EPOCH,
+                quote: allocation.quote.clone(),
+                keychain: allocation.keychain,
+                derivation_index: allocation.derivation_index,
+            },
+            outpoint,
+            txout: TxOut {
+                value: BitcoinAmount::from_sat(amount_sat),
+                script_pubkey: script,
+            },
+            confirmation,
+            observation_epoch: 0,
+            observer: runtime.member_id(),
+            source: FederationChainSourceDescriptor::new(
+                FederationChainSourceScope::Independent,
+                "test-regtest-source",
+            )
+            .expect("source"),
+        });
+        let envelope = runtime
+            .chain_observation_operation(observation)
+            .expect("chain observation envelope");
+        (envelope, outpoint)
+    }
+
+    #[tokio::test]
+    async fn chunk_operation_envelopes_enforces_item_limit_byte_limit_dedup_and_conflicts() {
+        use cdk::federation::FederationDepositConfirmation;
+        use cdk_common::bitcoin::hashes::Hash as _;
+        use cdk_common::bitcoin::BlockHash;
+
+        let (node, runtime, application_id) = local_onchain_test_node().await;
+        let mut envelopes = Vec::new();
+        let mut first_allocation = None;
+        for index in 0..5_u8 {
+            let (_quote_id, allocation) =
+                allocate_and_create_onchain_mint_quote(&node, &runtime, application_id, 20 + index)
+                    .await;
+            if first_allocation.is_none() {
+                first_allocation = Some(allocation.clone());
+            }
+            let (envelope, _) = deposit_envelope_for_allocation(
+                &runtime,
+                application_id,
+                &allocation,
+                40 + index,
+                0,
+                10_000,
+                Some(FederationDepositConfirmation {
+                    block_hash: BlockHash::from_byte_array([77; 32]),
+                    block_height: 100,
+                    confirmation_depth: 2,
+                }),
+            );
+            envelopes.push(envelope);
+        }
+
+        // Item count cap splits 5 items with cap 2 into [2, 2, 1] preserving original indices.
+        let by_items = chunk_operation_envelopes(
+            envelopes.clone(),
+            2,
+            FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES,
+        )
+        .expect("chunk by item cap");
+        assert_eq!(
+            by_items
+                .iter()
+                .map(|chunk| chunk.iter().map(|item| item.index).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            vec![vec![0, 1], vec![2, 3], vec![4]]
+        );
+
+        // Byte cap splits chunks when adding the next item would exceed max_body_bytes.
+        let single_bytes = FederationConsensusItem::operation(envelopes[0].clone())
+            .canonical_size()
+            .expect("canonical size");
+        let by_bytes = chunk_operation_envelopes(
+            envelopes.clone(),
+            FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS,
+            single_bytes.saturating_mul(2).saturating_add(16),
+        )
+        .expect("chunk by byte cap");
+        assert!(by_bytes.len() >= 3);
+        assert!(by_bytes.iter().all(|chunk| chunk.len() <= 2));
+
+        // Exact duplicates by operation_id are deduplicated across chunks.
+        let deduped = chunk_operation_envelopes(
+            vec![
+                envelopes[0].clone(),
+                envelopes[0].clone(),
+                envelopes[1].clone(),
+            ],
+            10,
+            FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES,
+        )
+        .expect("dedup chunks");
+        assert_eq!(deduped.len(), 1);
+        assert_eq!(deduped[0].len(), 2);
+
+        // Distinct envelopes sharing a conflict key (same outpoint/observer/epoch/depth,
+        // differing block hash) are placed in separate chunks so one group never carries
+        // internal conflicts.
+        let (conflicting_anchor, _) = deposit_envelope_for_allocation(
+            &runtime,
+            application_id,
+            first_allocation.as_ref().expect("first allocation"),
+            40,
+            0,
+            10_000,
+            Some(FederationDepositConfirmation {
+                block_hash: BlockHash::from_byte_array([78; 32]),
+                block_height: 100,
+                confirmation_depth: 2,
+            }),
+        );
+        let split_conflicts = chunk_operation_envelopes(
+            vec![envelopes[0].clone(), conflicting_anchor],
+            10,
+            FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES,
+        )
+        .expect("conflict split");
+        assert_eq!(split_conflicts.len(), 2);
+        assert_eq!(split_conflicts[0].len(), 1);
+        assert_eq!(split_conflicts[1].len(), 1);
+    }
+
+    #[tokio::test]
+    async fn batched_chain_observations_finalize_in_one_unit_and_pay_quotes() {
+        use cdk::federation::FederationDepositConfirmation;
+        use cdk_common::bitcoin::hashes::Hash as _;
+        use cdk_common::bitcoin::BlockHash;
+        use cdk_common::database::mint::FederationJournalEntryKey;
+
+        let (node, runtime, application_id) = local_onchain_test_node().await;
+        let observer = FederationPaymentObserver::default();
+        let confirmation = Some(FederationDepositConfirmation {
+            block_hash: BlockHash::from_byte_array([88; 32]),
+            block_height: 150,
+            confirmation_depth: 2,
+        });
+
+        let mut quote_ids = BTreeSet::new();
+        let mut envelopes = Vec::new();
+        let mut outpoints = Vec::new();
+        for index in 0..3_u8 {
+            let (quote_id, allocation) =
+                allocate_and_create_onchain_mint_quote(&node, &runtime, application_id, 30 + index)
+                    .await;
+            let (envelope, outpoint) = deposit_envelope_for_allocation(
+                &runtime,
+                application_id,
+                &allocation,
+                50 + index,
+                u32::from(index),
+                15_000,
+                confirmation,
+            );
+            quote_ids.insert(quote_id);
+            envelopes.push(envelope);
+            outpoints.push(outpoint);
+        }
+
+        let op_ids = envelopes
+            .iter()
+            .map(|envelope| envelope.operation_id().expect("op id"))
+            .collect::<Vec<_>>();
+        let batch_result = observer
+            .submit_observation_envelope_batch(&node, envelopes)
+            .await
+            .expect("batched chain observation submit");
+        assert_eq!(batch_result.newly_submitted, 3);
+        assert_eq!(batch_result.applied_indices, vec![0, 1, 2]);
+
+        // All 3 UTXO observations landed in one single AlephBFT unit consecutively.
+        let mut unit_indices = BTreeSet::new();
+        let mut item_indices = Vec::new();
+        for op_id in &op_ids {
+            let entry = node
+                .mint
+                .localstore()
+                .get_federation_journal_entry(FederationJournalEntryKey::Operation(*op_id), None)
+                .await
+                .expect("journal lookup")
+                .expect("persisted entry");
+            assert_eq!(entry.status(), FederationOperationStatus::Applied);
+            let evidence = entry.consensus_evidence.expect("consensus evidence");
+            unit_indices.insert(evidence.unit_index);
+            item_indices.push(evidence.item_index);
+        }
+        assert_eq!(
+            unit_indices.len(),
+            1,
+            "all 3 deposit observations must share one consensus unit"
+        );
+        let first_item_index = item_indices[0];
+        assert_eq!(
+            item_indices,
+            vec![first_item_index, first_item_index + 1, first_item_index + 2]
+        );
+
+        let chain_state = node
+            .mint
+            .federation_chain_observation_state()
+            .await
+            .expect("chain state");
+        for outpoint in &outpoints {
+            assert_eq!(
+                chain_state.utxo(*outpoint).expect("utxo").state,
+                FederationWalletUtxoState::Spendable
+            );
+        }
+
+        // Same-pass MintQuotePayment batching marks all 3 quotes Paid immediately in one unit.
+        let payment_submitted = observer
+            .submit_confirmed_mint_quote_payments(&node, &quote_ids)
+            .await
+            .expect("same-pass mint quote payments");
+        assert_eq!(payment_submitted, 3);
+
+        let mut payment_unit_indices = BTreeSet::new();
+        for quote_id in &quote_ids {
+            let quote = node
+                .mint
+                .localstore()
+                .get_mint_quote(quote_id)
+                .await
+                .expect("quote lookup")
+                .expect("quote");
+            assert_eq!(quote.state(), MintQuoteState::Paid);
+            assert_eq!(quote.amount_paid().value(), 15_000);
+            let records = node
+                .mint
+                .localstore()
+                .get_federation_payment_observations(FederationPaymentObservationSelection::Live {
+                    context: cdk::federation::FederationPaymentObservationContext::MintQuote,
+                    quote: &quote_id.to_string(),
+                })
+                .await
+                .expect("payment observations");
+            assert_eq!(records.len(), 1);
+            let entry = node
+                .mint
+                .localstore()
+                .get_federation_journal_entry(
+                    FederationJournalEntryKey::Operation(records[0].record.operation_id),
+                    None,
+                )
+                .await
+                .expect("payment journal lookup")
+                .expect("payment entry");
+            payment_unit_indices.insert(entry.consensus_evidence.expect("evidence").unit_index);
+        }
+        assert_eq!(
+            payment_unit_indices.len(),
+            1,
+            "all 3 same-pass MintQuotePayment observations must share one consensus unit"
+        );
+    }
+
+    #[tokio::test]
+    async fn batched_chain_observations_chunk_when_exceeding_group_cap() {
+        use cdk::federation::FederationDepositConfirmation;
+        use cdk_common::bitcoin::hashes::Hash as _;
+        use cdk_common::bitcoin::BlockHash;
+        use cdk_common::database::mint::FederationJournalEntryKey;
+
+        let (node, runtime, application_id) = local_onchain_test_node().await;
+        let observer = FederationPaymentObserver::default().with_onchain_max_batch_items(2);
+        let confirmation = Some(FederationDepositConfirmation {
+            block_hash: BlockHash::from_byte_array([91; 32]),
+            block_height: 160,
+            confirmation_depth: 2,
+        });
+
+        let mut envelopes = Vec::new();
+        let mut outpoints = Vec::new();
+        for index in 0..5_u8 {
+            let (_quote_id, allocation) =
+                allocate_and_create_onchain_mint_quote(&node, &runtime, application_id, 60 + index)
+                    .await;
+            let (envelope, outpoint) = deposit_envelope_for_allocation(
+                &runtime,
+                application_id,
+                &allocation,
+                70 + index,
+                0,
+                12_000,
+                confirmation,
+            );
+            envelopes.push(envelope);
+            outpoints.push(outpoint);
+        }
+        let op_ids = envelopes
+            .iter()
+            .map(|envelope| envelope.operation_id().expect("op id"))
+            .collect::<Vec<_>>();
+
+        let batch_result = observer
+            .submit_observation_envelope_batch(&node, envelopes)
+            .await
+            .expect("chunked submit");
+        assert_eq!(batch_result.newly_submitted, 5);
+        assert_eq!(batch_result.applied_indices, vec![0, 1, 2, 3, 4]);
+
+        let mut counts_by_unit = BTreeMap::<u64, usize>::new();
+        for op_id in &op_ids {
+            let entry = node
+                .mint
+                .localstore()
+                .get_federation_journal_entry(FederationJournalEntryKey::Operation(*op_id), None)
+                .await
+                .expect("journal lookup")
+                .expect("entry");
+            let unit_index = entry.consensus_evidence.expect("evidence").unit_index;
+            *counts_by_unit.entry(unit_index).or_default() += 1;
+        }
+        assert_eq!(
+            counts_by_unit.into_values().collect::<Vec<_>>(),
+            vec![2, 2, 1]
+        );
+
+        let chain_state = node
+            .mint
+            .federation_chain_observation_state()
+            .await
+            .expect("chain state");
+        for outpoint in &outpoints {
+            assert!(chain_state.utxo(*outpoint).is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn batched_chain_observations_fall_back_on_partial_conflict() {
+        use cdk::federation::FederationDepositConfirmation;
+        use cdk_common::bitcoin::hashes::Hash as _;
+        use cdk_common::bitcoin::BlockHash;
+
+        let (node, runtime, application_id) = local_onchain_test_node().await;
+        let observer = FederationPaymentObserver::default();
+        let confirmation = Some(FederationDepositConfirmation {
+            block_hash: BlockHash::from_byte_array([95; 32]),
+            block_height: 170,
+            confirmation_depth: 2,
+        });
+
+        let mut envelopes = Vec::new();
+        let mut outpoints = Vec::new();
+        for index in 0..3_u8 {
+            let (_quote_id, allocation) =
+                allocate_and_create_onchain_mint_quote(&node, &runtime, application_id, 80 + index)
+                    .await;
+            let (envelope, outpoint) = deposit_envelope_for_allocation(
+                &runtime,
+                application_id,
+                &allocation,
+                90 + index,
+                0,
+                20_000,
+                confirmation,
+            );
+            envelopes.push(envelope);
+            outpoints.push(outpoint);
+        }
+
+        // Pre-submit observation 0 so the 3-item group is partially present in the journal
+        // and `submit_envelope_group` rejects with OrderedGroupInvalid.
+        node.submit_federation_envelope(envelopes[0].clone())
+            .await
+            .expect("pre-submit first observation");
+
+        let batch_result = observer
+            .submit_observation_envelope_batch(&node, envelopes)
+            .await
+            .expect("fallback should preserve valid UTXOs");
+        assert_eq!(batch_result.newly_submitted, 2);
+        assert_eq!(batch_result.applied_indices, vec![0, 1, 2]);
+
+        let chain_state = node
+            .mint
+            .federation_chain_observation_state()
+            .await
+            .expect("chain state");
+        for outpoint in &outpoints {
+            assert_eq!(
+                chain_state.utxo(*outpoint).expect("utxo").state,
+                FederationWalletUtxoState::Spendable
+            );
+        }
+
+        // A deterministically rejected observation (wrong script) in a batch must
+        // never drop a valid neighbor observation.
+        let (_bad_quote, bad_alloc) =
+            allocate_and_create_onchain_mint_quote(&node, &runtime, application_id, 100).await;
+        let (_good_quote, good_alloc) =
+            allocate_and_create_onchain_mint_quote(&node, &runtime, application_id, 101).await;
+        let (mut bad_envelope, bad_outpoint) = deposit_envelope_for_allocation(
+            &runtime,
+            application_id,
+            &bad_alloc,
+            110,
+            0,
+            5_000,
+            confirmation,
+        );
+        if let FederationOperation::ChainObservation(FederationChainObservation::Deposit(
+            ref mut deposit,
+        )) = bad_envelope.operation
+        {
+            deposit.txout.script_pubkey = cdk_common::bitcoin::ScriptBuf::from_bytes(vec![0x51]);
+            bad_envelope = runtime
+                .chain_observation_operation(FederationChainObservation::Deposit(deposit.clone()))
+                .expect("re-signed invalid deposit");
+        }
+        let (good_envelope, good_outpoint) = deposit_envelope_for_allocation(
+            &runtime,
+            application_id,
+            &good_alloc,
+            111,
+            0,
+            5_000,
+            confirmation,
+        );
+        let mixed_result = observer
+            .submit_observation_envelope_batch(&node, vec![bad_envelope, good_envelope])
+            .await
+            .expect("mixed batch should land valid observation");
+        assert_eq!(mixed_result.newly_submitted, 1);
+        assert_eq!(mixed_result.applied_indices, vec![1]);
+
+        let updated_state = node
+            .mint
+            .federation_chain_observation_state()
+            .await
+            .expect("updated chain state");
+        assert!(updated_state.utxo(bad_outpoint).is_none());
+        assert_eq!(
+            updated_state.utxo(good_outpoint).expect("good utxo").state,
+            FederationWalletUtxoState::Spendable
+        );
+    }
+
+    #[tokio::test]
+    async fn adaptive_onchain_polling_switches_between_active_and_idle_intervals() {
+        use cdk::federation::FederationDepositConfirmation;
+        use cdk_common::bitcoin::hashes::Hash as _;
+        use cdk_common::bitcoin::BlockHash;
+
+        let (node, runtime, application_id) = local_onchain_test_node().await;
+        let active = Duration::from_millis(200);
+        let idle = Duration::from_secs(5);
+        let observer = FederationPaymentObserver::default().with_onchain_intervals(active, idle);
+
+        // Idle when there are no unpaid on-chain quotes, unconfirmed UTXOs, or pending txs.
+        assert!(!FederationPaymentObserver::has_active_onchain_work(&node)
+            .await
+            .expect("idle check"));
+        assert_eq!(
+            observer
+                .next_onchain_observer_interval(&node)
+                .await
+                .expect("idle interval"),
+            idle
+        );
+
+        // Unpaid on-chain mint quote switches to the faster active interval.
+        let (quote_id, allocation) =
+            allocate_and_create_onchain_mint_quote(&node, &runtime, application_id, 120).await;
+        assert!(FederationPaymentObserver::has_active_onchain_work(&node)
+            .await
+            .expect("active quote check"));
+        assert_eq!(
+            observer
+                .next_onchain_observer_interval(&node)
+                .await
+                .expect("active interval"),
+            active
+        );
+
+        // Unconfirmed (Observed) deposit keeps the active interval.
+        let (unconfirmed_envelope, _) = deposit_envelope_for_allocation(
+            &runtime,
+            application_id,
+            &allocation,
+            121,
+            0,
+            10_000,
+            None,
+        );
+        observer
+            .submit_observation_envelope_batch(&node, vec![unconfirmed_envelope])
+            .await
+            .expect("unconfirmed deposit");
+        assert_eq!(
+            observer
+                .next_onchain_observer_interval(&node)
+                .await
+                .expect("active unconfirmed interval"),
+            active
+        );
+
+        // Confirming the deposit to Spendable and settling the MintQuotePayment returns to idle.
+        let (confirmed_envelope, _) = deposit_envelope_for_allocation(
+            &runtime,
+            application_id,
+            &allocation,
+            121,
+            0,
+            10_000,
+            Some(FederationDepositConfirmation {
+                block_hash: BlockHash::from_byte_array([122; 32]),
+                block_height: 180,
+                confirmation_depth: 2,
+            }),
+        );
+        observer
+            .submit_observation_envelope_batch(&node, vec![confirmed_envelope])
+            .await
+            .expect("confirmed deposit");
+        let quote_set = BTreeSet::from([quote_id]);
+        assert_eq!(
+            observer
+                .submit_confirmed_mint_quote_payments(&node, &quote_set)
+                .await
+                .expect("settle quote"),
+            1
+        );
+        assert!(!FederationPaymentObserver::has_active_onchain_work(&node)
+            .await
+            .expect("returned to idle"));
+        assert_eq!(
+            observer
+                .next_onchain_observer_interval(&node)
+                .await
+                .expect("idle interval after settlement"),
+            idle
+        );
+
+        // A second unconfirmed UTXO alone (even for an already-paid quote) re-activates active cadence.
+        let (extra_unconfirmed, _) = deposit_envelope_for_allocation(
+            &runtime,
+            application_id,
+            &allocation,
+            123,
+            1,
+            5_000,
+            None,
+        );
+        observer
+            .submit_observation_envelope_batch(&node, vec![extra_unconfirmed])
+            .await
+            .expect("extra unconfirmed deposit");
+        assert_eq!(
+            observer
+                .next_onchain_observer_interval(&node)
+                .await
+                .expect("active interval for unconfirmed utxo"),
+            active
+        );
     }
 }

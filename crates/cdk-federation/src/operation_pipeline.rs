@@ -11,16 +11,15 @@ use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-#[cfg(feature = "federation-bark")]
-use cdk::federation::FederationAlephBftOrderedOperationGroup;
 use cdk::federation::{
     FederationAlephBftError, FederationAlephBftFinalizedItem,
-    FederationAlephBftFinalizedItemStatus, FederationAlephBftPendingOperationRecord,
-    FederationAlephBftUnitPayload, FederationApplicationState, FederationCatchUpOperation,
-    FederationConsensusItem, FederationConsensusItemAdmission, FederationConsensusRuntime,
-    FederationError, FederationJournalAppendOutcome, FederationJournalEntry,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationRestMessageKind, FederationSubmitOperationResponse, MemberId,
+    FederationAlephBftFinalizedItemStatus, FederationAlephBftOrderedOperationGroup,
+    FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
+    FederationApplicationState, FederationCatchUpOperation, FederationConsensusItem,
+    FederationConsensusItemAdmission, FederationConsensusRuntime, FederationError,
+    FederationJournalAppendOutcome, FederationJournalEntry, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationStatus, FederationRestMessageKind,
+    FederationSubmitOperationResponse, MemberId,
 };
 use cdk::mint::Mint;
 use cdk_common::database::mint::FederationJournalEntryKey;
@@ -33,7 +32,6 @@ use super::node_runtime::{
 use super::FederationPeerSyncConfig;
 use crate::{FederationOperationNotificationStats, FederationOperationWaitRegistration};
 
-#[cfg(feature = "federation-bark")]
 fn validate_ordered_group_responses(
     responses: &[FederationSubmitOperationResponse],
 ) -> Result<(), cdk::Error> {
@@ -310,11 +308,27 @@ impl FederationNodeRuntime {
             return Ok(responses);
         }
         for response in &responses {
+            let entry = response.outcome.entry();
             #[cfg(feature = "federation-bdk")]
             self.transaction_broadcaster
-                .notify_accepted_operation(response.outcome.entry());
-            self.payment_observer
-                .notify_accepted_operation(response.outcome.entry());
+                .notify_accepted_operation(entry);
+            #[cfg(feature = "federation-bdk")]
+            self.wallet_liveness.notify_accepted_operation(entry);
+            self.payment_observer.notify_accepted_operation(entry);
+            if entry.status() == FederationOperationStatus::Applied
+                && matches!(
+                    entry.envelope.operation,
+                    cdk::federation::FederationOperation::MintQuote(_)
+                        | cdk::federation::FederationOperation::MintQuotePayment(_)
+                        | cdk::federation::FederationOperation::Mint(_)
+                        | cdk::federation::FederationOperation::ChainObservation(_)
+                        | cdk::federation::FederationOperation::Application(_)
+                )
+            {
+                if let Some(notifications) = self.notifications() {
+                    notifications.notify_mint_quote_state_changed();
+                }
+            }
             self.notify_operation(response.clone());
         }
         Ok(responses)
@@ -459,7 +473,6 @@ impl FederationNodeRuntime {
         result
     }
 
-    #[cfg(feature = "federation-bark")]
     pub async fn submit_envelope_group(
         &self,
         envelopes: Vec<FederationOperationEnvelope>,

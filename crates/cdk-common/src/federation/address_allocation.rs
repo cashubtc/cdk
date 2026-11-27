@@ -10,11 +10,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use super::canonical::canonical_json_bytes;
+use super::state_table::ensure_federation_state_index_initialized_kv;
 use super::{
     decode_row, digest_row_key, insert_row, row_kind, unknown_row_kind, FederationError,
     FederationFrostApplicationId, FederationOperationId, FederationStateRows, FederationStateTable,
-    Result,
+    Result, FEDERATION_STATE_PRIMARY_NAMESPACE,
 };
+use crate::database;
+use crate::database::mint::{
+    DynMintDatabase, DynMintTransaction, KVStoreDatabase, KVStoreTransaction,
+};
+use crate::error::Error;
 
 const MAX_QUOTE_ID_BYTES: usize = 256;
 
@@ -360,6 +367,10 @@ struct AllocationRow {
 }
 
 const ALLOCATION_ROW: &str = "allocation";
+const COUNTER_INDEX_ROW: &str = "counter";
+
+/// Secondary key-value namespace holding O(1) allocation counters.
+pub const FEDERATION_ADDRESS_ALLOCATION_INDEX_NAMESPACE: &str = "address_allocation_idx";
 
 fn allocation_row_key(scope: FederationAddressAllocationScope, quote: &str) -> String {
     digest_row_key(
@@ -368,8 +379,244 @@ fn allocation_row_key(scope: FederationAddressAllocationScope, quote: &str) -> S
     )
 }
 
+fn counter_index_key(
+    scope: FederationAddressAllocationScope,
+    keychain: FederationAddressKeychain,
+) -> String {
+    digest_row_key(
+        COUNTER_INDEX_ROW,
+        &[
+            scope.to_string().as_bytes(),
+            keychain.to_string().as_bytes(),
+        ],
+    )
+}
+
+fn encode_counter(next_index: u64) -> Vec<u8> {
+    next_index.to_be_bytes().to_vec()
+}
+
+fn decode_counter(bytes: &[u8]) -> Result<u64> {
+    let raw: [u8; 8] = bytes
+        .try_into()
+        .map_err(|_| invalid_state("allocation counter index entry has invalid length"))?;
+    let next_index = u64::from_be_bytes(raw);
+    let max_next = u64::from(FEDERATION_MAX_DERIVATION_INDEX) + 1;
+    if next_index > max_next {
+        return Err(invalid_state("allocation counter index exceeds maximum"));
+    }
+    Ok(next_index)
+}
+
+fn validate_allocation_record(
+    scope: FederationAddressAllocationScope,
+    quote: &str,
+    allocation: &FederationAddressAllocation,
+) -> Result<()> {
+    if scope.application_key_epoch == 0
+        || quote != allocation.quote
+        || quote.is_empty()
+        || quote.len() > MAX_QUOTE_ID_BYTES
+        || allocation.derivation_index > FEDERATION_MAX_DERIVATION_INDEX
+    {
+        return Err(invalid_state("invalid quote allocation record"));
+    }
+    Ok(())
+}
+
+fn decode_and_validate_allocation(
+    key: &str,
+    bytes: &[u8],
+    expected_scope: FederationAddressAllocationScope,
+    expected_quote: &str,
+) -> Result<FederationAddressAllocation> {
+    let row: AllocationRow = decode_row(key, bytes, |row: &AllocationRow| {
+        Ok(allocation_row_key(row.scope, &row.allocation.quote))
+    })?;
+    if row.scope != expected_scope || row.allocation.quote != expected_quote {
+        return Err(FederationError::StateRowsInvalid {
+            reason: "allocation row does not match requested scope or quote",
+        });
+    }
+    validate_allocation_record(row.scope, &row.allocation.quote, &row.allocation)?;
+    Ok(row.allocation)
+}
+
+/// Look up one accepted address allocation outside a transaction in O(1).
+pub async fn read_federation_address_allocation(
+    db: &DynMintDatabase,
+    scope: FederationAddressAllocationScope,
+    quote: &str,
+) -> std::result::Result<Option<FederationAddressAllocation>, Error> {
+    read_federation_address_allocation_kv(db.as_ref(), scope, quote).await
+}
+
+pub(crate) async fn read_federation_address_allocation_kv<D>(
+    db: &D,
+    scope: FederationAddressAllocationScope,
+    quote: &str,
+) -> std::result::Result<Option<FederationAddressAllocation>, Error>
+where
+    D: KVStoreDatabase<Err = database::Error> + ?Sized + Sync,
+{
+    if scope.application_key_epoch == 0 || quote.is_empty() || quote.len() > MAX_QUOTE_ID_BYTES {
+        return Ok(None);
+    }
+    let key = allocation_row_key(scope, quote);
+    let Some(bytes) = db
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FederationAddressAllocationState::SECONDARY_NAMESPACE,
+            &key,
+        )
+        .await?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(decode_and_validate_allocation(
+        &key, &bytes, scope, quote,
+    )?))
+}
+
+/// Look up one accepted address allocation inside a transaction in O(1).
+pub async fn load_federation_address_allocation_in_tx(
+    transaction: &mut DynMintTransaction,
+    scope: FederationAddressAllocationScope,
+    quote: &str,
+) -> std::result::Result<Option<FederationAddressAllocation>, Error> {
+    load_federation_address_allocation_kv(&mut **transaction, scope, quote).await
+}
+
+pub(crate) async fn load_federation_address_allocation_kv<T>(
+    transaction: &mut T,
+    scope: FederationAddressAllocationScope,
+    quote: &str,
+) -> std::result::Result<Option<FederationAddressAllocation>, Error>
+where
+    T: KVStoreTransaction<database::Error> + ?Sized + Send,
+{
+    if scope.application_key_epoch == 0 || quote.is_empty() || quote.len() > MAX_QUOTE_ID_BYTES {
+        return Ok(None);
+    }
+    let key = allocation_row_key(scope, quote);
+    let Some(bytes) = transaction
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FederationAddressAllocationState::SECONDARY_NAMESPACE,
+            &key,
+        )
+        .await?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(decode_and_validate_allocation(
+        &key, &bytes, scope, quote,
+    )?))
+}
+
+/// Apply one accepted address-allocation operation inside `transaction` in O(1).
+///
+/// Writes only the new allocation row and advances its `(scope, keychain)`
+/// counter in the auxiliary index namespace without loading historical rows.
+pub async fn apply_federation_address_allocation_in_tx(
+    transaction: &mut DynMintTransaction,
+    operation: &FederationAddressAllocationOperation,
+    operation_id: FederationOperationId,
+    operation_index: u64,
+) -> std::result::Result<FederationAddressAllocationOutcome, Error> {
+    apply_federation_address_allocation_kv(
+        &mut **transaction,
+        operation,
+        operation_id,
+        operation_index,
+    )
+    .await
+}
+
+pub(crate) async fn apply_federation_address_allocation_kv<T>(
+    transaction: &mut T,
+    operation: &FederationAddressAllocationOperation,
+    operation_id: FederationOperationId,
+    operation_index: u64,
+) -> std::result::Result<FederationAddressAllocationOutcome, Error>
+where
+    T: KVStoreTransaction<database::Error> + ?Sized + Send,
+{
+    operation.validate()?;
+    ensure_federation_state_index_initialized_kv::<FederationAddressAllocationState, _>(
+        transaction,
+    )
+    .await?;
+
+    let scope = operation.scope();
+    let key = allocation_row_key(scope, &operation.quote);
+    if let Some(bytes) = transaction
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FederationAddressAllocationState::SECONDARY_NAMESPACE,
+            &key,
+        )
+        .await?
+    {
+        let existing = decode_and_validate_allocation(&key, &bytes, scope, &operation.quote)?;
+        if existing.keychain != operation.keychain {
+            return Err(FederationError::AddressAllocationConflict {
+                quote: operation.quote.clone(),
+            }
+            .into());
+        }
+        return Ok(FederationAddressAllocationOutcome::Existing(existing));
+    }
+
+    let counter_key = counter_index_key(scope, operation.keychain);
+    let next_index = match transaction
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FEDERATION_ADDRESS_ALLOCATION_INDEX_NAMESPACE,
+            &counter_key,
+        )
+        .await?
+    {
+        Some(bytes) => decode_counter(&bytes)?,
+        None => 0,
+    };
+    let derivation_index = checked_derivation_index(next_index, operation.keychain)?;
+    let allocation = FederationAddressAllocation {
+        quote: operation.quote.clone(),
+        keychain: operation.keychain,
+        derivation_index,
+        operation_id,
+        operation_index,
+    };
+    validate_allocation_record(scope, &allocation.quote, &allocation)?;
+
+    let encoded = canonical_json_bytes(&AllocationRowRef {
+        scope,
+        allocation: &allocation,
+    })?;
+    transaction
+        .kv_write(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FederationAddressAllocationState::SECONDARY_NAMESPACE,
+            &key,
+            &encoded,
+        )
+        .await?;
+    transaction
+        .kv_write(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FEDERATION_ADDRESS_ALLOCATION_INDEX_NAMESPACE,
+            &counter_key,
+            &encode_counter(next_index + 1),
+        )
+        .await?;
+    Ok(FederationAddressAllocationOutcome::Allocated(allocation))
+}
+
 impl FederationStateTable for FederationAddressAllocationState {
     const SECONDARY_NAMESPACE: &'static str = "address_allocation";
+    const INDEX_SECONDARY_NAMESPACE: Option<&'static str> =
+        Some(FEDERATION_ADDRESS_ALLOCATION_INDEX_NAMESPACE);
 
     fn to_rows(&self) -> Result<FederationStateRows> {
         self.validate()?;
@@ -409,6 +656,26 @@ impl FederationStateTable for FederationAddressAllocationState {
         }
         state.validate()?;
         Ok(state)
+    }
+
+    fn build_index_rows(stored_rows: &FederationStateRows) -> Result<FederationStateRows> {
+        let state = Self::from_rows(stored_rows)?;
+        let mut index_rows = FederationStateRows::new();
+        for (scope, wallet) in &state.wallets {
+            if wallet.external_next_index > 0 {
+                index_rows.insert(
+                    counter_index_key(*scope, FederationAddressKeychain::External),
+                    encode_counter(wallet.external_next_index),
+                );
+            }
+            if wallet.internal_next_index > 0 {
+                index_rows.insert(
+                    counter_index_key(*scope, FederationAddressKeychain::Internal),
+                    encode_counter(wallet.internal_next_index),
+                );
+            }
+        }
+        Ok(index_rows)
     }
 }
 

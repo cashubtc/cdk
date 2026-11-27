@@ -27,6 +27,7 @@ use super::frost_signing::FederationFrostSigningCoordinator;
 use super::peer_client::FederationRestPeerClient;
 
 const WALLET_LIVENESS_ROUND_INTERVAL: Duration = Duration::from_secs(5);
+const DEFAULT_MELT_COALESCING_WINDOW: Duration = Duration::from_millis(100);
 const PROPOSER_LEASE: Duration = Duration::from_secs(15);
 const SIGNING_ATTEMPT_LEASE: Duration =
     Duration::from_millis(cdk::federation::FEDERATION_WALLET_SIGNING_ATTEMPT_LEASE_MILLIS);
@@ -37,6 +38,7 @@ const MAX_RETRY_DELAY: Duration = Duration::from_secs(15);
 #[derive(Debug, Clone, Copy)]
 struct FederationWalletLivenessConfig {
     round_interval: Duration,
+    melt_coalescing_window: Duration,
     proposer_lease: Duration,
     signing_attempt_lease: Duration,
     signing_aggregator_grace: Duration,
@@ -48,6 +50,7 @@ impl Default for FederationWalletLivenessConfig {
     fn default() -> Self {
         Self {
             round_interval: WALLET_LIVENESS_ROUND_INTERVAL,
+            melt_coalescing_window: DEFAULT_MELT_COALESCING_WINDOW,
             proposer_lease: PROPOSER_LEASE,
             signing_attempt_lease: SIGNING_ATTEMPT_LEASE,
             signing_aggregator_grace: SIGNING_AGGREGATOR_GRACE,
@@ -60,6 +63,7 @@ impl Default for FederationWalletLivenessConfig {
 impl FederationWalletLivenessConfig {
     fn validate(self) -> Result<Self, cdk::Error> {
         if self.round_interval.is_zero()
+            || self.melt_coalescing_window > self.round_interval
             || self.proposer_lease.is_zero()
             || self.signing_attempt_lease.is_zero()
             || self.signing_attempt_lease != SIGNING_ATTEMPT_LEASE
@@ -74,6 +78,14 @@ impl FederationWalletLivenessConfig {
         }
         Ok(self)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LivenessWakeReason {
+    Stopped,
+    FallbackTick,
+    Immediate,
+    MeltCoalesced,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -95,6 +107,8 @@ struct FederationWalletLivenessInner {
     retries: tokio::sync::Mutex<BTreeMap<LivenessWorkId, RetryState>>,
     status: tokio::sync::RwLock<FederationWalletLivenessStatus>,
     round: tokio::sync::Mutex<()>,
+    immediate_wake: tokio::sync::Notify,
+    melt_wake: tokio::sync::Notify,
 }
 
 /// Replaceable member-local scheduler; all safety decisions remain in consensus.
@@ -118,8 +132,93 @@ impl FederationWalletLivenessWorker {
                 retries: tokio::sync::Mutex::new(BTreeMap::new()),
                 status: tokio::sync::RwLock::new(FederationWalletLivenessStatus::default()),
                 round: tokio::sync::Mutex::new(()),
+                immediate_wake: tokio::sync::Notify::new(),
+                melt_wake: tokio::sync::Notify::new(),
             }),
         })
+    }
+
+    /// Construct a liveness worker with a custom melt coalescing window.
+    pub fn with_melt_coalescing_window(
+        melt_coalescing_window: Duration,
+    ) -> Result<Self, cdk::Error> {
+        Self::new(FederationWalletLivenessConfig {
+            melt_coalescing_window,
+            ..FederationWalletLivenessConfig::default()
+        })
+    }
+
+    /// Construct a liveness worker with custom round and coalescing intervals for tests.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn with_intervals_for_test(
+        round_interval: Duration,
+        melt_coalescing_window: Duration,
+    ) -> Result<Self, cdk::Error> {
+        Self::new(FederationWalletLivenessConfig {
+            round_interval,
+            melt_coalescing_window,
+            ..FederationWalletLivenessConfig::default()
+        })
+    }
+
+    /// Configured coalescing window applied after new melt intents arrive.
+    #[must_use]
+    pub fn melt_coalescing_window(&self) -> Duration {
+        self.inner.config.melt_coalescing_window
+    }
+
+    /// Wake the scheduler when an applied on-chain operation can advance wallet state.
+    pub fn notify_accepted_operation(&self, entry: &cdk::federation::FederationJournalEntry) {
+        if entry.status() != cdk::federation::FederationOperationStatus::Applied {
+            return;
+        }
+        match &entry.envelope.operation {
+            cdk::federation::FederationOperation::Melt(_) => {
+                if self.inner.config.melt_coalescing_window.is_zero() {
+                    self.inner.immediate_wake.notify_one();
+                } else {
+                    self.inner.melt_wake.notify_one();
+                }
+            }
+            cdk::federation::FederationOperation::TransactionProposal(_)
+            | cdk::federation::FederationOperation::TransactionSigned(_)
+            | cdk::federation::FederationOperation::ChainObservation(_) => {
+                self.inner.immediate_wake.notify_one();
+            }
+            _ => {}
+        }
+    }
+
+    async fn wait_for_next_wake(
+        &self,
+        stop: &tokio_util::sync::CancellationToken,
+        interval: &mut tokio::time::Interval,
+    ) -> LivenessWakeReason {
+        use futures::FutureExt as _;
+
+        tokio::select! {
+            biased;
+            _ = stop.cancelled() => LivenessWakeReason::Stopped,
+            _ = self.inner.immediate_wake.notified() => LivenessWakeReason::Immediate,
+            _ = self.inner.melt_wake.notified() => {
+                let coalescing_window = self.inner.config.melt_coalescing_window;
+                if coalescing_window.is_zero() {
+                    return LivenessWakeReason::MeltCoalesced;
+                }
+                let reason = tokio::select! {
+                    biased;
+                    _ = stop.cancelled() => return LivenessWakeReason::Stopped,
+                    _ = self.inner.immediate_wake.notified() => LivenessWakeReason::Immediate,
+                    _ = tokio::time::sleep(coalescing_window) => LivenessWakeReason::MeltCoalesced,
+                };
+                // Drain any extra melt wake permit accumulated during the coalescing
+                // window; those melts are already committed and will be batched in
+                // the upcoming round.
+                let _ = self.inner.melt_wake.notified().now_or_never();
+                reason
+            }
+            _ = interval.tick() => LivenessWakeReason::FallbackTick,
+        }
     }
 
     pub async fn status(&self) -> FederationWalletLivenessStatus {
@@ -437,31 +536,48 @@ impl FederationWalletLivenessWorker {
         }
 
         let change_key = change_allocation_key(batch.batch_id);
-        state
-            .allocate_federation_onchain_address(
-                &change_key,
-                batch.scope.application_id,
-                batch.scope.application_key_epoch,
-                FederationAddressKeychain::Internal,
-            )
-            .await?;
         let allocation_scope = FederationAddressAllocationScope {
             application_id: batch.scope.application_id,
             application_key_epoch: batch.scope.application_key_epoch,
         };
-        let allocation = state
-            .mint
-            .federation_address_allocation(allocation_scope, &change_key)
-            .await?
-            .ok_or_else(|| {
-                cdk::Error::Custom(
-                    "accepted transaction change allocation is unavailable".to_string(),
-                )
-            })?;
+        let address_state = state.mint.federation_address_allocation_state().await?;
+        let (change_derivation_index, needs_change_allocation) =
+            match address_state.allocation(allocation_scope, &change_key) {
+                Some(existing) => {
+                    if existing.keychain != FederationAddressKeychain::Internal {
+                        return Err(cdk::Error::Federation(
+                            cdk::federation::FederationError::AddressAllocationConflict {
+                                quote: change_key,
+                            },
+                        ));
+                    }
+                    (existing.derivation_index, false)
+                }
+                None => {
+                    let next_index = address_state
+                        .wallet(allocation_scope)
+                        .map_or(0, |wallet_state| wallet_state.internal_next_index);
+                    if next_index > u64::from(cdk::federation::FEDERATION_MAX_DERIVATION_INDEX) {
+                        return Err(cdk::Error::Federation(
+                            cdk::federation::FederationError::AddressDerivationExhausted {
+                                keychain: FederationAddressKeychain::Internal,
+                            },
+                        ));
+                    }
+                    let index = u32::try_from(next_index).map_err(|_| {
+                        cdk::Error::Federation(
+                            cdk::federation::FederationError::AddressDerivationExhausted {
+                                keychain: FederationAddressKeychain::Internal,
+                            },
+                        )
+                    })?;
+                    (index, true)
+                }
+            };
         let change_script = wallet
             .peek_federated_script(
                 cdk_bdk::FederatedWalletKeychain::Internal,
-                allocation.derivation_index,
+                change_derivation_index,
             )
             .await;
         let recipients = batch
@@ -591,7 +707,7 @@ impl FederationWalletLivenessWorker {
             [] => None,
             [(index, output)] if output.script_pubkey == change_script => {
                 Some(FederationTransactionChangeOutput {
-                    derivation_index: allocation.derivation_index,
+                    derivation_index: change_derivation_index,
                     output_index: u32::try_from(*index).map_err(|_| {
                         cdk::Error::Custom("change output index exceeds u32".to_string())
                     })?,
@@ -604,6 +720,7 @@ impl FederationWalletLivenessWorker {
                 ));
             }
         };
+        let has_change_output = change_output.is_some();
         let proposal = FederationTransactionProposal::new(
             batch,
             runtime.member_id(),
@@ -619,11 +736,31 @@ impl FederationWalletLivenessWorker {
             transaction_state.intents(),
             &proposal,
         )?;
-        let envelope = runtime.transaction_proposal_operation(proposal)?;
-        state
-            .submit_federation_envelope(envelope)
-            .await?
-            .ensure_accepted()?;
+        let proposal_envelope = runtime.transaction_proposal_operation(proposal)?;
+        if needs_change_allocation && has_change_output {
+            let allocation_envelope = runtime.address_allocation_operation(
+                &change_key,
+                batch.scope.application_id,
+                batch.scope.application_key_epoch,
+                FederationAddressKeychain::Internal,
+            )?;
+            let responses = state
+                .submit_federation_ordered_successor_group(vec![
+                    allocation_envelope,
+                    proposal_envelope,
+                ])
+                .await?;
+            let [allocation_response, proposal_response] = responses.as_slice() else {
+                return Err(cdk::Error::Internal);
+            };
+            allocation_response.ensure_accepted()?;
+            proposal_response.ensure_accepted()?;
+        } else {
+            state
+                .submit_federation_envelope(proposal_envelope)
+                .await?
+                .ensure_accepted()?;
+        }
         Ok(())
     }
 
@@ -892,9 +1029,10 @@ impl FederationWalletLivenessWorker {
             let mut interval = tokio::time::interval(self.inner.config.round_interval);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
-                tokio::select! {
-                    _ = stop.cancelled() => break,
-                    _ = interval.tick() => {}
+                if self.wait_for_next_wake(&stop, &mut interval).await
+                    == LivenessWakeReason::Stopped
+                {
+                    break;
                 }
                 match self.run_round(&state, &client, epoch_millis()).await {
                     Ok(advanced) if advanced > 0 => tracing::debug!(
@@ -1398,5 +1536,349 @@ mod tests {
         timeout_policy.fee_estimation_timeout_millis = 1;
         let timed_out = bounded_fee_rate::<(), _>(timeout_policy, std::future::pending()).await;
         assert_eq!(timed_out, timeout_policy.fallback_fee_rate_sat_per_vb);
+    }
+
+    fn test_journal_entry(
+        operation: cdk::federation::FederationOperation,
+        application: cdk::federation::FederationApplicationState,
+    ) -> cdk::federation::FederationJournalEntry {
+        let envelope = cdk::federation::FederationOperationEnvelope::new(
+            cdk::federation::FederationId::from_bytes([9; 32]),
+            operation,
+        );
+        let operation_id = envelope.operation_id().expect("operation id");
+        cdk::federation::FederationJournalEntry {
+            index: 1,
+            operation_id,
+            envelope,
+            conflict_keys: Vec::new(),
+            previous_order_digest: cdk::federation::FederationJournalDigest::genesis(),
+            order_digest: cdk::federation::FederationJournalDigest::genesis(),
+            consensus_evidence: None,
+            application,
+        }
+    }
+
+    fn test_melt_operation() -> cdk::federation::FederationOperation {
+        cdk::federation::FederationOperation::Melt(cdk::federation::FederationMeltOperation {
+            request: cdk::nuts::MeltRequest::new("melt-quote-1".to_string(), Vec::new(), None),
+        })
+    }
+
+    fn test_swap_operation() -> cdk::federation::FederationOperation {
+        cdk::federation::FederationOperation::Swap(cdk::federation::FederationSwapOperation {
+            request: cdk::nuts::SwapRequest::new(Vec::new(), Vec::new()),
+        })
+    }
+
+    fn test_chain_observation_operation() -> cdk::federation::FederationOperation {
+        use cdk_common::bitcoin::hashes::Hash as _;
+        cdk::federation::FederationOperation::ChainObservation(
+            cdk::federation::FederationChainObservation::Reorg(
+                cdk::federation::FederationDepositReorgObservation {
+                    outpoint: cdk_common::bitcoin::OutPoint::null(),
+                    disconnected_block_hash: cdk_common::bitcoin::BlockHash::all_zeros(),
+                    disconnected_block_height: 1,
+                    observation_epoch: 0,
+                    observer: cdk::federation::MemberId::new(1).expect("member"),
+                    source: cdk::federation::FederationChainSourceDescriptor::new(
+                        cdk::federation::FederationChainSourceScope::Independent,
+                        "test-source",
+                    )
+                    .expect("source"),
+                },
+            ),
+        )
+    }
+
+    fn test_transaction_proposal_operation() -> cdk::federation::FederationOperation {
+        use cdk_common::bitcoin::hashes::Hash as _;
+        let application_id =
+            FederationFrostApplicationId::from_bytes([13; 32]).expect("application id");
+        let scope = FederationTransactionScope {
+            root_key_epoch: 1,
+            application_id,
+            application_key_epoch: 1,
+            network: Network::Regtest,
+            policy_version: 1,
+        };
+        let recipient_script = ScriptBuf::from_bytes([vec![0x51, 0x20], vec![2; 32]].concat());
+        let input_script = ScriptBuf::from_bytes([vec![0x51, 0x20], vec![3; 32]].concat());
+        let intent = FederationOnchainPaymentIntent::new(
+            "proposal-wake".to_string(),
+            FederationOperationId::from_bytes([14; 32]),
+            recipient_script.clone(),
+            10_000,
+            1_000,
+            0,
+            1,
+            1,
+            scope,
+        )
+        .expect("intent");
+        let batch = FederationOnchainPaymentBatch::new(vec![intent.clone()], 1).expect("batch");
+        let outpoint = cdk_common::bitcoin::OutPoint::new(
+            cdk_common::bitcoin::Txid::from_byte_array([15; 32]),
+            0,
+        );
+        let unsigned_transaction = cdk_common::bitcoin::Transaction {
+            version: cdk_common::bitcoin::transaction::Version::TWO,
+            lock_time: cdk_common::bitcoin::absolute::LockTime::ZERO,
+            input: vec![cdk_common::bitcoin::TxIn {
+                previous_output: outpoint,
+                script_sig: ScriptBuf::new(),
+                sequence: cdk_common::bitcoin::Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: cdk_common::bitcoin::Witness::new(),
+            }],
+            output: vec![cdk_common::bitcoin::TxOut {
+                value: Amount::from_sat(10_000),
+                script_pubkey: recipient_script,
+            }],
+        };
+        let proposal = FederationTransactionProposal::new(
+            &batch,
+            cdk::federation::MemberId::new(1).expect("member"),
+            unsigned_transaction.clone(),
+            vec![FederationTransactionInput {
+                outpoint,
+                previous_output: cdk_common::bitcoin::TxOut {
+                    value: Amount::from_sat(10_500),
+                    script_pubkey: input_script,
+                },
+                allocation: cdk::federation::FederationAllocatedAddressRef {
+                    application_id,
+                    application_key_epoch: 1,
+                    quote: "deposit".to_string(),
+                    keychain: FederationAddressKeychain::External,
+                    derivation_index: 0,
+                },
+            }],
+            vec![FederationTransactionRecipientOutput {
+                intent_id: intent.intent_id().expect("intent id"),
+                output_index: 0,
+                output: unsigned_transaction.output[0].clone(),
+                fee_contribution_sat: 500,
+            }],
+            None,
+            500,
+            None,
+        )
+        .expect("proposal");
+        cdk::federation::FederationOperation::TransactionProposal(proposal)
+    }
+
+    fn test_transaction_signed_operation() -> cdk::federation::FederationOperation {
+        use cdk_common::bitcoin::hashes::Hash as _;
+        let proposal_id = FederationTransactionProposalId::from_bytes([16; 32]);
+        let txid = cdk_common::bitcoin::Txid::from_byte_array([17; 32]);
+        cdk::federation::FederationOperation::TransactionSigned(
+            cdk::federation::FederationSignedTransaction {
+                version: 1,
+                proposal_id,
+                txid,
+                transaction_bytes: Vec::new(),
+                policy_audit: cdk::federation::FederationTransactionPolicyAudit {
+                    proposal_id,
+                    txid,
+                    fee_sat: 500,
+                    fee_rate_sat_per_kwu: 1_000,
+                    weight: 500,
+                    fee_contributions: BTreeMap::new(),
+                    taproot_sighashes: Vec::new(),
+                },
+                input_signatures: Vec::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn melt_coalescing_window_validation_accepts_zero_and_rejects_above_round_interval() {
+        let zero = FederationWalletLivenessWorker::with_melt_coalescing_window(Duration::ZERO)
+            .expect("zero coalescing window is valid");
+        assert_eq!(zero.melt_coalescing_window(), Duration::ZERO);
+
+        let max = FederationWalletLivenessWorker::with_melt_coalescing_window(
+            WALLET_LIVENESS_ROUND_INTERVAL,
+        )
+        .expect("coalescing window equal to round interval is valid");
+        assert_eq!(max.melt_coalescing_window(), WALLET_LIVENESS_ROUND_INTERVAL);
+
+        assert!(FederationWalletLivenessWorker::with_melt_coalescing_window(
+            WALLET_LIVENESS_ROUND_INTERVAL + Duration::from_millis(1)
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn wallet_liveness_wakes_immediately_for_proposal_signed_and_chain_observation() {
+        let worker = FederationWalletLivenessWorker::with_intervals_for_test(
+            Duration::from_secs(60),
+            Duration::from_millis(250),
+        )
+        .expect("worker");
+        let stop = tokio_util::sync::CancellationToken::new();
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        interval.tick().await;
+
+        for operation in [
+            test_transaction_proposal_operation(),
+            test_transaction_signed_operation(),
+            test_chain_observation_operation(),
+        ] {
+            let entry = test_journal_entry(
+                operation,
+                cdk::federation::FederationApplicationState::Applied {},
+            );
+            worker.notify_accepted_operation(&entry);
+            let started = Instant::now();
+            let reason = tokio::time::timeout(
+                Duration::from_millis(100),
+                worker.wait_for_next_wake(&stop, &mut interval),
+            )
+            .await
+            .expect("immediate wake must not wait for coalescing or fallback interval");
+            assert_eq!(reason, LivenessWakeReason::Immediate);
+            assert!(started.elapsed() < Duration::from_millis(100));
+        }
+    }
+
+    #[tokio::test]
+    async fn wallet_liveness_coalesces_concurrent_melts_and_preempts_on_immediate_work() {
+        let worker = FederationWalletLivenessWorker::with_intervals_for_test(
+            Duration::from_secs(60),
+            Duration::from_millis(60),
+        )
+        .expect("worker");
+        let stop = tokio_util::sync::CancellationToken::new();
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        interval.tick().await;
+
+        let melt_entry = test_journal_entry(
+            test_melt_operation(),
+            cdk::federation::FederationApplicationState::Applied {},
+        );
+        let notifier = worker.clone();
+        let melt_for_task = melt_entry.clone();
+        let producer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            notifier.notify_accepted_operation(&melt_for_task);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            notifier.notify_accepted_operation(&melt_for_task);
+        });
+
+        let started = Instant::now();
+        worker.notify_accepted_operation(&melt_entry);
+        let reason = tokio::time::timeout(
+            Duration::from_millis(400),
+            worker.wait_for_next_wake(&stop, &mut interval),
+        )
+        .await
+        .expect("coalesced melt wake must complete well before 60s fallback");
+        producer.await.expect("producer");
+        assert_eq!(reason, LivenessWakeReason::MeltCoalesced);
+        assert!(
+            started.elapsed() >= Duration::from_millis(50),
+            "melt wake must wait for the coalescing window to batch concurrent melts"
+        );
+
+        // Concurrent melt permits arriving during the window were drained so no
+        // spurious back-to-back wake fires.
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(30),
+                worker.wait_for_next_wake(&stop, &mut interval),
+            )
+            .await
+            .is_err(),
+            "extra melt wake permits during the coalescing window should be drained"
+        );
+
+        // An immediate event (TransactionProposal) arriving during the melt
+        // coalescing window preempts the delay immediately.
+        let notifier = worker.clone();
+        let proposal_entry = test_journal_entry(
+            test_transaction_proposal_operation(),
+            cdk::federation::FederationApplicationState::Applied {},
+        );
+        let preempt = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            notifier.notify_accepted_operation(&proposal_entry);
+        });
+        let preempt_started = Instant::now();
+        worker.notify_accepted_operation(&melt_entry);
+        let reason = tokio::time::timeout(
+            Duration::from_millis(200),
+            worker.wait_for_next_wake(&stop, &mut interval),
+        )
+        .await
+        .expect("immediate work must preempt coalescing window");
+        preempt.await.expect("preempt task");
+        assert_eq!(reason, LivenessWakeReason::Immediate);
+        assert!(preempt_started.elapsed() < Duration::from_millis(50));
+    }
+
+    #[tokio::test]
+    async fn wallet_liveness_zero_coalescing_window_wakes_immediately_on_melt() {
+        let worker = FederationWalletLivenessWorker::with_intervals_for_test(
+            Duration::from_secs(60),
+            Duration::ZERO,
+        )
+        .expect("worker");
+        let stop = tokio_util::sync::CancellationToken::new();
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        interval.tick().await;
+
+        let melt_entry = test_journal_entry(
+            test_melt_operation(),
+            cdk::federation::FederationApplicationState::Applied {},
+        );
+        worker.notify_accepted_operation(&melt_entry);
+        let reason = tokio::time::timeout(
+            Duration::from_millis(50),
+            worker.wait_for_next_wake(&stop, &mut interval),
+        )
+        .await
+        .expect("zero coalescing window must wake immediately");
+        assert_eq!(reason, LivenessWakeReason::Immediate);
+    }
+
+    #[tokio::test]
+    async fn wallet_liveness_ignores_non_applied_and_unrelated_operations() {
+        let worker = FederationWalletLivenessWorker::with_intervals_for_test(
+            Duration::from_secs(60),
+            Duration::from_millis(10),
+        )
+        .expect("worker");
+        let stop = tokio_util::sync::CancellationToken::new();
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        interval.tick().await;
+
+        worker.notify_accepted_operation(&test_journal_entry(
+            test_melt_operation(),
+            cdk::federation::FederationApplicationState::Accepted {},
+        ));
+        worker.notify_accepted_operation(&test_journal_entry(
+            test_melt_operation(),
+            cdk::federation::FederationApplicationState::Rejected {
+                response: cdk::error::ErrorResponse::new(
+                    cdk::error::ErrorCode::Unknown(0),
+                    "rejected".to_string(),
+                ),
+            },
+        ));
+        worker.notify_accepted_operation(&test_journal_entry(
+            test_swap_operation(),
+            cdk::federation::FederationApplicationState::Applied {},
+        ));
+
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(30),
+                worker.wait_for_next_wake(&stop, &mut interval),
+            )
+            .await
+            .is_err(),
+            "non-applied or unrelated operations must not wake wallet liveness"
+        );
     }
 }

@@ -374,8 +374,20 @@ impl DurableNonceStore for FailingNonceStore {
         self.inner.reserve(record)
     }
 
+    fn commit_batch(&self, records: Vec<NonceRecord>) -> Result<Vec<NonceReservation>, Error> {
+        self.fail_if_armed()?;
+        self.inner.commit_batch(records)
+    }
+
     fn load_nonce(&self, nonce_id: NonceId) -> Result<Option<NonceRecord>, Error> {
         self.inner.load_nonce(nonce_id)
+    }
+
+    fn load_nonces_batch(
+        &self,
+        nonce_ids: &[NonceId],
+    ) -> Result<Vec<Result<Option<NonceRecord>, Error>>, Error> {
+        self.inner.load_nonces_batch(nonce_ids)
     }
 
     fn load_session(&self, session_id: SigningSessionId) -> Result<Option<NonceRecord>, Error> {
@@ -389,6 +401,23 @@ impl DurableNonceStore for FailingNonceStore {
     ) -> Result<(), Error> {
         self.fail_if_armed()?;
         self.inner.compare_and_swap(expected, replacement)
+    }
+
+    fn apply_batch_transitions(
+        &self,
+        chains: Vec<crate::NonceTransitionChain>,
+    ) -> Result<(), Error> {
+        self.fail_if_armed()?;
+        self.inner.apply_batch_transitions(chains)
+    }
+
+    fn burn_sessions_batch(
+        &self,
+        sessions: &[SigningSessionId],
+        reason: NonceBurnReason,
+    ) -> Result<(), Error> {
+        self.fail_if_armed()?;
+        self.inner.burn_sessions_batch(sessions, reason)
     }
 
     fn nonterminal_records(&self) -> Result<Vec<NonceRecord>, Error> {
@@ -2738,5 +2767,404 @@ fn assert_truncation_and_trailing_rejected(
         let mut candidate = bytes.to_vec();
         candidate.extend_from_slice(&suffix);
         assert!(decode(&candidate).is_err());
+    }
+}
+
+#[test]
+fn redb_batch_signing_uses_single_write_tx_per_round_and_preserves_invariants() {
+    let directory = tempfile::tempdir().expect("batch nonce directory");
+    let paths = (0..3)
+        .map(|member| directory.path().join(format!("batch-member-{member}.redb")))
+        .collect::<Vec<_>>();
+    let stores = paths
+        .iter()
+        .map(RedbNonceStore::open)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("redb batch stores");
+    let stores_for_managers = stores.clone();
+    let mut managers = managers_with_store(3, 2, 160, move |member| {
+        stores_for_managers[usize::from(member.get() - 1)].clone()
+    });
+
+    let registration = wallet_registration();
+    let derivation = SigningDerivation::application_key();
+    let signers = [0_usize, 1_usize];
+    let input_count = 8_usize;
+    let contexts = (0..input_count)
+        .map(|index| {
+            let marker = 160 + index as u8;
+            signing_context(
+                registration,
+                &derivation,
+                session(marker),
+                [marker; 32],
+                &signers,
+            )
+        })
+        .collect::<Vec<_>>();
+    let requests = contexts
+        .iter()
+        .enumerate()
+        .map(|(index, context)| {
+            let marker = 160 + index as u8;
+            authorized_request(
+                registration,
+                context.session_id(),
+                [marker; 32],
+                b"wallet-test-policy/v1",
+            )
+        })
+        .collect::<Vec<_>>();
+
+    // Reset counters after manager startup recovery.
+    for store in &stores {
+        store.reset_write_tx_count();
+    }
+
+    // Round 1: 8 inputs committed in ONE redb write transaction per signer.
+    let mut rng = ChaCha20Rng::from_seed([161; 32]);
+    let batch_inputs = contexts
+        .iter()
+        .map(|context| (context, derivation.clone()))
+        .collect::<Vec<_>>();
+    let per_signer_commitments = signers
+        .iter()
+        .map(|index| {
+            let commitments = managers[*index]
+                .commit_nonces_batch(&batch_inputs, &mut rng)
+                .expect("batch round-one commitments");
+            assert_eq!(commitments.len(), input_count);
+            assert_eq!(
+                stores[*index].write_tx_count(),
+                1,
+                "round 1 for {input_count} inputs must use exactly 1 redb write tx"
+            );
+            // Every input must have a unique nonce_id.
+            let unique_nonces = commitments
+                .iter()
+                .map(crate::NonceCommitment::nonce_id)
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(unique_nonces.len(), input_count);
+            commitments
+        })
+        .collect::<Vec<_>>();
+
+    // Exact idempotent replay of Round 1 returns identical commitments.
+    for (signer_pos, signer_index) in signers.iter().enumerate() {
+        let replayed = managers[*signer_index]
+            .commit_nonces_batch(&batch_inputs, &mut rng)
+            .expect("idempotent round-one batch replay");
+        assert_eq!(replayed, per_signer_commitments[signer_pos]);
+    }
+
+    // Build one NonceCommitmentSet per input.
+    let commitment_sets = (0..input_count)
+        .map(|input_idx| {
+            NonceCommitmentSet::new(
+                per_signer_commitments
+                    .iter()
+                    .map(|commitments| commitments[input_idx].clone()),
+            )
+            .expect("per-input commitment set")
+        })
+        .collect::<Vec<_>>();
+
+    // Reset write counters before Round 2.
+    for store in &stores {
+        store.reset_write_tx_count();
+    }
+
+    // Round 2: 8 inputs signed and burned in ONE redb write transaction per signer.
+    let per_signer_shares = signers
+        .iter()
+        .enumerate()
+        .map(|(signer_pos, signer_index)| {
+            let sign_items = (0..input_count)
+                .map(|input_idx| {
+                    (
+                        per_signer_commitments[signer_pos][input_idx].nonce_id(),
+                        &requests[input_idx],
+                        &commitment_sets[input_idx],
+                    )
+                })
+                .collect::<Vec<_>>();
+            let shares = managers[*signer_index]
+                .sign_shares_batch(&sign_items)
+                .expect("batch round-two shares");
+            assert_eq!(shares.len(), input_count);
+            assert_eq!(
+                stores[*signer_index].write_tx_count(),
+                1,
+                "round 2 for {input_count} inputs must use exactly 1 redb write tx"
+            );
+            // Every nonce must now be durably Consumed with secrets erased.
+            for commitment in &per_signer_commitments[signer_pos] {
+                let record = stores[*signer_index]
+                    .load_nonce(commitment.nonce_id())
+                    .expect("load consumed record")
+                    .expect("consumed record exists");
+                assert!(matches!(
+                    record.lifecycle(),
+                    NonceLifecycle::Consumed { .. }
+                ));
+                assert!(record.encrypted_nonces().is_none());
+            }
+            assert!(stores[*signer_index]
+                .nonterminal_records()
+                .expect("nonterminal records")
+                .is_empty());
+            shares
+        })
+        .collect::<Vec<_>>();
+
+    // Verify every aggregated BIP340 signature with rust-bitcoin.
+    let public = managers[0]
+        .public_package(registration.id())
+        .expect("public package")
+        .clone();
+    for input_idx in 0..input_count {
+        let marker = 160 + input_idx as u8;
+        let shares_for_input = per_signer_shares
+            .iter()
+            .map(|shares| shares[input_idx].clone())
+            .collect::<Vec<_>>();
+        let signature = ParticipantKeyManager::aggregate(
+            &public,
+            contexts[input_idx].session_id(),
+            &[marker; 32],
+            &commitment_sets[input_idx],
+            shares_for_input,
+        )
+        .expect("aggregate batch signature");
+        verify_with_rust_bitcoin(&public, [marker; 32], signature);
+    }
+
+    // Exact replay of Round 2 is idempotent and performs 0 redb writes.
+    stores[0].reset_write_tx_count();
+    let sign_items_0 = (0..input_count)
+        .map(|input_idx| {
+            (
+                per_signer_commitments[0][input_idx].nonce_id(),
+                &requests[input_idx],
+                &commitment_sets[input_idx],
+            )
+        })
+        .collect::<Vec<_>>();
+    let replayed_shares = managers[0]
+        .sign_shares_batch(&sign_items_0)
+        .expect("idempotent round-two batch replay");
+    assert_eq!(replayed_shares, per_signer_shares[0]);
+    assert_eq!(stores[0].write_tx_count(), 0);
+
+    // Mismatched replay of a consumed batch is rejected and leaves Consumed intact.
+    let mut mismatched_commitments = commitment_sets.clone();
+    mismatched_commitments[3] = commitment_sets[4].clone();
+    let mismatched_items = (0..input_count)
+        .map(|input_idx| {
+            (
+                per_signer_commitments[0][input_idx].nonce_id(),
+                &requests[input_idx],
+                &mismatched_commitments[input_idx],
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(managers[0].sign_shares_batch(&mismatched_items).is_err());
+    // Exact replay still succeeds after mismatched replay rejection.
+    assert_eq!(
+        managers[0]
+            .sign_shares_batch(&sign_items_0)
+            .expect("consumed replay intact after mismatch"),
+        per_signer_shares[0]
+    );
+}
+
+#[test]
+fn batch_signing_rejects_duplicates_and_burns_tombstones_on_failure_and_abort() {
+    let stores = (0..3)
+        .map(|_| FailingNonceStore::default())
+        .collect::<Vec<_>>();
+    let stores_for_managers = stores.clone();
+    let mut managers = managers_with_store(3, 2, 170, move |member| {
+        stores_for_managers[usize::from(member.get() - 1)].clone()
+    });
+    let registration = wallet_registration();
+    let derivation = SigningDerivation::application_key();
+    let signers = [0_usize, 1_usize];
+    let contexts = (0..4_u8)
+        .map(|offset| {
+            signing_context(
+                registration,
+                &derivation,
+                session(170 + offset),
+                [170 + offset; 32],
+                &signers,
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut rng = ChaCha20Rng::from_seed([171; 32]);
+
+    // Reject duplicate session / slot in commit_nonces_batch.
+    assert!(managers[0]
+        .commit_nonces_batch(
+            &[
+                (&contexts[0], derivation.clone()),
+                (&contexts[0], derivation.clone()),
+            ],
+            &mut rng,
+        )
+        .is_err());
+    assert!(stores[0]
+        .nonterminal_records()
+        .expect("no records after duplicate commit rejection")
+        .is_empty());
+
+    // Commit 4 valid inputs on both signers.
+    let commit_inputs = contexts
+        .iter()
+        .map(|context| (context, derivation.clone()))
+        .collect::<Vec<_>>();
+    let c0 = managers[0]
+        .commit_nonces_batch(&commit_inputs, &mut rng)
+        .expect("signer 0 batch commit");
+    let c1 = managers[1]
+        .commit_nonces_batch(&commit_inputs, &mut rng)
+        .expect("signer 1 batch commit");
+    let sets = (0..4)
+        .map(|idx| NonceCommitmentSet::new([c0[idx].clone(), c1[idx].clone()]).expect("set"))
+        .collect::<Vec<_>>();
+    let requests = (0..4)
+        .map(|idx| {
+            authorized_request(
+                registration,
+                contexts[idx].session_id(),
+                [170 + idx as u8; 32],
+                b"wallet-test-policy/v1",
+            )
+        })
+        .collect::<Vec<_>>();
+
+    // Duplicate nonce_id in sign_shares_batch is rejected without leaking shares.
+    assert!(managers[0]
+        .sign_shares_batch(&[
+            (c0[0].nonce_id(), &requests[0], &sets[0]),
+            (c0[0].nonce_id(), &requests[0], &sets[0]),
+        ])
+        .is_err());
+
+    // Mismatched authorization on input #2 burns ALL 4 nonterminal nonces to tombstones.
+    let mut bad_payload = [172_u8; 32].to_vec();
+    bad_payload.extend_from_slice(&[0; 32]);
+    let bad_request = AuthorizationRequest::new(
+        registration.id(),
+        registration.key_epoch(),
+        registration.derivation_version(),
+        contexts[2].session_id(),
+        bad_payload,
+    )
+    .expect("bad auth");
+    let failing_batch = vec![
+        (c0[0].nonce_id(), &requests[0], &sets[0]),
+        (c0[1].nonce_id(), &requests[1], &sets[1]),
+        (c0[2].nonce_id(), &bad_request, &sets[2]),
+        (c0[3].nonce_id(), &requests[3], &sets[3]),
+    ];
+    assert!(managers[0].sign_shares_batch(&failing_batch).is_err());
+    for commitment in &c0 {
+        let record = stores[0]
+            .load_nonce(commitment.nonce_id())
+            .expect("load burned record")
+            .expect("burned record exists");
+        assert_eq!(
+            record.lifecycle(),
+            &NonceLifecycle::Burned {
+                reason: NonceBurnReason::InvalidPackage,
+            }
+        );
+        assert!(record.encrypted_nonces().is_none());
+    }
+    // Never returns to vacant: re-committing the same attempt fails closed.
+    assert!(managers[0]
+        .commit_nonces_batch(&commit_inputs, &mut rng)
+        .is_err());
+
+    // Batch abort burns every nonterminal session on signer 1 in one write tx.
+    let session_ids = contexts
+        .iter()
+        .map(SigningSessionContext::session_id)
+        .collect::<Vec<_>>();
+    managers[1]
+        .burn_sessions_batch(&session_ids, NonceBurnReason::AmbiguousResponse)
+        .expect("batch burn");
+    for commitment in &c1 {
+        let record = stores[1]
+            .load_nonce(commitment.nonce_id())
+            .expect("load aborted record")
+            .expect("aborted record exists");
+        assert_eq!(
+            record.lifecycle(),
+            &NonceLifecycle::Burned {
+                reason: NonceBurnReason::AmbiguousResponse,
+            }
+        );
+    }
+
+    // Store write failure during Round 2 returns Err (0 shares) and restart burns all nonces.
+    let retry_contexts = (0..4_u8)
+        .map(|offset| {
+            let scope = SigningAuthorizationScope::new(
+                contexts[usize::from(offset)].federation_id(),
+                contexts[usize::from(offset)].root_epoch(),
+                registration,
+                derivation.binding(),
+                contexts[usize::from(offset)].authorization_reference(),
+                contexts[usize::from(offset)].message_commitment(),
+            )
+            .expect("retry scope");
+            SigningSessionContext::new(scope, 1, contexts[0].signer_set().iter().copied())
+                .expect("retry context")
+        })
+        .collect::<Vec<_>>();
+    let retry_inputs = retry_contexts
+        .iter()
+        .map(|context| (context, derivation.clone()))
+        .collect::<Vec<_>>();
+    let rc0 = managers[0]
+        .commit_nonces_batch(&retry_inputs, &mut rng)
+        .expect("retry commit 0");
+    let rc1 = managers[1]
+        .commit_nonces_batch(&retry_inputs, &mut rng)
+        .expect("retry commit 1");
+    let retry_sets = (0..4)
+        .map(|idx| NonceCommitmentSet::new([rc0[idx].clone(), rc1[idx].clone()]).expect("set"))
+        .collect::<Vec<_>>();
+    let retry_requests = (0..4)
+        .map(|idx| {
+            authorized_request(
+                registration,
+                retry_contexts[idx].session_id(),
+                [170 + idx as u8; 32],
+                b"wallet-test-policy/v1",
+            )
+        })
+        .collect::<Vec<_>>();
+    let retry_sign_items = (0..4)
+        .map(|idx| (rc0[idx].nonce_id(), &retry_requests[idx], &retry_sets[idx]))
+        .collect::<Vec<_>>();
+    stores[0].arm(1);
+    assert!(managers[0].sign_shares_batch(&retry_sign_items).is_err());
+    managers[0]
+        .recover_after_restart()
+        .expect("restart recovery burns uncommitted batch");
+    for commitment in &rc0 {
+        assert_eq!(
+            stores[0]
+                .load_nonce(commitment.nonce_id())
+                .expect("load restart burned")
+                .expect("restart burned record")
+                .lifecycle(),
+            &NonceLifecycle::Burned {
+                reason: NonceBurnReason::RestartRecovery,
+            }
+        );
     }
 }

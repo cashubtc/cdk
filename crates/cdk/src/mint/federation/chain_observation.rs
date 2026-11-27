@@ -2,9 +2,10 @@
 
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    read_federation_state, FederationAddressAllocationState, FederationChainObservation,
+    apply_federation_deposit_observation_in_tx, apply_federation_reorg_observation_in_tx,
+    load_federation_address_allocation_in_tx, read_federation_state, FederationChainObservation,
     FederationChainObservationOutcome, FederationChainObservationState, FederationJournalEntry,
-    FederationPaymentObservationContext, FederationStoredState,
+    FederationPaymentObservationContext,
 };
 
 use super::super::Mint;
@@ -32,27 +33,19 @@ impl Mint {
             .required_matching_observations();
         let mut transaction = self.localstore().begin_transaction().await?;
         let outcome = async {
-            let mut state =
-                FederationStoredState::<FederationChainObservationState>::load(&mut transaction)
-                    .await?;
-            let outcome = match observation {
+            match observation {
                 FederationChainObservation::Deposit(observation) => {
-                    let allocations =
-                        FederationStoredState::<FederationAddressAllocationState>::load(
-                            &mut transaction,
-                        )
-                        .await?
-                        .into_inner();
-                    let allocation = allocations
-                        .allocation(
-                            observation.allocation.scope(),
-                            &observation.allocation.quote,
-                        )
-                        .ok_or({
-                            cdk_common::federation::FederationError::ChainObservationInvalid {
-                                reason: "deposit references an unknown address allocation",
-                            }
-                        })?;
+                    let allocation = load_federation_address_allocation_in_tx(
+                        &mut transaction,
+                        observation.allocation.scope(),
+                        &observation.allocation.quote,
+                    )
+                    .await?
+                    .ok_or({
+                        cdk_common::federation::FederationError::ChainObservationInvalid {
+                            reason: "deposit references an unknown address allocation",
+                        }
+                    })?;
                     let wallet = public.frost_wallet.as_ref().ok_or({
                         cdk_common::federation::FederationError::ChainObservationInvalid {
                             reason: "deposit requires an accepted FROST wallet config",
@@ -114,22 +107,28 @@ impl Mint {
                             reason: "deposit references an unknown descriptor application epoch",
                         }
                     })?;
-                    state.apply_deposit(
+                    apply_federation_deposit_observation_in_tx(
+                        &mut transaction,
                         observation,
-                        allocation,
+                        &allocation,
                         &expected_script,
                         required_observers,
                         minimum_confirmations,
                         entry.operation_id,
                         entry.index,
-                    )?
+                    )
+                    .await
                 }
                 FederationChainObservation::Reorg(observation) => {
-                    state.apply_reorg(observation, entry.operation_id, entry.index)?
+                    apply_federation_reorg_observation_in_tx(
+                        &mut transaction,
+                        observation,
+                        entry.operation_id,
+                        entry.index,
+                    )
+                    .await
                 }
-            };
-            state.save(&mut transaction).await?;
-            Ok(outcome)
+            }
         }
         .await;
         finish_federation_apply_transaction(transaction, entry, outcome).await

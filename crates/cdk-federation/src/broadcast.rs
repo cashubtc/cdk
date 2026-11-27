@@ -112,21 +112,30 @@ impl FederationTransactionBroadcaster {
             .ensure_federation_ready_for_authoritative_read()
             .await?;
         let observer = runtime.member_id();
-        let transaction_state = state.mint.federation_transaction_state().await?;
+        let mut transaction_state = state.mint.federation_transaction_state().await?;
+        let proposal_ids = transaction_state
+            .accepted_transactions()
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
         let mut submitted = 0usize;
 
-        for accepted in transaction_state.accepted_transactions().values() {
-            if let Some(proposal_id) = proposal_id {
-                if accepted.proposal.proposal_id()? != proposal_id {
+        for accepted_proposal_id in proposal_ids {
+            if let Some(target_proposal_id) = proposal_id {
+                if accepted_proposal_id != target_proposal_id {
                     continue;
                 }
             }
+            let Some(accepted) = transaction_state.accepted_transaction(accepted_proposal_id)
+            else {
+                continue;
+            };
             let Some(signed) = &accepted.signed else {
                 continue;
             };
-            let Some(wallet) = wallet_for_transaction(state, accepted) else {
+            if wallet_for_transaction(state, accepted).is_none() {
                 continue;
-            };
+            }
             if accepted.broadcast.is_none() {
                 if accepted.state != FederationAcceptedTransactionState::Signed {
                     continue;
@@ -141,12 +150,24 @@ impl FederationTransactionBroadcaster {
                 );
                 state.submit_federation_envelope(envelope).await?;
                 submitted = submitted.saturating_add(1);
-                continue;
+                // Reload durable consensus state after TransactionBroadcastIntent
+                // finality so broadcast only uses the persisted signed bytes
+                // authorized by the accepted intent, without skipping a cycle.
+                transaction_state = state.mint.federation_transaction_state().await?;
             }
-            let broadcast = accepted
-                .broadcast
-                .as_ref()
-                .expect("checked broadcast state");
+            let Some(accepted) = transaction_state.accepted_transaction(accepted_proposal_id)
+            else {
+                continue;
+            };
+            let Some(signed) = &accepted.signed else {
+                continue;
+            };
+            let Some(wallet) = wallet_for_transaction(state, accepted) else {
+                continue;
+            };
+            let Some(broadcast) = accepted.broadcast.as_ref() else {
+                continue;
+            };
             if accepted.state == FederationAcceptedTransactionState::Confirmed
                 || broadcast.observations.iter().any(|record| {
                     record.observation.observer == observer

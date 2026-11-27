@@ -41,8 +41,7 @@ use cdk_common::federation::{
     FederationOperation, FederationOperationConflictKey, FederationOperationId,
     FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationRecord, FederationPaymentObservationReport,
-    FederationSignatureShareRecord, FederationStoredState, FederationSwapOperation,
-    FederationTransactionState, MemberId,
+    FederationSignatureShareRecord, FederationSwapOperation, MemberId,
 };
 use cdk_common::mint::{
     MeltQuote, MeltSagaState, MintQuote, Operation, OperationKind, SagaStateEnum,
@@ -245,28 +244,36 @@ async fn settle_paid_melt_quote(
     tx.settle_federation_application_quote(&quote_id.to_string(), operation_index)
         .await?;
     if onchain {
-        let mut transactions =
-            FederationStoredState::<FederationTransactionState>::load(tx).await?;
-        if let Some((batch_id, inputs)) =
-            transactions.settle_completed_intent(&quote_id.to_string(), operation_index)?
+        let quote_key = quote_id.to_string();
+        if let Some(mut lineage) =
+            cdk_common::federation::load_federation_transaction_lineage_for_quote_settlement_in_tx(
+                tx, &quote_key,
+            )
+            .await?
         {
-            let mut chain = FederationStoredState::<
-                cdk_common::federation::FederationChainObservationState,
-            >::load(tx)
-            .await?;
-            // An input that left its reservation (a deep reorg) keeps the
-            // lineage readable: it is not made terminal and nothing is spent.
-            if inputs.iter().all(|outpoint| {
-                chain.utxo(*outpoint).is_some_and(|utxo| {
-                    utxo.state == cdk_common::federation::FederationWalletUtxoState::Reserved
-                })
-            }) {
-                chain.spend_reserved_utxos(&inputs, operation_index)?;
-                transactions.retire_settled_lineage(batch_id, operation_index)?;
-                chain.save(tx).await?;
+            if let Some((batch_id, inputs)) =
+                lineage.settle_completed_intent(&quote_key, operation_index)?
+            {
+                let chain =
+                    cdk_common::federation::load_federation_chain_utxos_in_tx(tx, &inputs).await?;
+                // An input that left its reservation (a deep reorg) keeps the
+                // lineage readable: it is not made terminal and nothing is spent.
+                if inputs.iter().all(|outpoint| {
+                    chain.utxo(*outpoint).is_some_and(|utxo| {
+                        utxo.state == cdk_common::federation::FederationWalletUtxoState::Reserved
+                    })
+                }) {
+                    cdk_common::federation::spend_reserved_federation_chain_utxos_in_tx(
+                        tx,
+                        &inputs,
+                        operation_index,
+                    )
+                    .await?;
+                    lineage.retire_settled_lineage(batch_id, operation_index)?;
+                }
             }
+            lineage.save(tx).await?;
         }
-        transactions.save(tx).await?;
     }
     Ok(())
 }
@@ -916,10 +923,12 @@ impl Mint {
             if quote.unit != CurrencyUnit::Sat {
                 return Err(Error::UnsupportedUnit);
             }
-            let Some(payment) = self
-                .federation_chain_observation_state()
-                .await?
-                .quote_payment_at_or_before(&quote.id.to_string(), u64::MAX)?
+            let Some(payment) = cdk_common::federation::read_federation_quote_payment_at_or_before(
+                &self.localstore,
+                &quote.id.to_string(),
+                u64::MAX,
+            )
+            .await?
             else {
                 return Ok(None);
             };
@@ -1045,10 +1054,12 @@ impl Mint {
             if quote.unit != CurrencyUnit::Sat {
                 return Err(Error::UnsupportedUnit);
             }
-            let Some(receipt) = self
-                .federation_transaction_state()
+            let Some(receipt) =
+                cdk_common::federation::read_federation_completed_payment_for_quote(
+                    &self.localstore,
+                    &quote.id.to_string(),
+                )
                 .await?
-                .completed_payment_for_quote(&quote.id.to_string())?
             else {
                 return Ok(None);
             };
@@ -1733,10 +1744,6 @@ impl Mint {
         entry: &FederationJournalEntry,
         mutation: FederationBarkRecoveryMutation,
     ) -> Result<(), Error> {
-        let mut chain_state = cdk_common::federation::FederationStoredState::<
-            cdk_common::federation::FederationChainObservationState,
-        >::load(transaction)
-        .await?;
         let mut recovery_state = cdk_common::federation::FederationStoredState::<
             FederationBarkRecoveryState,
         >::load(transaction)
@@ -1750,13 +1757,25 @@ impl Mint {
                     .map(|input| input.outpoint)
                     .collect::<Vec<_>>();
                 if recovery_state.reserve(&package_set, entry.operation_id)? {
-                    chain_state.reserve_utxos(&outpoints)?;
-                } else if outpoints.iter().any(|outpoint| {
-                    chain_state.utxo(*outpoint).is_none_or(|utxo| {
-                        utxo.state != cdk_common::federation::FederationWalletUtxoState::Reserved
-                    })
-                }) {
-                    return Err(Error::Internal);
+                    cdk_common::federation::reserve_federation_chain_utxos_in_tx(
+                        transaction,
+                        &outpoints,
+                    )
+                    .await?;
+                } else {
+                    let chain_state = cdk_common::federation::load_federation_chain_utxos_in_tx(
+                        transaction,
+                        &outpoints,
+                    )
+                    .await?;
+                    if outpoints.iter().any(|outpoint| {
+                        chain_state.utxo(*outpoint).is_none_or(|utxo| {
+                            utxo.state
+                                != cdk_common::federation::FederationWalletUtxoState::Reserved
+                        })
+                    }) {
+                        return Err(Error::Internal);
+                    }
                 }
             }
             FederationBarkRecoveryMutation::Publish {
@@ -1783,16 +1802,27 @@ impl Mint {
                     entry.operation_id,
                     entry.index,
                 )? {
-                    chain_state.spend_reserved_utxos(&outpoints, entry.index)?;
-                } else if outpoints
-                    .iter()
-                    .any(|outpoint| !chain_state.is_spent(*outpoint))
-                {
-                    return Err(Error::Internal);
+                    cdk_common::federation::spend_reserved_federation_chain_utxos_in_tx(
+                        transaction,
+                        &outpoints,
+                        entry.index,
+                    )
+                    .await?;
+                } else {
+                    let chain_state = cdk_common::federation::load_federation_chain_utxos_in_tx(
+                        transaction,
+                        &outpoints,
+                    )
+                    .await?;
+                    if outpoints
+                        .iter()
+                        .any(|outpoint| !chain_state.is_spent(*outpoint))
+                    {
+                        return Err(Error::Internal);
+                    }
                 }
             }
         }
-        chain_state.save(transaction).await?;
         recovery_state.save(transaction).await
     }
 
@@ -2455,13 +2485,13 @@ impl Mint {
         {
             return Err(Error::InvalidPaymentRequest);
         }
-        let mut state = cdk_common::federation::FederationStoredState::<
-            cdk_common::federation::FederationChainObservationState,
-        >::load(tx)
-        .await?;
-        let payment = state
-            .quote_payment_at_or_before(&observation.quote, max_operation_index)?
-            .ok_or(Error::UnpaidQuote)?;
+        let payment = cdk_common::federation::load_federation_quote_payment_at_or_before_in_tx(
+            tx,
+            &observation.quote,
+            max_operation_index,
+        )
+        .await?
+        .ok_or(Error::UnpaidQuote)?;
         if u64::from(observation.amount_paid) != payment.amount_sat
             || observation.payment_id != Some(PaymentIdentifier::PaymentId(payment.payment_id))
         {
@@ -2471,13 +2501,14 @@ impl Mint {
             .into());
         }
         if mark_liability {
-            state.mark_quote_liability_issued_at_or_before(
+            cdk_common::federation::mark_federation_quote_liability_issued_at_or_before_in_tx(
+                tx,
                 &observation.quote,
                 max_operation_index,
                 payment.amount_sat,
                 payment.payment_id,
-            )?;
-            state.save(tx).await?;
+            )
+            .await?;
         }
         Ok(())
     }
@@ -3134,13 +3165,15 @@ impl Mint {
             }
             .into());
         }
-        let receipt = FederationStoredState::<FederationTransactionState>::load(tx)
-            .await?
-            .completed_payment_for_quote(&quote.id.to_string())?
-            .ok_or(FederationError::OperationStateInvalid {
-                reason:
-                    "federation on-chain melt observation has no completed payment in ordered state",
-            })?;
+        let receipt = cdk_common::federation::load_federation_completed_payment_for_quote_in_tx(
+            tx,
+            &quote.id.to_string(),
+        )
+        .await?
+        .ok_or(FederationError::OperationStateInvalid {
+            reason:
+                "federation on-chain melt observation has no completed payment in ordered state",
+        })?;
         let melt_operation_id = match tx.get_melt_saga_by_quote_id(&quote.id).await? {
             Some(saga) => saga
                 .federation_operation_id

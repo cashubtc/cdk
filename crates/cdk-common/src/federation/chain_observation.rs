@@ -11,12 +11,22 @@ use bitcoin::hashes::{sha256, Hash, HashEngine};
 use bitcoin::{BlockHash, OutPoint, Script, TxOut};
 use serde::{Deserialize, Serialize};
 
+use super::canonical::canonical_json_bytes;
+use super::state_table::{
+    ensure_federation_state_index_initialized_kv, is_federation_state_index_initialized_kv,
+    read_federation_state_kv,
+};
 use super::{
-    decode_row, insert_row, outpoint_row_key, row_kind, unknown_row_kind,
+    decode_row, digest_row_key, insert_row, outpoint_row_key, row_kind, unknown_row_kind,
     FederationAddressAllocation, FederationAddressAllocationScope, FederationAddressKeychain,
     FederationError, FederationFrostApplicationId, FederationOperationId, FederationStateRows,
-    FederationStateTable, MemberId, Result,
+    FederationStateTable, MemberId, Result, FEDERATION_STATE_PRIMARY_NAMESPACE,
 };
+use crate::database;
+use crate::database::mint::{
+    DynMintDatabase, DynMintTransaction, KVStoreDatabase, KVStoreTransaction,
+};
+use crate::error::Error;
 
 const MAX_QUOTE_ID_BYTES: usize = 256;
 const MAX_SOURCE_ID_BYTES: usize = 128;
@@ -1162,81 +1172,10 @@ impl FederationChainObservationState {
     /// Validate all durable invariants and fail closed on corrupted state.
     pub fn validate(&self) -> Result<()> {
         for (key, utxo) in &self.utxos {
-            if key != &utxo.outpoint.to_string()
-                || utxo.required_observers == 0
-                || utxo.minimum_confirmations == 0
-                || utxo.txout.value.to_sat() == 0
-                || utxo.txout.script_pubkey.is_empty()
-            {
+            if key != &utxo.outpoint.to_string() {
                 return Err(invalid_state("wallet UTXO identity or policy is invalid"));
             }
-            for (observer, evidence) in &utxo.observations {
-                let FederationChainObservation::Deposit(observation) = &evidence.observation else {
-                    return Err(invalid_state("deposit evidence contains a reorg payload"));
-                };
-                observation.validate()?;
-                if observer != &observation.observer
-                    || observation.outpoint != utxo.outpoint
-                    || observation.observation_epoch > utxo.observation_epoch
-                {
-                    return Err(invalid_state("wallet UTXO evidence identity mismatch"));
-                }
-            }
-            // Conflicting per-observer field votes are retained so a
-            // quorum-backed set can be adopted; the established fields must
-            // still be backed by at least one stored observation.
-            let established_fields_backed = utxo.observations.values().any(|evidence| {
-                matches!(
-                    &evidence.observation,
-                    FederationChainObservation::Deposit(observation)
-                        if observation.txout == utxo.txout
-                            && observation.allocation == utxo.allocation
-                )
-            });
-            if !established_fields_backed {
-                return Err(invalid_state("wallet UTXO fields have no backing evidence"));
-            }
-            for (observer, evidence) in &utxo.reorg_observations {
-                let FederationChainObservation::Reorg(observation) = &evidence.observation else {
-                    return Err(invalid_state("reorg evidence contains a deposit payload"));
-                };
-                if observer != &observation.observer
-                    || observation.outpoint != utxo.outpoint
-                    || observation.observation_epoch > utxo.observation_epoch
-                {
-                    return Err(invalid_state("wallet reorg evidence identity mismatch"));
-                }
-            }
-            if utxo.state == FederationWalletUtxoState::Spendable
-                && (utxo.has_current_epoch_reorg()
-                    || utxo.matching_confirmed_observers() < utxo.required_observers)
-            {
-                return Err(invalid_state(
-                    "spendable UTXO does not have observation quorum",
-                ));
-            }
-            if utxo.state == FederationWalletUtxoState::Reorged
-                && utxo.reorg_observations.is_empty()
-            {
-                return Err(invalid_state("reorged UTXO has no reorg evidence"));
-            }
-            if utxo.state == FederationWalletUtxoState::Quarantined
-                && utxo.conflicting_observers.is_empty()
-            {
-                return Err(invalid_state(
-                    "quarantined UTXO has no conflicting observer",
-                ));
-            }
-            if utxo.liability_alarm && !utxo.liability_issued {
-                return Err(invalid_state("liability alarm has no issued liability"));
-            }
-            if (utxo.state == FederationWalletUtxoState::Spent)
-                != utxo.spent_operation_index.is_some()
-            {
-                return Err(invalid_state(
-                    "wallet UTXO spend position does not match its state",
-                ));
-            }
+            validate_wallet_utxo(utxo)?;
         }
         for (key, spent) in &self.spent {
             if key != &spent.outpoint.to_string() || self.utxos.contains_key(key) {
@@ -1244,19 +1183,97 @@ impl FederationChainObservationState {
                     "spent wallet UTXO tombstone identity mismatch",
                 ));
             }
-            if spent.quote_payment.as_ref().is_some_and(|payment| {
-                payment.quote.is_empty()
-                    || payment.quote.len() > MAX_QUOTE_ID_BYTES
-                    || payment.txout.value.to_sat() == 0
-                    || payment.txout.script_pubkey.is_empty()
-            }) {
-                return Err(invalid_state(
-                    "spent wallet UTXO tombstone payment is invalid",
-                ));
-            }
+            validate_spent_wallet_utxo(spent)?;
         }
         Ok(())
     }
+}
+
+fn validate_wallet_utxo(utxo: &FederationWalletUtxo) -> Result<()> {
+    if utxo.required_observers == 0
+        || utxo.minimum_confirmations == 0
+        || utxo.txout.value.to_sat() == 0
+        || utxo.txout.script_pubkey.is_empty()
+    {
+        return Err(invalid_state("wallet UTXO identity or policy is invalid"));
+    }
+    for (observer, evidence) in &utxo.observations {
+        let FederationChainObservation::Deposit(observation) = &evidence.observation else {
+            return Err(invalid_state("deposit evidence contains a reorg payload"));
+        };
+        observation.validate()?;
+        if observer != &observation.observer
+            || observation.outpoint != utxo.outpoint
+            || observation.observation_epoch > utxo.observation_epoch
+        {
+            return Err(invalid_state("wallet UTXO evidence identity mismatch"));
+        }
+    }
+    // Conflicting per-observer field votes are retained so a quorum-backed set
+    // can be adopted; the established fields must still be backed by at least
+    // one stored observation.
+    let established_fields_backed = utxo.observations.values().any(|evidence| {
+        matches!(
+            &evidence.observation,
+            FederationChainObservation::Deposit(observation)
+                if observation.txout == utxo.txout
+                    && observation.allocation == utxo.allocation
+        )
+    });
+    if !established_fields_backed {
+        return Err(invalid_state("wallet UTXO fields have no backing evidence"));
+    }
+    for (observer, evidence) in &utxo.reorg_observations {
+        let FederationChainObservation::Reorg(observation) = &evidence.observation else {
+            return Err(invalid_state("reorg evidence contains a deposit payload"));
+        };
+        if observer != &observation.observer
+            || observation.outpoint != utxo.outpoint
+            || observation.observation_epoch > utxo.observation_epoch
+        {
+            return Err(invalid_state("wallet reorg evidence identity mismatch"));
+        }
+    }
+    if utxo.state == FederationWalletUtxoState::Spendable
+        && (utxo.has_current_epoch_reorg()
+            || utxo.matching_confirmed_observers() < utxo.required_observers)
+    {
+        return Err(invalid_state(
+            "spendable UTXO does not have observation quorum",
+        ));
+    }
+    if utxo.state == FederationWalletUtxoState::Reorged && utxo.reorg_observations.is_empty() {
+        return Err(invalid_state("reorged UTXO has no reorg evidence"));
+    }
+    if utxo.state == FederationWalletUtxoState::Quarantined && utxo.conflicting_observers.is_empty()
+    {
+        return Err(invalid_state(
+            "quarantined UTXO has no conflicting observer",
+        ));
+    }
+    if utxo.liability_alarm && !utxo.liability_issued {
+        return Err(invalid_state("liability alarm has no issued liability"));
+    }
+    if (utxo.state == FederationWalletUtxoState::Spent) != utxo.spent_operation_index.is_some() {
+        return Err(invalid_state(
+            "wallet UTXO spend position does not match its state",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_spent_wallet_utxo(spent: &FederationSpentWalletUtxo) -> Result<()> {
+    if spent.quote_payment.as_ref().is_some_and(|payment| {
+        payment.quote.is_empty()
+            || payment.quote.len() > MAX_QUOTE_ID_BYTES
+            || payment.txout.value.to_sat() == 0
+            || payment.txout.script_pubkey.is_empty()
+    }) {
+        return Err(invalid_state(
+            "spent wallet UTXO tombstone payment is invalid",
+        ));
+    }
+    Ok(())
 }
 
 fn confirmation_depth(observation: &FederationDepositObservation) -> u32 {
@@ -1311,11 +1328,611 @@ fn quarantine(utxo: &mut FederationWalletUtxo, observer: MemberId) {
 
 const UTXO_ROW: &str = "utxo";
 const SPENT_ROW: &str = "spent";
+const QUOTE_INDEX_ROW: &str = "quote";
+
+/// Secondary key-value namespace holding O(1) quote-to-outpoint indexes.
+pub const FEDERATION_CHAIN_OBSERVATION_INDEX_NAMESPACE: &str = "chain_observation_idx";
+
+fn quote_index_key(quote: &str) -> String {
+    digest_row_key(QUOTE_INDEX_ROW, &[quote.as_bytes()])
+}
 
 fn decode_utxo_row(key: &str, bytes: &[u8]) -> Result<FederationWalletUtxo> {
     decode_row(key, bytes, |utxo: &FederationWalletUtxo| {
         Ok(outpoint_row_key(UTXO_ROW, &utxo.outpoint))
     })
+}
+
+fn decode_spent_row(key: &str, bytes: &[u8]) -> Result<FederationSpentWalletUtxo> {
+    decode_row(key, bytes, |spent: &FederationSpentWalletUtxo| {
+        Ok(outpoint_row_key(SPENT_ROW, &spent.outpoint))
+    })
+}
+
+enum LoadedOutpoint {
+    Absent,
+    Live(FederationWalletUtxo),
+    Spent(FederationSpentWalletUtxo),
+}
+
+fn decode_loaded_outpoint(
+    utxo_key: &str,
+    utxo_bytes: Option<Vec<u8>>,
+    spent_key: &str,
+    spent_bytes: Option<Vec<u8>>,
+) -> Result<LoadedOutpoint> {
+    match (utxo_bytes, spent_bytes) {
+        (Some(_), Some(_)) => Err(invalid_state(
+            "spent wallet UTXO tombstone identity mismatch",
+        )),
+        (None, Some(bytes)) => {
+            let spent = decode_spent_row(spent_key, &bytes)?;
+            validate_spent_wallet_utxo(&spent)?;
+            Ok(LoadedOutpoint::Spent(spent))
+        }
+        (Some(bytes), None) => {
+            let utxo = decode_utxo_row(utxo_key, &bytes)?;
+            validate_wallet_utxo(&utxo)?;
+            if utxo.state == FederationWalletUtxoState::Spent {
+                Ok(LoadedOutpoint::Spent(FederationSpentWalletUtxo::of(&utxo)))
+            } else {
+                Ok(LoadedOutpoint::Live(utxo))
+            }
+        }
+        (None, None) => Ok(LoadedOutpoint::Absent),
+    }
+}
+
+async fn load_outpoint_in_tx<T>(
+    transaction: &mut T,
+    outpoint: OutPoint,
+) -> std::result::Result<LoadedOutpoint, Error>
+where
+    T: KVStoreTransaction<database::Error> + ?Sized + Send,
+{
+    let utxo_key = outpoint_row_key(UTXO_ROW, &outpoint);
+    let spent_key = outpoint_row_key(SPENT_ROW, &outpoint);
+    let utxo_bytes = transaction
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FederationChainObservationState::SECONDARY_NAMESPACE,
+            &utxo_key,
+        )
+        .await?;
+    let spent_bytes = transaction
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FederationChainObservationState::SECONDARY_NAMESPACE,
+            &spent_key,
+        )
+        .await?;
+    Ok(decode_loaded_outpoint(
+        &utxo_key,
+        utxo_bytes,
+        &spent_key,
+        spent_bytes,
+    )?)
+}
+
+async fn read_outpoint<D>(db: &D, outpoint: OutPoint) -> std::result::Result<LoadedOutpoint, Error>
+where
+    D: KVStoreDatabase<Err = database::Error> + ?Sized + Sync,
+{
+    let utxo_key = outpoint_row_key(UTXO_ROW, &outpoint);
+    let spent_key = outpoint_row_key(SPENT_ROW, &outpoint);
+    let utxo_bytes = db
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FederationChainObservationState::SECONDARY_NAMESPACE,
+            &utxo_key,
+        )
+        .await?;
+    let spent_bytes = db
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FederationChainObservationState::SECONDARY_NAMESPACE,
+            &spent_key,
+        )
+        .await?;
+    Ok(decode_loaded_outpoint(
+        &utxo_key,
+        utxo_bytes,
+        &spent_key,
+        spent_bytes,
+    )?)
+}
+
+fn insert_loaded_outpoint(state: &mut FederationChainObservationState, loaded: LoadedOutpoint) {
+    match loaded {
+        LoadedOutpoint::Absent => {}
+        LoadedOutpoint::Live(utxo) => {
+            state.utxos.insert(utxo.outpoint.to_string(), utxo);
+        }
+        LoadedOutpoint::Spent(spent) => {
+            state.spent.insert(spent.outpoint.to_string(), spent);
+        }
+    }
+}
+
+fn decode_quote_outpoints(bytes: &[u8]) -> Result<Vec<OutPoint>> {
+    serde_json::from_slice(bytes).map_err(FederationError::from)
+}
+
+async fn update_quote_index_in_tx<T>(
+    transaction: &mut T,
+    quote: &str,
+    outpoint: OutPoint,
+    add: bool,
+) -> std::result::Result<(), Error>
+where
+    T: KVStoreTransaction<database::Error> + ?Sized + Send,
+{
+    let index_key = quote_index_key(quote);
+    let mut outpoints = match transaction
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FEDERATION_CHAIN_OBSERVATION_INDEX_NAMESPACE,
+            &index_key,
+        )
+        .await?
+    {
+        Some(bytes) => decode_quote_outpoints(&bytes)?,
+        None => Vec::new(),
+    };
+    let original_len = outpoints.len();
+    if add {
+        if !outpoints.contains(&outpoint) {
+            outpoints.push(outpoint);
+            outpoints.sort_by_key(ToString::to_string);
+            let encoded = canonical_json_bytes(&outpoints)?;
+            transaction
+                .kv_write(
+                    FEDERATION_STATE_PRIMARY_NAMESPACE,
+                    FEDERATION_CHAIN_OBSERVATION_INDEX_NAMESPACE,
+                    &index_key,
+                    &encoded,
+                )
+                .await?;
+        }
+    } else {
+        outpoints.retain(|candidate| *candidate != outpoint);
+        if outpoints.len() != original_len {
+            if outpoints.is_empty() {
+                transaction
+                    .kv_remove(
+                        FEDERATION_STATE_PRIMARY_NAMESPACE,
+                        FEDERATION_CHAIN_OBSERVATION_INDEX_NAMESPACE,
+                        &index_key,
+                    )
+                    .await?;
+            } else {
+                let encoded = canonical_json_bytes(&outpoints)?;
+                transaction
+                    .kv_write(
+                        FEDERATION_STATE_PRIMARY_NAMESPACE,
+                        FEDERATION_CHAIN_OBSERVATION_INDEX_NAMESPACE,
+                        &index_key,
+                        &encoded,
+                    )
+                    .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Load a targeted subset of wallet UTXOs inside `transaction` in O(|outpoints|).
+pub async fn load_federation_chain_utxos_in_tx(
+    transaction: &mut DynMintTransaction,
+    outpoints: &[OutPoint],
+) -> std::result::Result<FederationChainObservationState, Error> {
+    load_federation_chain_utxos_kv(&mut **transaction, outpoints).await
+}
+
+pub(crate) async fn load_federation_chain_utxos_kv<T>(
+    transaction: &mut T,
+    outpoints: &[OutPoint],
+) -> std::result::Result<FederationChainObservationState, Error>
+where
+    T: KVStoreTransaction<database::Error> + ?Sized + Send,
+{
+    let mut state = FederationChainObservationState::new();
+    let unique = outpoints.iter().copied().collect::<BTreeSet<_>>();
+    for outpoint in unique {
+        let loaded = load_outpoint_in_tx(transaction, outpoint).await?;
+        insert_loaded_outpoint(&mut state, loaded);
+    }
+    state.validate()?;
+    Ok(state)
+}
+
+/// Read a targeted subset of wallet UTXOs outside a transaction in O(|outpoints|).
+pub async fn read_federation_chain_utxos(
+    db: &DynMintDatabase,
+    outpoints: &[OutPoint],
+) -> std::result::Result<FederationChainObservationState, Error> {
+    read_federation_chain_utxos_kv(db.as_ref(), outpoints).await
+}
+
+pub(crate) async fn read_federation_chain_utxos_kv<D>(
+    db: &D,
+    outpoints: &[OutPoint],
+) -> std::result::Result<FederationChainObservationState, Error>
+where
+    D: KVStoreDatabase<Err = database::Error> + ?Sized + Sync,
+{
+    let mut state = FederationChainObservationState::new();
+    let unique = outpoints.iter().copied().collect::<BTreeSet<_>>();
+    for outpoint in unique {
+        let loaded = read_outpoint(db, outpoint).await?;
+        insert_loaded_outpoint(&mut state, loaded);
+    }
+    state.validate()?;
+    Ok(state)
+}
+
+/// Apply one accepted deposit observation inside `transaction` in O(1).
+#[allow(clippy::too_many_arguments)]
+pub async fn apply_federation_deposit_observation_in_tx(
+    transaction: &mut DynMintTransaction,
+    observation: &FederationDepositObservation,
+    allocation: &FederationAddressAllocation,
+    expected_script: &Script,
+    required_observers: u16,
+    minimum_confirmations: u32,
+    operation_id: FederationOperationId,
+    operation_index: u64,
+) -> std::result::Result<FederationChainObservationOutcome, Error> {
+    apply_federation_deposit_observation_kv(
+        &mut **transaction,
+        observation,
+        allocation,
+        expected_script,
+        required_observers,
+        minimum_confirmations,
+        operation_id,
+        operation_index,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn apply_federation_deposit_observation_kv<T>(
+    transaction: &mut T,
+    observation: &FederationDepositObservation,
+    allocation: &FederationAddressAllocation,
+    expected_script: &Script,
+    required_observers: u16,
+    minimum_confirmations: u32,
+    operation_id: FederationOperationId,
+    operation_index: u64,
+) -> std::result::Result<FederationChainObservationOutcome, Error>
+where
+    T: KVStoreTransaction<database::Error> + ?Sized + Send,
+{
+    ensure_federation_state_index_initialized_kv::<FederationChainObservationState, _>(transaction)
+        .await?;
+    let loaded = load_outpoint_in_tx(transaction, observation.outpoint).await?;
+    let previous_quote = match &loaded {
+        LoadedOutpoint::Live(utxo) => Some(utxo.allocation.quote.clone()),
+        LoadedOutpoint::Absent | LoadedOutpoint::Spent(_) => None,
+    };
+    let mut subset = FederationChainObservationState::new();
+    insert_loaded_outpoint(&mut subset, loaded);
+
+    let outcome = subset.apply_deposit(
+        observation,
+        allocation,
+        expected_script,
+        required_observers,
+        minimum_confirmations,
+        operation_id,
+        operation_index,
+    )?;
+
+    if !matches!(outcome, FederationChainObservationOutcome::Existing(_)) {
+        let updated = subset
+            .utxo(observation.outpoint)
+            .ok_or_else(|| invalid_state("updated deposit UTXO disappeared"))?;
+        let key = outpoint_row_key(UTXO_ROW, &updated.outpoint);
+        let encoded = canonical_json_bytes(updated)?;
+        transaction
+            .kv_write(
+                FEDERATION_STATE_PRIMARY_NAMESPACE,
+                FederationChainObservationState::SECONDARY_NAMESPACE,
+                &key,
+                &encoded,
+            )
+            .await?;
+        let new_quote = updated.allocation.quote.as_str();
+        if previous_quote.as_deref() != Some(new_quote) {
+            if let Some(prev_quote) = previous_quote.as_deref() {
+                update_quote_index_in_tx(transaction, prev_quote, updated.outpoint, false).await?;
+            }
+            update_quote_index_in_tx(transaction, new_quote, updated.outpoint, true).await?;
+        }
+    }
+
+    Ok(outcome)
+}
+
+/// Apply one accepted reorg observation inside `transaction` in O(1).
+pub async fn apply_federation_reorg_observation_in_tx(
+    transaction: &mut DynMintTransaction,
+    observation: &FederationDepositReorgObservation,
+    operation_id: FederationOperationId,
+    operation_index: u64,
+) -> std::result::Result<FederationChainObservationOutcome, Error> {
+    apply_federation_reorg_observation_kv(
+        &mut **transaction,
+        observation,
+        operation_id,
+        operation_index,
+    )
+    .await
+}
+
+pub(crate) async fn apply_federation_reorg_observation_kv<T>(
+    transaction: &mut T,
+    observation: &FederationDepositReorgObservation,
+    operation_id: FederationOperationId,
+    operation_index: u64,
+) -> std::result::Result<FederationChainObservationOutcome, Error>
+where
+    T: KVStoreTransaction<database::Error> + ?Sized + Send,
+{
+    ensure_federation_state_index_initialized_kv::<FederationChainObservationState, _>(transaction)
+        .await?;
+    let loaded = load_outpoint_in_tx(transaction, observation.outpoint).await?;
+    let mut subset = FederationChainObservationState::new();
+    insert_loaded_outpoint(&mut subset, loaded);
+
+    let outcome = subset.apply_reorg(observation, operation_id, operation_index)?;
+    if !matches!(outcome, FederationChainObservationOutcome::Existing(_)) {
+        let updated = subset
+            .utxo(observation.outpoint)
+            .ok_or_else(|| invalid_state("updated reorg UTXO disappeared"))?;
+        let key = outpoint_row_key(UTXO_ROW, &updated.outpoint);
+        let encoded = canonical_json_bytes(updated)?;
+        transaction
+            .kv_write(
+                FEDERATION_STATE_PRIMARY_NAMESPACE,
+                FederationChainObservationState::SECONDARY_NAMESPACE,
+                &key,
+                &encoded,
+            )
+            .await?;
+    }
+    Ok(outcome)
+}
+
+/// Atomically reserve an exact set of spendable UTXOs inside `transaction` in
+/// O(|outpoints|).
+pub async fn reserve_federation_chain_utxos_in_tx(
+    transaction: &mut DynMintTransaction,
+    outpoints: &[OutPoint],
+) -> std::result::Result<(), Error> {
+    reserve_federation_chain_utxos_kv(&mut **transaction, outpoints).await
+}
+
+pub(crate) async fn reserve_federation_chain_utxos_kv<T>(
+    transaction: &mut T,
+    outpoints: &[OutPoint],
+) -> std::result::Result<(), Error>
+where
+    T: KVStoreTransaction<database::Error> + ?Sized + Send,
+{
+    ensure_federation_state_index_initialized_kv::<FederationChainObservationState, _>(transaction)
+        .await?;
+    let mut subset = load_federation_chain_utxos_kv(transaction, outpoints).await?;
+    subset.reserve_utxos(outpoints)?;
+    for outpoint in outpoints {
+        let utxo = subset
+            .utxo(*outpoint)
+            .ok_or_else(|| invalid_state("reserved wallet UTXO disappeared"))?;
+        let key = outpoint_row_key(UTXO_ROW, outpoint);
+        let encoded = canonical_json_bytes(utxo)?;
+        transaction
+            .kv_write(
+                FEDERATION_STATE_PRIMARY_NAMESPACE,
+                FederationChainObservationState::SECONDARY_NAMESPACE,
+                &key,
+                &encoded,
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+/// Atomically mark an exact set of reserved UTXOs as spent inside `transaction`
+/// in O(|outpoints|).
+pub async fn spend_reserved_federation_chain_utxos_in_tx(
+    transaction: &mut DynMintTransaction,
+    outpoints: &[OutPoint],
+    operation_index: u64,
+) -> std::result::Result<(), Error> {
+    spend_reserved_federation_chain_utxos_kv(&mut **transaction, outpoints, operation_index).await
+}
+
+pub(crate) async fn spend_reserved_federation_chain_utxos_kv<T>(
+    transaction: &mut T,
+    outpoints: &[OutPoint],
+    operation_index: u64,
+) -> std::result::Result<(), Error>
+where
+    T: KVStoreTransaction<database::Error> + ?Sized + Send,
+{
+    ensure_federation_state_index_initialized_kv::<FederationChainObservationState, _>(transaction)
+        .await?;
+    let mut subset = load_federation_chain_utxos_kv(transaction, outpoints).await?;
+    subset.spend_reserved_utxos(outpoints, operation_index)?;
+    for outpoint in outpoints {
+        let utxo = subset
+            .utxo(*outpoint)
+            .ok_or_else(|| invalid_state("spent wallet UTXO disappeared"))?;
+        let key = outpoint_row_key(UTXO_ROW, outpoint);
+        let encoded = canonical_json_bytes(utxo)?;
+        transaction
+            .kv_write(
+                FEDERATION_STATE_PRIMARY_NAMESPACE,
+                FederationChainObservationState::SECONDARY_NAMESPACE,
+                &key,
+                &encoded,
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+/// Compute the canonical cumulative on-chain payment for one quote outside a
+/// transaction in O(outputs for quote).
+pub async fn read_federation_quote_payment_at_or_before(
+    db: &DynMintDatabase,
+    quote: &str,
+    max_operation_index: u64,
+) -> std::result::Result<Option<FederationOnchainQuotePayment>, Error> {
+    read_federation_quote_payment_at_or_before_kv(db.as_ref(), quote, max_operation_index).await
+}
+
+pub(crate) async fn read_federation_quote_payment_at_or_before_kv<D>(
+    db: &D,
+    quote: &str,
+    max_operation_index: u64,
+) -> std::result::Result<Option<FederationOnchainQuotePayment>, Error>
+where
+    D: KVStoreDatabase<Err = database::Error> + ?Sized + Sync,
+{
+    if quote.is_empty() || quote.len() > MAX_QUOTE_ID_BYTES {
+        return Err(invalid_state("on-chain quote payment key is invalid").into());
+    }
+    if !is_federation_state_index_initialized_kv::<FederationChainObservationState, _>(db).await? {
+        return Ok(
+            read_federation_state_kv::<FederationChainObservationState, _>(db)
+                .await?
+                .quote_payment_at_or_before(quote, max_operation_index)?,
+        );
+    }
+    let Some(bytes) = db
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FEDERATION_CHAIN_OBSERVATION_INDEX_NAMESPACE,
+            &quote_index_key(quote),
+        )
+        .await?
+    else {
+        return Ok(None);
+    };
+    let outpoints = decode_quote_outpoints(&bytes)?;
+    let subset = read_federation_chain_utxos_kv(db, &outpoints).await?;
+    Ok(subset.quote_payment_at_or_before(quote, max_operation_index)?)
+}
+
+/// Compute the canonical cumulative on-chain payment for one quote inside
+/// `transaction` in O(outputs for quote).
+pub async fn load_federation_quote_payment_at_or_before_in_tx(
+    transaction: &mut DynMintTransaction,
+    quote: &str,
+    max_operation_index: u64,
+) -> std::result::Result<Option<FederationOnchainQuotePayment>, Error> {
+    load_federation_quote_payment_at_or_before_kv(&mut **transaction, quote, max_operation_index)
+        .await
+}
+
+pub(crate) async fn load_federation_quote_payment_at_or_before_kv<T>(
+    transaction: &mut T,
+    quote: &str,
+    max_operation_index: u64,
+) -> std::result::Result<Option<FederationOnchainQuotePayment>, Error>
+where
+    T: KVStoreTransaction<database::Error> + ?Sized + Send,
+{
+    if quote.is_empty() || quote.len() > MAX_QUOTE_ID_BYTES {
+        return Err(invalid_state("on-chain quote payment key is invalid").into());
+    }
+    ensure_federation_state_index_initialized_kv::<FederationChainObservationState, _>(transaction)
+        .await?;
+    let Some(bytes) = transaction
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FEDERATION_CHAIN_OBSERVATION_INDEX_NAMESPACE,
+            &quote_index_key(quote),
+        )
+        .await?
+    else {
+        return Ok(None);
+    };
+    let outpoints = decode_quote_outpoints(&bytes)?;
+    let subset = load_federation_chain_utxos_kv(transaction, &outpoints).await?;
+    Ok(subset.quote_payment_at_or_before(quote, max_operation_index)?)
+}
+
+/// Atomically associate accepted Cashu liability with an exact quote payment
+/// inside `transaction` in O(outputs for quote).
+pub async fn mark_federation_quote_liability_issued_at_or_before_in_tx(
+    transaction: &mut DynMintTransaction,
+    quote: &str,
+    max_operation_index: u64,
+    expected_amount_sat: u64,
+    expected_payment_id: [u8; 32],
+) -> std::result::Result<Vec<OutPoint>, Error> {
+    mark_federation_quote_liability_issued_at_or_before_kv(
+        &mut **transaction,
+        quote,
+        max_operation_index,
+        expected_amount_sat,
+        expected_payment_id,
+    )
+    .await
+}
+
+pub(crate) async fn mark_federation_quote_liability_issued_at_or_before_kv<T>(
+    transaction: &mut T,
+    quote: &str,
+    max_operation_index: u64,
+    expected_amount_sat: u64,
+    expected_payment_id: [u8; 32],
+) -> std::result::Result<Vec<OutPoint>, Error>
+where
+    T: KVStoreTransaction<database::Error> + ?Sized + Send,
+{
+    if quote.is_empty() || quote.len() > MAX_QUOTE_ID_BYTES {
+        return Err(invalid_state("on-chain quote payment key is invalid").into());
+    }
+    ensure_federation_state_index_initialized_kv::<FederationChainObservationState, _>(transaction)
+        .await?;
+    let outpoints = match transaction
+        .kv_read(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FEDERATION_CHAIN_OBSERVATION_INDEX_NAMESPACE,
+            &quote_index_key(quote),
+        )
+        .await?
+    {
+        Some(bytes) => decode_quote_outpoints(&bytes)?,
+        None => Vec::new(),
+    };
+    let mut subset = load_federation_chain_utxos_kv(transaction, &outpoints).await?;
+    let marked = subset.mark_quote_liability_issued_at_or_before(
+        quote,
+        max_operation_index,
+        expected_amount_sat,
+        expected_payment_id,
+    )?;
+    for outpoint in &marked {
+        if let Some(utxo) = subset.utxo(*outpoint) {
+            let key = outpoint_row_key(UTXO_ROW, outpoint);
+            let encoded = canonical_json_bytes(utxo)?;
+            transaction
+                .kv_write(
+                    FEDERATION_STATE_PRIMARY_NAMESPACE,
+                    FederationChainObservationState::SECONDARY_NAMESPACE,
+                    &key,
+                    &encoded,
+                )
+                .await?;
+        }
+    }
+    Ok(marked)
 }
 
 /// Replace every spent output whose spend `retire` selects by its
@@ -1359,6 +1976,8 @@ where
 
 impl FederationStateTable for FederationChainObservationState {
     const SECONDARY_NAMESPACE: &'static str = "chain_observation";
+    const INDEX_SECONDARY_NAMESPACE: Option<&'static str> =
+        Some(FEDERATION_CHAIN_OBSERVATION_INDEX_NAMESPACE);
 
     fn to_rows(&self) -> Result<FederationStateRows> {
         self.validate()?;
@@ -1385,10 +2004,7 @@ impl FederationStateTable for FederationChainObservationState {
                     state.utxos.insert(utxo.outpoint.to_string(), utxo);
                 }
                 SPENT_ROW => {
-                    let spent: FederationSpentWalletUtxo =
-                        decode_row(key, bytes, |spent: &FederationSpentWalletUtxo| {
-                            Ok(outpoint_row_key(SPENT_ROW, &spent.outpoint))
-                        })?;
+                    let spent = decode_spent_row(key, bytes)?;
                     state.spent.insert(spent.outpoint.to_string(), spent);
                 }
                 _ => return Err(unknown_row_kind()),
@@ -1396,6 +2012,32 @@ impl FederationStateTable for FederationChainObservationState {
         }
         state.validate()?;
         Ok(state)
+    }
+
+    fn build_index_rows(stored_rows: &FederationStateRows) -> Result<FederationStateRows> {
+        let retired = Self::retire_terminal_rows(stored_rows.clone())?;
+        let state = Self::from_rows(&retired)?;
+        let mut by_quote = BTreeMap::<String, BTreeMap<String, OutPoint>>::new();
+        for utxo in state.utxos.values() {
+            by_quote
+                .entry(utxo.allocation.quote.clone())
+                .or_default()
+                .insert(utxo.outpoint.to_string(), utxo.outpoint);
+        }
+        for spent in state.spent.values() {
+            if let Some(payment) = &spent.quote_payment {
+                by_quote
+                    .entry(payment.quote.clone())
+                    .or_default()
+                    .insert(spent.outpoint.to_string(), spent.outpoint);
+            }
+        }
+        let mut index_rows = FederationStateRows::new();
+        for (quote, outpoints) in by_quote {
+            let ordered = outpoints.into_values().collect::<Vec<_>>();
+            insert_row(&mut index_rows, quote_index_key(&quote), &ordered)?;
+        }
+        Ok(index_rows)
     }
 
     /// Every spent output is read through its tombstone.

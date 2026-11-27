@@ -655,9 +655,13 @@ async fn assert_rbf_lifecycle(original_wins: bool) {
         .expect("accept original");
     federation.replicate(0).await;
     let signed_original = federation.sign(&original).await;
-    federation.broadcast(0, original_id).await; // Persist authorization.
-    for _ in 0..5 {
-        federation.broadcast(0, original_id).await;
+    assert_eq!(
+        federation.broadcast(0, original_id).await,
+        2,
+        "first broadcast wake persists authorization and broadcasts immediately"
+    );
+    for _ in 0..4 {
+        assert_eq!(federation.broadcast(0, original_id).await, 1);
     }
     let transactions = federation.states[0]
         .mint
@@ -752,7 +756,22 @@ async fn assert_rbf_lifecycle(original_wins: bool) {
         signed_original.input_signatures[0].session_id,
         signed_replacement.input_signatures[0].session_id
     );
-    federation.broadcast(0, replacement_id).await; // Persist authorization.
+    let replacement_intent = runtime.transaction_broadcast_intent_operation(
+        cdk::federation::FederationTransactionBroadcastIntent {
+            proposal_id: signed_replacement.proposal_id,
+            txid: signed_replacement.txid,
+            settlement_policy: runtime
+                .onchain_transaction_settlement_policy(replacement.scope)
+                .expect("replacement settlement policy"),
+        },
+    );
+    federation.states[0]
+        .submit_federation_envelope(replacement_intent)
+        .await
+        .expect("submit replacement broadcast intent")
+        .ensure_accepted()
+        .expect("accept replacement broadcast intent");
+    federation.replicate(0).await;
     assert_eq!(
         federation.broadcast(0, original_id).await,
         1,
@@ -869,4 +888,518 @@ async fn assert_rbf_lifecycle(original_wins: bool) {
         0,
         "terminal loser must remain inactive"
     );
+}
+
+#[tokio::test]
+async fn transaction_broadcaster_persists_intent_and_broadcasts_immediately_in_one_wake() {
+    let (federation, original) = RbfFederation::new().await;
+    let original_id = original.proposal_id().expect("original id");
+    let runtime = federation.states[0]
+        .mint
+        .federation_config()
+        .expect("runtime");
+    federation.states[0]
+        .submit_federation_envelope(
+            runtime
+                .transaction_proposal_operation(original.clone())
+                .expect("proposal operation"),
+        )
+        .await
+        .expect("submit original")
+        .ensure_accepted()
+        .expect("accept original");
+    federation.replicate(0).await;
+    let signed_original = federation.sign(&original).await;
+
+    let advanced = federation.broadcast(0, original_id).await;
+    assert_eq!(
+        advanced, 2,
+        "a single broadcast wake must authorize and immediately broadcast signed bytes"
+    );
+
+    let broadcast_txs = federation
+        .backend
+        .transactions
+        .lock()
+        .expect("broadcasts")
+        .clone();
+    assert_eq!(broadcast_txs.len(), 1);
+    assert_eq!(
+        broadcast_txs[0],
+        signed_original.transaction().expect("signed tx")
+    );
+
+    let transactions = federation.states[0]
+        .mint
+        .federation_transaction_state()
+        .await
+        .expect("transaction state");
+    let accepted = transactions
+        .accepted_transaction(original_id)
+        .expect("accepted original");
+    assert_eq!(
+        accepted.state,
+        cdk::federation::FederationAcceptedTransactionState::Broadcast
+    );
+    let broadcast = accepted.broadcast.as_ref().expect("broadcast record");
+    assert_eq!(
+        broadcast
+            .first_success
+            .as_ref()
+            .expect("first success")
+            .observation
+            .result,
+        cdk::federation::FederationTransactionBroadcastResult::Accepted
+    );
+
+    let entries = federation.states[0]
+        .mint
+        .localstore()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
+        .await
+        .expect("journal entries");
+    let intent_entry = entries
+        .iter()
+        .find(|entry| {
+            matches!(
+                &entry.envelope.operation,
+                FederationOperation::TransactionBroadcastIntent(intent)
+                    if intent.proposal_id == original_id
+            )
+        })
+        .expect("broadcast intent journal entry");
+    let observation_entry = entries
+        .iter()
+        .find(|entry| {
+            matches!(
+                &entry.envelope.operation,
+                FederationOperation::TransactionBroadcastObservation(observation)
+                    if observation.proposal_id == original_id
+            )
+        })
+        .expect("broadcast observation journal entry");
+    assert!(
+        intent_entry.index < observation_entry.index,
+        "TransactionBroadcastIntent must finalize before TransactionBroadcastObservation"
+    );
+}
+
+#[tokio::test]
+async fn onchain_melt_collapses_change_allocation_and_proposal_into_single_unit_and_coalesces_melts(
+) {
+    let (federation, original) = RbfFederation::new().await;
+    let scope = original.scope;
+    let recipient_a = ScriptBuf::from_bytes([vec![0, 32], vec![21; 32]].concat());
+    let recipient_b = ScriptBuf::from_bytes([vec![0, 32], vec![22; 32]].concat());
+    let intent_a = FederationOnchainPaymentIntent::new(
+        "coalesced-melt-a".to_string(),
+        FederationOperationId::from_bytes([61; 32]),
+        recipient_a,
+        10_000,
+        10_000,
+        0,
+        1,
+        1,
+        scope,
+    )
+    .expect("intent a");
+    let intent_b = FederationOnchainPaymentIntent::new(
+        "coalesced-melt-b".to_string(),
+        FederationOperationId::from_bytes([62; 32]),
+        recipient_b,
+        12_000,
+        10_000,
+        0,
+        1,
+        2,
+        scope,
+    )
+    .expect("intent b");
+    let expected_batch =
+        FederationOnchainPaymentBatch::new(vec![intent_a.clone(), intent_b.clone()], 2)
+            .expect("expected coalesced batch");
+    let mut seeded = FederationTransactionState::new();
+    seeded
+        .add_pending_intent(
+            FederationOnchainPaymentIntentRecord::pending(intent_a).expect("record a"),
+        )
+        .expect("add intent a");
+    seeded
+        .add_pending_intent(
+            FederationOnchainPaymentIntentRecord::pending(intent_b).expect("record b"),
+        )
+        .expect("add intent b");
+    for state in &federation.states {
+        let mut tx = state
+            .mint
+            .localstore()
+            .begin_transaction()
+            .await
+            .expect("seed transaction");
+        cdk_common::federation::write_federation_state(&mut tx, seeded.clone())
+            .await
+            .expect("write coalesced intents");
+        tx.commit().await.expect("commit seeded intents");
+    }
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_millis();
+    let mut proposer_index = None;
+    for (index, state) in federation.states.iter().enumerate() {
+        let runtime = state.mint.federation_config().expect("runtime");
+        let client = FederationRestPeerClient::new(
+            federation.transport.clone(),
+            runtime.public_config(),
+            runtime.private_config().clone(),
+        )
+        .expect("client");
+        let advanced = state
+            .federation
+            .wallet_liveness
+            .run_round(state, &client, now)
+            .await
+            .expect("wallet liveness round");
+        if advanced > 0 {
+            proposer_index = Some(index);
+            break;
+        }
+    }
+    let proposer_index = proposer_index.expect("scheduled proposer must propose coalesced batch");
+    federation.replicate(proposer_index).await;
+
+    let transactions = federation.states[proposer_index]
+        .mint
+        .federation_transaction_state()
+        .await
+        .expect("transaction state");
+    assert_eq!(transactions.accepted_transactions().len(), 1);
+    let accepted = transactions
+        .accepted_transactions()
+        .values()
+        .next()
+        .expect("accepted proposal");
+    assert_eq!(accepted.proposal.batch_id, expected_batch.batch_id);
+    assert_eq!(
+        accepted.proposal.recipient_outputs.len(),
+        2,
+        "both pending on-chain melts must coalesce into one multi-output transaction"
+    );
+    let change_output = accepted
+        .proposal
+        .change_output
+        .as_ref()
+        .expect("change output");
+    // Fixture pre-allocated index 0 for "rbf-change", so deterministic next change index is 1.
+    assert_eq!(change_output.derivation_index, 1);
+
+    let expected_change_key = format!("wallet-change-{}", expected_batch.batch_id);
+    let entries = federation.states[proposer_index]
+        .mint
+        .localstore()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
+        .await
+        .expect("journal entries");
+    let allocation_entry = entries
+        .iter()
+        .find(|entry| {
+            matches!(
+                &entry.envelope.operation,
+                FederationOperation::AddressAllocation(op)
+                    if op.quote == expected_change_key
+                        && op.keychain == FederationAddressKeychain::Internal
+            )
+        })
+        .expect("change address allocation entry");
+    let proposal_id = accepted.proposal.proposal_id().expect("proposal id");
+    let proposal_entry = entries
+        .iter()
+        .find(|entry| {
+            matches!(
+                &entry.envelope.operation,
+                FederationOperation::TransactionProposal(proposal)
+                    if proposal.proposal_id().ok() == Some(proposal_id)
+            )
+        })
+        .expect("transaction proposal entry");
+    assert_eq!(
+        allocation_entry.status(),
+        FederationOperationStatus::Applied
+    );
+    assert_eq!(proposal_entry.status(), FederationOperationStatus::Applied);
+    let alloc_evidence = allocation_entry
+        .consensus_evidence
+        .expect("allocation consensus evidence");
+    let proposal_evidence = proposal_entry
+        .consensus_evidence
+        .expect("proposal consensus evidence");
+    assert_eq!(
+        alloc_evidence.unit_finalization_index, proposal_evidence.unit_finalization_index,
+        "change allocation and transaction proposal must finalize in the same consensus unit"
+    );
+    assert_eq!(alloc_evidence.unit_index, proposal_evidence.unit_index);
+    assert_eq!(
+        proposal_evidence.item_index,
+        alloc_evidence.item_index + 1,
+        "transaction proposal must immediately follow its change allocation in the ordered group"
+    );
+}
+
+#[tokio::test]
+async fn onchain_mint_quote_collapses_address_allocation_and_quote_into_single_unit_and_handles_race(
+) {
+    let (mut config, first, _, _) = transport_config_three();
+    let roots = super::frost_signing::frost_roots(config.federation_id.to_bytes(), 3, 2);
+    let public = roots[0].public();
+    let root = FederationFrostRootPublicConfig {
+        version: 2,
+        federation_id: config.federation_id,
+        setup_authorization: config.setup_authorization,
+        ceremony_id: FederationDkgCeremonyId::from_bytes([43; 32]),
+        root_key_epoch: 1,
+        dkg_protocol_version: public.dkg_protocol_version(),
+        ciphersuite_version: 1,
+        threshold: 2,
+        participant_mapping: config
+            .members
+            .keys()
+            .map(|member| (*member, member.get()))
+            .collect(),
+        verification_shares: public
+            .verifying_shares()
+            .iter()
+            .map(|(member, share)| (MemberId::new(member.get()).expect("member"), *share))
+            .collect(),
+        untweaked_group_key: public.group_key(),
+        transcript_binding: public.transcript_binding(),
+        canonical_public_package: public.encode(),
+    };
+    let application = FederationFrostApplicationConfig::new_cdk_onchain(
+        &config,
+        &root,
+        1,
+        BitcoinNetwork::Regtest,
+        FederationOnchainConfirmationPolicy::new(1).expect("confirmations"),
+        1,
+    )
+    .expect("application");
+    config.frost_wallet = Some(
+        FederationFrostWalletConfig::new(
+            &config,
+            root,
+            Some(application.clone()),
+            Default::default(),
+        )
+        .expect("wallet config"),
+    );
+
+    let (_backend, source, server) = bitcoin_backend().await;
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let seed = mnemonic.to_seed_normalized("");
+    let runtime_config = cdk::mint::FederationRuntimeConfig::new(config.clone(), first.clone())
+        .expect("runtime config");
+    let fake: DynMintPayment = Arc::new(FakeWallet::new(
+        FeeReserve {
+            min_fee_reserve: 1.into(),
+            percent_fee_reserve: 0.0,
+        },
+        HashMap::default(),
+        HashSet::default(),
+        0,
+        CurrencyUnit::Sat,
+    ));
+    let mut builder = MintBuilder::new(db.clone()).with_federation_config(runtime_config.clone());
+    #[cfg(feature = "federation-bark")]
+    builder.set_federation_bark_store(db.clone());
+    builder
+        .add_payment_processor(
+            CurrencyUnit::Sat,
+            PaymentMethod::Known(KnownMethod::Onchain),
+            MintMeltLimits::new(1, 100_000),
+            fake,
+        )
+        .await
+        .expect("onchain payment processor");
+    let mint = Arc::new(builder.build_with_seed(db, &seed).await.expect("mint"));
+    let consensus = FederationConsensusRuntime::authenticated_aleph_bft(
+        runtime_config.public_config(),
+        runtime_config.member_id(),
+        0,
+    )
+    .expect("consensus");
+
+    let directory = tempfile::tempdir().expect("wallet dir");
+    let wallet_scope = FederatedWalletScope::new(
+        config.federation_id.to_bytes(),
+        application.application_id.to_bytes(),
+        1,
+        1,
+        application.descriptor_commitment,
+    )
+    .expect("wallet scope");
+    let wallet = FederatedBdkWallet::open(
+        FederatedWalletConfig::new(
+            wallet_scope,
+            &application.external_descriptor,
+            &application.internal_descriptor,
+            BitcoinNetwork::Regtest,
+        )
+        .expect("descriptors"),
+        source,
+        directory.path(),
+    )
+    .expect("BDK wallet");
+    wallet.sync_once().await.expect("initial sync");
+
+    let state = MintState {
+        mint: Arc::clone(&mint),
+        cache: Arc::new(crate::cache::HttpCache::default()),
+        node: cdk_federation::FederationNode {
+            mint: Arc::clone(&mint),
+            federation: crate::federation::FederationNodeRuntime {
+                transport: crate::default_federation_transport(),
+                membership: crate::federation::FederationMembership::configured(
+                    crate::federation::FederationMemberContext::new(
+                        mint,
+                        Arc::new(tokio::sync::Mutex::new(consensus)),
+                        Arc::new(tokio::sync::Mutex::new(
+                            cdk::federation::FederationRestSequenceTracker::new(),
+                        )),
+                        crate::FederationPeerSyncConfig::default(),
+                    ),
+                ),
+                tasks: crate::federation::services::FederationTaskGroup::default(),
+                payment_observer: crate::federation::FederationPaymentObserver::default(),
+                transaction_broadcaster:
+                    crate::federation::FederationTransactionBroadcaster::default(),
+                wallet_liveness: crate::federation::FederationWalletLivenessWorker::default(),
+                onchain_sync_interval: None,
+                components: crate::federation::runtime_components::FederationRuntimeComponents::new(
+                    Some(Arc::new(tokio::sync::Mutex::new(
+                        crate::FederationSyncState::default(),
+                    ))),
+                    None,
+                    None,
+                    vec![wallet.clone()],
+                    None,
+                    #[cfg(feature = "federation-bark")]
+                    None,
+                ),
+                aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
+                aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
+                aleph_bft_halt_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                finality: cdk_federation::FederationFinalityMode::Local,
+            },
+        },
+    };
+
+    let pubkey = SecretKey::generate().public_key();
+    let payload = serde_json::to_value(cdk::nuts::MintQuoteOnchainRequest {
+        unit: CurrencyUnit::Sat,
+        pubkey,
+    })
+    .expect("onchain quote payload");
+    let response = crate::custom_handlers::post_mint_custom_quote(
+        AuthHeader::None,
+        State(state.clone()),
+        axum::extract::Path("onchain".to_string()),
+        axum::Json(payload),
+    )
+    .await
+    .expect("onchain mint quote response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response body");
+    let quote: cdk::nuts::MintQuoteOnchainResponse<QuoteId> =
+        serde_json::from_slice(&body).expect("parse onchain quote response");
+
+    let entries = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries(FederationIndexRange::ALL)
+        .await
+        .expect("journal entries");
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].status(), FederationOperationStatus::Applied);
+    assert_eq!(entries[1].status(), FederationOperationStatus::Applied);
+    assert!(matches!(
+        &entries[0].envelope.operation,
+        FederationOperation::AddressAllocation(op)
+            if op.quote == quote.quote.to_string()
+                && op.keychain == FederationAddressKeychain::External
+    ));
+    assert!(matches!(
+        &entries[1].envelope.operation,
+        FederationOperation::MintQuote(op) if op.quote == quote.quote.to_string()
+    ));
+    let alloc_evidence = entries[0].consensus_evidence.expect("allocation evidence");
+    let quote_evidence = entries[1].consensus_evidence.expect("quote evidence");
+    assert_eq!(
+        alloc_evidence.unit_finalization_index, quote_evidence.unit_finalization_index,
+        "address allocation and mint quote must finalize in a single consensus unit"
+    );
+    assert_eq!(alloc_evidence.unit_index, quote_evidence.unit_index);
+    assert_eq!(quote_evidence.item_index, alloc_evidence.item_index + 1);
+    assert_eq!(
+        wallet
+            .reveal_address(FederatedWalletKeychain::External, 0)
+            .await
+            .expect("revealed external address"),
+        quote.request
+    );
+
+    // Concurrent external-allocation race: prepare a speculative group
+    // predicting index 1, then let another external allocation claim index 1
+    // before the group submits. The handler must detect the race and fall back
+    // cleanly to a fresh quote with a valid allocated address.
+    let quote_request = cdk::mint::MintQuoteRequest::Onchain(cdk::nuts::MintQuoteOnchainRequest {
+        unit: CurrencyUnit::Sat,
+        pubkey,
+    });
+    let (speculative_quote, lookup_id, predecessor) =
+        crate::custom_handlers::prepare_federated_onchain_mint_quote_group(
+            &state,
+            quote_request.clone(),
+        )
+        .await
+        .expect("prepare speculative onchain mint quote");
+    let interloper = runtime_config
+        .address_allocation_operation(
+            "interloper-external-quote",
+            application.application_id,
+            application.application_key_epoch,
+            FederationAddressKeychain::External,
+        )
+        .expect("interloper allocation");
+    state
+        .submit_federation_envelope(interloper)
+        .await
+        .expect("submit interloper")
+        .ensure_accepted()
+        .expect("accept interloper");
+
+    let fallback_quote = crate::custom_handlers::submit_federation_onchain_mint_quote_operation(
+        &state,
+        quote_request,
+        speculative_quote.clone(),
+        lookup_id,
+        predecessor,
+    )
+    .await
+    .expect("raced speculative quote must recover via fallback");
+    assert_ne!(fallback_quote.quote(), speculative_quote.quote());
+    assert_ne!(fallback_quote.request(), speculative_quote.request());
+    let persisted = state
+        .mint
+        .localstore()
+        .get_mint_quote(fallback_quote.quote())
+        .await
+        .expect("load fallback quote")
+        .expect("fallback quote persisted");
+    assert_eq!(persisted.request, fallback_quote.request());
+
+    server.abort();
 }
