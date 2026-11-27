@@ -3225,6 +3225,20 @@ async fn test_swap_saga_compensation_publishes_unspent_inputs() {
         })
         .unwrap();
 
+    // Consume the initial UNSPENT state so it cannot satisfy the rollback check
+    let mut initial: std::collections::HashSet<_> = ys.iter().copied().collect();
+    while !initial.is_empty() {
+        let event = tokio::time::timeout(Duration::from_secs(5), subscription.recv())
+            .await
+            .expect("initial proof state")
+            .expect("subscription closed");
+        let NotificationPayload::ProofState(proof_state) = event.into_inner() else {
+            panic!("expected proof state notification");
+        };
+        assert_eq!(proof_state.state, State::Unspent);
+        assert!(initial.remove(&proof_state.y), "duplicate initial state");
+    }
+
     let saga = SwapSaga::new(&mint, mint.localstore(), mint.pubsub_manager())
         .setup_swap(
             &input_proofs,

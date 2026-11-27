@@ -1381,6 +1381,22 @@ async fn test_swap_state_transition_notifications() {
         })
         .expect("Should subscribe successfully");
 
+    // Consume the initial UNSPENT state for every input before the swap
+    let mut initial: std::collections::HashSet<String> = proof_ys.iter().cloned().collect();
+    while !initial.is_empty() {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(5), listener.recv())
+            .await
+            .expect("initial proof state")
+            .expect("subscription closed");
+        match msg.into_inner() {
+            cashu::NotificationPayload::ProofState(cashu::ProofState { y, state, .. }) => {
+                assert_eq!(state, State::Unspent, "unexpected initial state");
+                assert!(initial.remove(&y.to_string()), "duplicate initial state");
+            }
+            _ => panic!("Unexpected notification type"),
+        }
+    }
+
     // Execute swap
     mint.process_swap_request(swap_request)
         .await

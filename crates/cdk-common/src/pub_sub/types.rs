@@ -77,4 +77,13 @@ pub trait Event: Clone + Send + Sync + Eq + PartialEq + DeserializeOwned + Seria
 
     /// To topics
     fn get_topics(&self) -> Vec<Self::Topic>;
+
+    /// Whether no later event can supersede this one for its topics.
+    ///
+    /// A queued final live event makes a backfill snapshot for the same topics redundant,
+    /// so the snapshot is dropped. Live publishes are not ordered, so a non-final live
+    /// event may be older than the snapshot and never suppresses it.
+    fn is_final(&self) -> bool {
+        false
+    }
 }
