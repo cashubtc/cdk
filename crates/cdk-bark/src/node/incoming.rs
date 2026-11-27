@@ -34,6 +34,7 @@ use super::observer::{
 };
 use super::receive_secret::FederationBarkReceiveSecretCoordinator;
 use super::FederatedBarkNode;
+use crate::IndexedBarkProjection;
 
 const FEDERATION_BARK_RECEIVE_INTENT_LIFETIME_SECONDS: u64 = 7 * 24 * 60 * 60;
 const FEDERATION_BARK_RECEIVE_EXPIRY_GRACE_SECONDS: u64 = 15 * 60;
@@ -99,15 +100,12 @@ fn validate_atomic_receive_claim_group(
 
 async fn receive_transition_entry(
     state: &dyn FederatedBarkNode,
-    projection: &cdk::federation::FederationBarkProjectionSnapshot,
+    projection: &IndexedBarkProjection,
     action_id: FederationBarkActionId,
     phase: FederationBarkSemanticPhase,
 ) -> Result<cdk::federation::FederationJournalEntry, cdk::Error> {
     let operation_id = projection
-        .transitions
-        .iter()
-        .filter(|record| record.action_id == action_id && record.phase == phase)
-        .max_by_key(|record| record.operation_index)
+        .latest_transition_for_phase(action_id, phase)
         .map(|record| record.operation_id)
         .ok_or(cdk::Error::Internal)?;
     state
@@ -120,7 +118,8 @@ async fn receive_transition_entry(
 
 fn receive_claim_proposal(
     config: &cdk::federation::FederationConfig,
-    projection: &cdk::federation::FederationBarkProjectionSnapshot,
+    runtime: &crate::FederatedBarkRuntime,
+    projection: &IndexedBarkProjection,
     actor: cdk::federation::MemberId,
 ) -> Result<crate::FederatedBarkReceiveClaimProposal, cdk::Error> {
     let application = super::bark_application(config)?;
@@ -130,15 +129,15 @@ fn receive_claim_proposal(
         .copied()
         .take(usize::from(application.threshold))
         .collect::<Vec<_>>();
-    let next_index = projection
-        .derivation_allocations
-        .iter()
-        .map(|allocation| allocation.locator.index)
-        .max()
+    let projection_next_index = projection
+        .max_locator_index()
         .unwrap_or(0)
         .checked_add(1)
         .filter(|index| *index <= FEDERATION_MAX_DERIVATION_INDEX)
         .ok_or(cdk::Error::Internal)?;
+    let next_index = runtime
+        .reserve_next_receive_locator_index(projection_next_index)
+        .map_err(|_| cdk::Error::Internal)?;
     Ok(crate::FederatedBarkReceiveClaimProposal {
         actor,
         signer_set,
@@ -147,15 +146,27 @@ fn receive_claim_proposal(
     })
 }
 
+fn receive_action_id_for_quote(
+    state: &dyn FederatedBarkNode,
+    quote_id: &QuoteId,
+) -> Result<FederationBarkActionId, cdk::Error> {
+    let federation = state
+        .mint()
+        .federation_config()
+        .ok_or(cdk::Error::Internal)?;
+    FederationBarkActionId::derive_receive_intent(federation.federation_id(), &quote_id.to_string())
+        .map_err(cdk::Error::from)
+}
+
 /// How one incoming advancement waits for the Ark server to report a change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReceiveBackendWait {
     /// Poll once; an unchanged receive awaits external evidence.
     Poll,
     /// Stop before observing the receive and record what to wait for, so the
-    /// caller can wait for an Ark update after releasing the incoming lock.
+    /// caller can wait for an Ark update after releasing the per-invoice lock.
     Defer,
-    /// The caller already waited without the incoming lock: poll once and
+    /// The caller already waited without the per-invoice lock: poll once and
     /// report an unchanged receive as awaiting a backend notification.
     Waited,
 }
@@ -171,18 +182,21 @@ struct ReceiveWaitTarget {
 /// Poll and advance one already-created federated Bark quote. Mailbox events
 /// call the same function; they never supply settlement truth themselves.
 ///
-/// With `wait_for_backend_update`, the Ark long-poll runs after the member's
-/// incoming lock is released. That lock serializes every incoming quote on the
-/// member, including new quote creation, so holding it across a multi-second
-/// server wait for each unpaid invoice starves everything else.
+/// Operations targeting different quotes/invoices run concurrently via per-action
+/// locks on [`crate::FederatedBarkRuntime`]. With `wait_for_backend_update`, the
+/// Ark long-poll also runs after releasing the per-invoice lock so peer evidence
+/// delivery for the same invoice is never blocked by the wait window.
 pub async fn advance_federated_bark_mint_quote(
     state: &dyn FederatedBarkNode,
     quote_id: &QuoteId,
     observer_fallback_round: u32,
     wait_for_backend_update: bool,
 ) -> Result<FederationPaymentAdvancement, cdk::Error> {
+    let runtime = state.bark_runtime().ok_or_else(bark_unavailable)?;
+    let action_id = receive_action_id_for_quote(state, quote_id)?;
+    let lock_slot = runtime.incoming_lock(action_id);
     advance_with_unlocked_backend_wait(
-        state.bark_incoming_lock(),
+        lock_slot.mutex(),
         wait_for_backend_update,
         |backend_wait| async move {
             let mut wait_target = None;
@@ -270,7 +284,10 @@ pub async fn advance_federated_bark_mint_quote_from_evidence_delivery(
     quote_id: &QuoteId,
     collector_fallback_round: u32,
 ) -> Result<FederationPaymentAdvancement, cdk::Error> {
-    let _guard = state.bark_incoming_lock().lock().await;
+    let runtime = state.bark_runtime().ok_or_else(bark_unavailable)?;
+    let action_id = receive_action_id_for_quote(state, quote_id)?;
+    let lock_slot = runtime.incoming_lock(action_id);
+    let _guard = lock_slot.mutex().lock().await;
     advance_federated_bark_mint_quote_inner(
         state,
         quote_id,
@@ -282,7 +299,7 @@ pub async fn advance_federated_bark_mint_quote_from_evidence_delivery(
     .await
 }
 
-/// Advance one incoming quote. The caller holds the member's incoming Bark
+/// Advance one incoming quote. The caller holds the per-invoice incoming Bark
 /// lock.
 ///
 /// With [`ReceiveBackendWait::Defer`], a receive that would be observed is
@@ -310,17 +327,12 @@ async fn advance_federated_bark_mint_quote_inner(
         super::latency::FederationLatencyPhase::BarkProjectionReady,
     );
     let projection_result =
-        super::projection::federation_bark_ready_projection(state.mint(), runtime).await;
+        super::projection::federation_bark_ready_indexed_projection(state.mint(), runtime).await;
     projection_timer.finish(super::latency::FederationLatencyOutcome::from_success(
         projection_result.is_ok(),
     ));
     let projection = projection_result.map_err(super::projection::projection_error)?;
-    let Some(action) = projection
-        .actions
-        .iter()
-        .find(|action| action.quote.as_deref() == Some(quote.as_str()))
-        .cloned()
-    else {
+    let Some(action) = projection.action_for_quote(&quote).cloned() else {
         return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
     };
     let intent = state
@@ -329,24 +341,15 @@ async fn advance_federated_bark_mint_quote_inner(
         .await?
         .ok_or(cdk::Error::Internal)?;
     let prepared_record = projection
-        .transitions
-        .iter()
-        .find(|record| {
-            record.action_id == action.action_id
-                && record.phase == FederationBarkSemanticPhase::ReceivePrepared
-        })
+        .first_transition_for_phase(
+            action.action_id,
+            FederationBarkSemanticPhase::ReceivePrepared,
+        )
         .ok_or(cdk::Error::Internal)?;
     let FederationBarkOperation::ReceivePrepared(prepared) = &prepared_record.operation else {
         return Err(cdk::Error::Internal);
     };
-    let accepted_evidence_present = projection.observations.iter().any(|record| {
-        matches!(
-            &record.operation,
-            FederationBarkOperation::MemberObservation(observation)
-                if observation.action_id == action.action_id
-                    && observation.status == FederationBarkObservationStatus::Accepted
-        )
-    });
+    let accepted_evidence_present = projection.has_accepted_receive_observation(action.action_id);
     if action.phase == FederationBarkSemanticPhase::ReceivePrepared
         && receive_is_automatically_terminal(
             prepared.expires_at,
@@ -513,6 +516,7 @@ async fn advance_federated_bark_mint_quote_inner(
                         transition.clone(),
                         receive_claim_proposal(
                             federation.public_config(),
+                            runtime,
                             &projection,
                             intent.actor,
                         )?,
@@ -780,9 +784,22 @@ async fn advance_receive_signing_attempt(
     Ok(FederationPaymentAdvancement::Progressed)
 }
 
+/// Collect threshold independent-member attestations over an accepted
+/// `ReceiveClaimed` transition and submit `EvidenceCertificate(ReceiveClaimed)`.
+///
+/// This remains a separate consensus round from
+/// `[ReceivePreimageDisclosed, ReceiveClaimed]` by protocol invariant
+/// (`docs/federation/payment-trust-model.md`):
+/// - `ReceivePreimageDisclosed` + `ReceiveClaimed` must be recorded in consensus
+///   immediately once the claim actor reveals the preimage to Ark so the claimed
+///   VTXO proof cannot be lost on actor crash.
+/// - Other members must independently verify the claimed VTXO bytes
+///   (`validate_receive_claim_result`) from the accepted `ReceiveClaimed`
+///   operation and bind their attestations to `evidence_operation_id =
+///   ReceiveClaimed.operation_id` before any `MintQuote` can be credited `Paid`.
 async fn advance_receive_claimed_evidence(
     state: &dyn FederatedBarkNode,
-    projection: &cdk::federation::FederationBarkProjectionSnapshot,
+    projection: &IndexedBarkProjection,
     action: &cdk::federation::FederationBarkActionRecord,
     intent: &FederationBarkReceiveIntent,
     observer_fallback_round: u32,
@@ -796,14 +813,10 @@ async fn advance_receive_claimed_evidence(
     let FederationBarkOperation::ActionTransition(claimed) = &action.operation else {
         return Err(cdk::Error::Internal);
     };
-    let already_certified = projection.observations.iter().any(|record| {
-        matches!(
-            &record.operation,
-            FederationBarkOperation::EvidenceCertificate(certificate)
-                if certificate.binding.action_id == action.action_id
-                    && certificate.binding.phase == FederationBarkEvidencePhase::ReceiveClaimed
-        )
-    });
+    let already_certified = projection.has_evidence_certificate(
+        action.action_id,
+        FederationBarkEvidencePhase::ReceiveClaimed,
+    );
     if already_certified {
         return Ok(FederationPaymentAdvancement::Complete);
     }
@@ -925,8 +938,9 @@ pub async fn advance_federated_bark_receive_intent(
     state: &dyn FederatedBarkNode,
     action_id: FederationBarkActionId,
 ) -> Result<usize, cdk::Error> {
-    let _guard = state.bark_incoming_lock().lock().await;
     let runtime = state.bark_runtime().ok_or_else(bark_unavailable)?;
+    let lock_slot = runtime.incoming_lock(action_id);
+    let _guard = lock_slot.mutex().lock().await;
     let projection_timer = super::latency::FederationLatencyTimer::start(
         super::latency::FederationLatencyCorrelation::Action,
         action_id.to_string(),
@@ -935,16 +949,12 @@ pub async fn advance_federated_bark_receive_intent(
         super::latency::FederationLatencyPhase::BarkProjectionReady,
     );
     let projection_result =
-        super::projection::federation_bark_ready_projection(state.mint(), runtime).await;
+        super::projection::federation_bark_ready_indexed_projection(state.mint(), runtime).await;
     projection_timer.finish(super::latency::FederationLatencyOutcome::from_success(
         projection_result.is_ok(),
     ));
     let projection = projection_result.map_err(super::projection::projection_error)?;
-    let action = projection
-        .actions
-        .iter()
-        .find(|action| action.action_id == action_id)
-        .ok_or(cdk::Error::Internal)?;
+    let action = projection.action(action_id).ok_or(cdk::Error::Internal)?;
     let FederationBarkOperation::ReceiveIntent(intent) = &action.operation else {
         return Ok(0);
     };
@@ -985,6 +995,22 @@ pub fn federated_bark_quote_id(
 }
 
 /// Prepare the ordinary CDK quote from a consensus-accepted Bark invoice.
+///
+/// Incoming quote creation intentionally stays a two-round consensus protocol:
+/// 1. Secret replication completes and `ReceiveIntent` is accepted by consensus
+///    before calling `prepare_receive_invoice` on the Ark server
+///    (`docs/federation/payment-trust-model.md`).
+/// 2. The caller commits `[ReceivePrepared, MintQuote]` together in the second
+///    ordered consensus group.
+///
+/// Collapsing `[ReceiveIntent, ReceivePrepared, MintQuote]` into one ordered
+/// group is unsafe because ordered groups only guarantee consecutive placement
+/// in a unit while each operation is admitted/applied against its own conflict
+/// keys independently: if two members concurrently propose the same destination
+/// `Locator`, `ReceiveIntent` and `ReceivePrepared` on the losing member are
+/// rejected, whereas `MintQuote` (whose conflict key is only the quote ID)
+/// would still be accepted with a live Ark invoice and no Bark receive lineage,
+/// permanently stranding any payment to that invoice.
 pub async fn prepare_federated_bark_mint_quote(
     state: &dyn FederatedBarkNode,
     quote_id: QuoteId,
@@ -997,7 +1023,10 @@ pub async fn prepare_federated_bark_mint_quote(
     ),
     cdk::Error,
 > {
-    let _guard = state.bark_incoming_lock().lock().await;
+    let runtime = state.bark_runtime().ok_or_else(bark_unavailable)?;
+    let action_id = receive_action_id_for_quote(state, &quote_id)?;
+    let lock_slot = runtime.incoming_lock(action_id);
+    let _guard = lock_slot.mutex().lock().await;
     if let Some(quote) = state.mint().localstore().get_mint_quote(&quote_id).await? {
         let request_lookup_id = quote.request_lookup_id.clone();
         return Ok((quote.try_into()?, request_lookup_id, None));
@@ -1040,14 +1069,12 @@ async fn accepted_invoice(
     if amount < limits.minimum_sat() || amount > limits.maximum_sat() {
         return Err(cdk::Error::InvalidPaymentRequest);
     }
-    let projection = super::projection::federation_bark_ready_projection(state.mint(), runtime)
-        .await
-        .map_err(super::projection::projection_error)?;
+    let projection =
+        super::projection::federation_bark_ready_indexed_projection(state.mint(), runtime)
+            .await
+            .map_err(super::projection::projection_error)?;
     let quote = quote_id.to_string();
-    let action = projection
-        .actions
-        .iter()
-        .find(|action| action.quote.as_deref() == Some(quote.as_str()));
+    let action = projection.action_for_quote(&quote);
 
     if let Some(action) = action {
         return match &action.operation {
@@ -1150,33 +1177,27 @@ async fn accepted_invoice(
     intent
         .validate_secret_acknowledgements(federation.public_config())
         .map_err(cdk::Error::from)?;
-    let envelope = federation.operation_envelope(super::bark_federation_operation(
+    let intent_envelope = federation.operation_envelope(super::bark_federation_operation(
         FederationBarkOperation::ReceiveIntent(intent.clone()),
     )?);
-    let accepted = state.submit_envelope(envelope).await?;
-    let entry = accepted.outcome.entry();
-    store
-        .mark_intent_accepted(
-            intent.action_id,
-            crate::FederatedBarkReceiveSecretAcceptedRef {
-                operation_id: entry.operation_id,
-                operation_index: entry.index,
-            },
-        )
-        .map_err(|error| {
-            error
-                .into_federation_error("persist accepted incoming intent", Some(entry.operation_id))
-        })?;
-    let (invoice, _, envelope) =
-        prepare_invoice_candidate(state, entry.operation_id, entry.index, &intent).await?;
-    Ok((invoice, Some(envelope)))
+    let intent_response = state.submit_envelope(intent_envelope).await?;
+    intent_response.ensure_accepted()?;
+    let intent_entry = intent_response.outcome.entry();
+    let (invoice, _, prepared_envelope) = prepare_invoice_candidate(
+        state,
+        intent_entry.operation_id,
+        intent_entry.index,
+        &intent,
+    )
+    .await?;
+    Ok((invoice, Some(prepared_envelope)))
 }
 
 async fn fresh_intent(
     state: &dyn FederatedBarkNode,
     quote_id: &QuoteId,
     request: &cdk::nuts::MintQuoteBolt11Request,
-    projection: &cdk::federation::FederationBarkProjectionSnapshot,
+    projection: &IndexedBarkProjection,
     now: u64,
 ) -> Result<
     (
@@ -1196,14 +1217,12 @@ async fn fresh_intent(
         .minimum_receive_cltv_delta()
         .await
         .map_err(|error| error.into_federation_error("read incoming CLTV requirement", None))?;
-    let next_index = projection
-        .derivation_allocations
-        .iter()
-        .map(|allocation| allocation.locator.index)
-        .max()
-        .map_or(Ok(0), |index| {
-            index.checked_add(1).ok_or_else(bark_unavailable)
-        })?;
+    let projection_next_index = projection
+        .next_locator_index()
+        .ok_or_else(bark_unavailable)?;
+    let next_index = runtime
+        .reserve_next_receive_locator_index(projection_next_index)
+        .map_err(|_| bark_unavailable())?;
     if next_index > FEDERATION_MAX_DERIVATION_INDEX {
         return Err(bark_unavailable());
     }
@@ -1285,19 +1304,6 @@ async fn prepare_invoice_candidate(
     ),
     cdk::Error,
 > {
-    let federation = state
-        .mint()
-        .federation_config()
-        .ok_or(cdk::Error::Internal)?;
-    let execution_actor = federation.member_id();
-    if !intent
-        .secret_acknowledgements
-        .iter()
-        .any(|acknowledgement| acknowledgement.member == execution_actor)
-        || unix_time()? >= intent.expires_at
-    {
-        return Err(bark_unavailable());
-    }
     let runtime = state.bark_runtime().ok_or_else(bark_unavailable)?;
     runtime
         .receive_secret_store()
@@ -1314,6 +1320,35 @@ async fn prepare_invoice_candidate(
                 Some(intent_operation_id),
             )
         })?;
+    prepare_invoice_for_intent(state, intent_operation_id, intent).await
+}
+
+async fn prepare_invoice_for_intent(
+    state: &dyn FederatedBarkNode,
+    intent_operation_id: FederationOperationId,
+    intent: &FederationBarkReceiveIntent,
+) -> Result<
+    (
+        cdk::Bolt11Invoice,
+        FederationBarkReceivePrepared,
+        cdk::federation::FederationOperationEnvelope,
+    ),
+    cdk::Error,
+> {
+    let federation = state
+        .mint()
+        .federation_config()
+        .ok_or(cdk::Error::Internal)?;
+    let execution_actor = federation.member_id();
+    if !intent
+        .secret_acknowledgements
+        .iter()
+        .any(|acknowledgement| acknowledgement.member == execution_actor)
+        || unix_time()? >= intent.expires_at
+    {
+        return Err(bark_unavailable());
+    }
+    let runtime = state.bark_runtime().ok_or_else(bark_unavailable)?;
     let invoice_timer = super::latency::FederationLatencyTimer::start(
         super::latency::FederationLatencyCorrelation::Action,
         intent.action_id.to_string(),
@@ -1669,5 +1704,50 @@ mod tests {
             assert_eq!(passes.lock().expect("pass log").pop(), Some(expected_mode));
         }
         assert!(passes.lock().expect("pass log").is_empty());
+    }
+
+    #[tokio::test]
+    async fn per_action_incoming_lock_map_runs_distinct_quotes_concurrently_and_cleans_up() {
+        use std::sync::Arc;
+
+        use cdk::federation::FederationBarkActionId;
+
+        use crate::runtime::BarkIncomingLockMap;
+
+        let map = Arc::new(BarkIncomingLockMap::default());
+        let action_a = FederationBarkActionId::from_bytes([1; 32]).expect("action a");
+        let action_b = FederationBarkActionId::from_bytes([2; 32]).expect("action b");
+
+        // Distinct actions acquire concurrently without blocking each other.
+        let slot_a = map.slot(action_a);
+        let guard_a = slot_a.mutex().lock().await;
+        let slot_b = map.slot(action_b);
+        let guard_b = slot_b
+            .mutex()
+            .try_lock()
+            .expect("distinct action must not block on another action's lock");
+        assert_eq!(map.len(), 2);
+
+        // Same action serializes against an active holder.
+        let slot_a_second = map.slot(action_a);
+        assert!(
+            slot_a_second.mutex().try_lock().is_err(),
+            "same action must serialize"
+        );
+        drop(slot_a_second);
+        // Entry stays alive while `slot_a` is still active.
+        assert_eq!(map.len(), 2);
+
+        drop(guard_a);
+        drop(slot_a);
+        assert_eq!(map.len(), 1);
+
+        drop(guard_b);
+        drop(slot_b);
+        assert_eq!(
+            map.len(),
+            0,
+            "map must remove idle entries so it cannot grow unboundedly"
+        );
     }
 }

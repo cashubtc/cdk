@@ -1,8 +1,8 @@
 //! Member-local Bark wallet runtime and bounded readiness reporting.
 
 use core::fmt;
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use bark::actions::lightning::receive::minimum_lightning_receive_cltv_delta;
@@ -56,6 +56,7 @@ mod maintenance;
 mod onchain_recovery;
 mod outgoing;
 
+use crate::projection_index::{BarkProjectionCache, IndexedBarkProjection};
 use crate::{
     CdkFrostVtxoCustody, Error, FederatedBarkCustodyClient, FederatedBarkLimits,
     FederatedBarkLocalConfig, FederatedBarkMaintenanceControls, FederatedBarkReceiveSecretStore,
@@ -257,6 +258,85 @@ struct ExitTransitionAuthorization<'a> {
     signer_set: &'a [MemberId],
 }
 
+/// Maximum entries retained in the in-memory freshly-cosigned send set before
+/// pruning stale entries from abandoned/restarted actions.
+const MAX_FRESHLY_COSIGNED_SENDS: usize = 4_096;
+
+/// Per-action lock map for incoming Bark quotes and receive intents.
+///
+/// Serializes operations targeting the same incoming invoice (`action_id`) while
+/// allowing operations on different invoices to proceed concurrently. Entries
+/// are removed automatically when the last handle for an `action_id` is dropped,
+/// preventing unbounded map growth.
+#[derive(Debug, Default)]
+pub(crate) struct BarkIncomingLockMap {
+    locks: std::sync::Mutex<HashMap<FederationBarkActionId, Weak<Mutex<()>>>>,
+}
+
+impl BarkIncomingLockMap {
+    /// Obtain the per-action mutex slot for `action_id`.
+    pub(crate) fn slot(&self, action_id: FederationBarkActionId) -> BarkIncomingLockSlot<'_> {
+        let mutex = {
+            let mut locks = self
+                .locks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(existing) = locks.get(&action_id).and_then(Weak::upgrade) {
+                existing
+            } else {
+                let created = Arc::new(Mutex::new(()));
+                locks.insert(action_id, Arc::downgrade(&created));
+                created
+            }
+        };
+        BarkIncomingLockSlot {
+            map: self,
+            action_id,
+            mutex,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+}
+
+/// Scoped handle keeping one per-action incoming lock alive and cleaning up its
+/// map entry when no other waiter holds a handle.
+#[derive(Debug)]
+pub(crate) struct BarkIncomingLockSlot<'a> {
+    map: &'a BarkIncomingLockMap,
+    action_id: FederationBarkActionId,
+    mutex: Arc<Mutex<()>>,
+}
+
+impl BarkIncomingLockSlot<'_> {
+    pub(crate) fn mutex(&self) -> &Mutex<()> {
+        &self.mutex
+    }
+}
+
+impl Drop for BarkIncomingLockSlot<'_> {
+    fn drop(&mut self) {
+        let mut locks = self
+            .map
+            .locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let is_last_owner = Arc::strong_count(&self.mutex) == 1
+            && locks
+                .get(&self.action_id)
+                .is_some_and(|weak| weak.as_ptr() == Arc::as_ptr(&self.mutex));
+        if is_last_owner {
+            locks.remove(&self.action_id);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct RuntimeHealth {
     local_frontier: u64,
@@ -278,6 +358,10 @@ pub struct FederatedBarkRuntime {
     receive_secrets: Arc<FederatedBarkReceiveSecretStore>,
     recovery_wallet: Arc<FederatedDescriptorWallet>,
     pub(crate) recovery_advance: Mutex<()>,
+    incoming_locks: BarkIncomingLockMap,
+    next_receive_locator_hint: std::sync::Mutex<u32>,
+    projection_cache: BarkProjectionCache,
+    freshly_cosigned_sends: std::sync::Mutex<HashSet<FederationBarkActionId>>,
     health: RwLock<RuntimeHealth>,
 }
 
@@ -450,11 +534,97 @@ impl FederatedBarkRuntime {
             receive_secrets,
             recovery_wallet,
             recovery_advance: Mutex::new(()),
+            incoming_locks: BarkIncomingLockMap::default(),
+            next_receive_locator_hint: std::sync::Mutex::new(0),
+            projection_cache: BarkProjectionCache::default(),
+            freshly_cosigned_sends: std::sync::Mutex::new(HashSet::new()),
             health: RwLock::new(RuntimeHealth {
                 local_frontier: 0,
                 degraded_reason: None,
             }),
         }))
+    }
+
+    /// Acquire a per-action incoming lock slot so operations for distinct
+    /// invoices run concurrently while same-invoice operations serialize.
+    pub(crate) fn incoming_lock(
+        &self,
+        action_id: FederationBarkActionId,
+    ) -> BarkIncomingLockSlot<'_> {
+        self.incoming_locks.slot(action_id)
+    }
+
+    /// Reserve a monotonically increasing receive-destination locator index
+    /// hint for concurrent incoming quote creations on this member.
+    ///
+    /// Consensus remains the sole uniqueness authority via
+    /// `FederationBarkConflictKey::Locator`; this hint prevents concurrent
+    /// `fresh_intent` and `receive_claim_proposal` calls on the same member
+    /// from proposing identical indices.
+    pub(crate) fn reserve_next_receive_locator_index(
+        &self,
+        projection_next_index: u32,
+    ) -> Result<u32, Error> {
+        let mut hint = self
+            .next_receive_locator_hint
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let allocated = (*hint).max(projection_next_index);
+        if allocated > FEDERATION_MAX_DERIVATION_INDEX {
+            return Err(Error::InvoicePreparationFailed);
+        }
+        *hint = allocated.saturating_add(1);
+        Ok(allocated)
+    }
+
+    /// Return the cached indexed projection when it matches `frontier`.
+    pub(crate) async fn cached_projection(
+        &self,
+        frontier: Option<u64>,
+    ) -> Option<Arc<IndexedBarkProjection>> {
+        self.projection_cache.get_if_frontier(frontier).await
+    }
+
+    /// Store a freshly loaded indexed projection in the runtime cache.
+    pub(crate) async fn store_cached_projection(
+        &self,
+        projection: Arc<IndexedBarkProjection>,
+    ) -> Arc<IndexedBarkProjection> {
+        self.projection_cache.store(projection).await
+    }
+
+    /// Drop the cached indexed Bark projection so the next read reloads from storage.
+    pub async fn invalidate_projection_cache(&self) {
+        self.projection_cache.invalidate().await;
+    }
+
+    /// Record that this process just finalized `SendHtlcsCosigned` for
+    /// `action_id` so the immediately following initiation pass may skip the
+    /// guaranteed-`Missing` initial terminal probe.
+    pub(crate) fn mark_send_htlcs_freshly_cosigned(&self, action_id: FederationBarkActionId) {
+        let mut set = self
+            .freshly_cosigned_sends
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if set.len() >= MAX_FRESHLY_COSIGNED_SENDS {
+            set.clear();
+        }
+        set.insert(action_id);
+    }
+
+    /// Consume the one-shot freshly-cosigned marker for `action_id`.
+    ///
+    /// Returns `true` at most once per live `SendHtlcsCosigned` finalization in
+    /// this process; after any restart or retry it returns `false`, preserving
+    /// probe-before-initiate recovery safety.
+    pub(crate) fn take_send_htlcs_freshly_cosigned(
+        &self,
+        action_id: FederationBarkActionId,
+    ) -> bool {
+        self.freshly_cosigned_sends
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&action_id)
     }
 
     /// Immutable accepted runtime scope.

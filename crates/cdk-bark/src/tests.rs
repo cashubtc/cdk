@@ -1377,3 +1377,396 @@ fn orphan_cleanup_threshold_acknowledgements_and_replay_bindings_fail_closed() {
     replayed.destination = FederationBarkVtxoLocator::vtxo_custody(99);
     assert!(replayed.validate_secret_acknowledgements(&config).is_err());
 }
+
+#[derive(Debug)]
+struct MultiSessionMockCustodyClient {
+    recorded_ordinals: std::sync::Mutex<Vec<(FederationBarkActionId, u32)>>,
+    fail_action: Option<FederationBarkActionId>,
+    aborted_sessions: std::sync::Mutex<Vec<cdk_frost::SigningSessionId>>,
+    fail_commit_index: Option<usize>,
+    commit_calls: std::sync::atomic::AtomicUsize,
+}
+
+impl MultiSessionMockCustodyClient {
+    fn new(fail_action: Option<FederationBarkActionId>) -> Self {
+        Self {
+            recorded_ordinals: std::sync::Mutex::new(Vec::new()),
+            fail_action,
+            aborted_sessions: std::sync::Mutex::new(Vec::new()),
+            fail_commit_index: None,
+            commit_calls: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::FederatedBarkCustodyClient for MultiSessionMockCustodyClient {
+    async fn sign_frost(
+        &self,
+        _context: &cdk_frost::SigningSessionContext,
+        _derivation: &cdk_frost::SigningDerivation,
+        authorization: &cdk_frost::AuthorizationRequest,
+    ) -> anyhow::Result<cdk_frost::AggregateSignature> {
+        let auth = cdk_federation_bark::FederationBarkFrostAuthorization::from_bytes(
+            authorization.payload(),
+        )?;
+        self.recorded_ordinals
+            .lock()
+            .expect("ordinals lock")
+            .push((auth.reference.action_id, auth.reference.object_ordinal));
+        if self.fail_action == Some(auth.reference.action_id) {
+            anyhow::bail!("simulated signer failure");
+        }
+        let secp = Secp256k1::new();
+        let keypair = bitcoin::secp256k1::Keypair::from_seckey_slice(&secp, &[7; 32])?;
+        let message = bitcoin::secp256k1::Message::from_digest(auth.message);
+        let signature = secp.sign_schnorr_no_aux_rand(&message, &keypair);
+        Ok(cdk_frost::AggregateSignature::from_bytes(
+            signature.serialize(),
+        )?)
+    }
+
+    async fn collect_virtual_musig_commitments(
+        &self,
+        context: &cdk_frost::SigningSessionContext,
+        _derivation: &cdk_frost::SigningDerivation,
+        _authorization: &cdk_frost::AuthorizationRequest,
+    ) -> anyhow::Result<cdk_frost::VirtualMusigNonceCommitmentSet> {
+        use sha2::{Digest, Sha256};
+
+        let call = self
+            .commit_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail_commit_index == Some(call) {
+            anyhow::bail!("simulated commitment failure");
+        }
+        let secret = SecretKey::from_slice(&[33; 32]).expect("secret");
+        let point = secret.public_key(&Secp256k1::new()).serialize();
+        let mut public_nonce = [0_u8; 66];
+        public_nonce[..33].copy_from_slice(&point);
+        public_nonce[33..].copy_from_slice(&point);
+        let commitments = context
+            .signer_set()
+            .iter()
+            .map(|signer| {
+                let mut hash = Sha256::new();
+                hash.update(b"cdk/frost/virtual-musig2-nonce-id/v1");
+                hash.update(context.root_epoch().get().to_be_bytes());
+                hash.update(context.registration().id().to_bytes());
+                hash.update(context.session_id().to_bytes());
+                hash.update(context.derivation_binding());
+                hash.update(signer.get().to_be_bytes());
+                hash.update(public_nonce);
+                let nonce_id: [u8; 32] = hash.finalize().into();
+
+                let mut wire = Vec::with_capacity(8 + 8 + 32 + 32 + 32 + 2 + 66);
+                wire.extend_from_slice(b"CDKFVM01");
+                wire.extend_from_slice(&context.root_epoch().get().to_be_bytes());
+                wire.extend_from_slice(&context.session_id().to_bytes());
+                wire.extend_from_slice(&context.derivation_binding());
+                wire.extend_from_slice(&nonce_id);
+                wire.extend_from_slice(&signer.get().to_be_bytes());
+                wire.extend_from_slice(&public_nonce);
+                cdk_frost::VirtualMusigNonceCommitment::decode(&wire, context)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(cdk_frost::VirtualMusigNonceCommitmentSet::new(commitments)?)
+    }
+
+    async fn collect_virtual_musig_partial(
+        &self,
+        _context: &cdk_frost::SigningSessionContext,
+        _derivation: &cdk_frost::SigningDerivation,
+        _authorization: &cdk_frost::AuthorizationRequest,
+        _commitments: &cdk_frost::VirtualMusigNonceCommitmentSet,
+        _transcript: &cdk_frost::VirtualMusigTranscript,
+    ) -> anyhow::Result<[u8; 32]> {
+        Ok([9; 32])
+    }
+
+    async fn abort(
+        &self,
+        context: &cdk_frost::SigningSessionContext,
+        _authorization: &cdk_frost::AuthorizationRequest,
+        _reason: cdk_frost::NonceBurnReason,
+    ) {
+        self.aborted_sessions
+            .lock()
+            .expect("aborts lock")
+            .push(context.session_id());
+    }
+}
+
+fn applied_revocation_plan_entry(
+    config: &FederationConfig,
+    seed: u8,
+    vtxo_seed: u8,
+    locator_index: u32,
+) -> (
+    cdk_common::federation::FederationJournalEntry,
+    FederationBarkActionId,
+    Vec<u8>,
+) {
+    use cdk_common::federation::{
+        FederationApplicationState, FederationJournalEntry, FederationOperationEnvelope,
+    };
+    use cdk_federation_bark::{
+        federation_bark_application_operation, federation_bark_digest, FederationBarkActionKind,
+        FederationBarkActionPlan, FederationBarkArtifact, FederationBarkArtifactKind,
+        FederationBarkDigest, FederationBarkExternalId, FederationBarkOperation,
+        FederationBarkVtxoId, FederationBarkVtxoInput, FederationBarkVtxoOutput,
+    };
+
+    let action_id = FederationBarkActionId::from_bytes([seed; 32]).expect("action id");
+    let predecessor_operation_id = FederationOperationId::from_bytes([seed.saturating_add(50); 32]);
+    let vtxo_id = FederationBarkVtxoId::from_bytes([vtxo_seed; 36]).expect("vtxo id");
+    let request_bytes = vec![seed; 16];
+    let request_hash = federation_bark_digest(&request_bytes).expect("request hash");
+    let vtxo_bytes = vec![vtxo_seed; 24];
+    let vtxo_hash = federation_bark_digest(&vtxo_bytes).expect("vtxo hash");
+    let mut artifacts = vec![
+        FederationBarkArtifact {
+            kind: FederationBarkArtifactKind::ArkRequest,
+            hash: request_hash,
+            bytes: request_bytes,
+        },
+        FederationBarkArtifact {
+            kind: FederationBarkArtifactKind::Vtxo,
+            hash: vtxo_hash,
+            bytes: vtxo_bytes,
+        },
+    ];
+    artifacts.sort();
+    let external_id = FederationBarkExternalId::derive_failed_send_revocation(
+        action_id,
+        predecessor_operation_id,
+        1,
+    )
+    .expect("external id");
+    let plan = FederationBarkActionPlan {
+        version: FEDERATION_BARK_OPERATION_VERSION,
+        action_id,
+        quote: Some(format!("melt-quote-{seed}")),
+        kind: FederationBarkActionKind::FailedSendRevocation,
+        actor: member(1),
+        predecessor_operation_id,
+        payment_hash: Some(
+            FederationBarkDigest::from_bytes([seed.saturating_add(10); 32]).expect("payment hash"),
+        ),
+        inputs: vec![FederationBarkVtxoInput {
+            vtxo_id,
+            locator: FederationBarkVtxoLocator::vtxo_custody(locator_index),
+            amount: Amount::from(1_000),
+        }],
+        outputs: vec![FederationBarkVtxoOutput {
+            locator: FederationBarkVtxoLocator::vtxo_custody(locator_index + 100),
+            amount: Amount::from(1_000),
+            artifact_hash: request_hash,
+        }],
+        revocation_locator: None,
+        external_amount: Amount::ZERO,
+        fee_amount: Amount::ZERO,
+        fee_bound: Amount::ZERO,
+        certified_receive_htlcs: None,
+        artifacts,
+        external_id,
+        signer_set: vec![member(1), member(2)],
+        attempt: 1,
+        expires_at: 500_000,
+    };
+    let bark_op = FederationBarkOperation::ActionPlan(plan);
+    let commitment = bark_op.commitment().expect("plan commitment");
+    let fed_op = federation_bark_application_operation(bark_op).expect("application op");
+    let envelope = FederationOperationEnvelope::new(config.federation_id, fed_op)
+        .authorize(&private_member(config, 1))
+        .expect("signed envelope");
+    let operation_id = envelope.operation_id().expect("operation id");
+    let conflict_keys = envelope.operation.conflict_keys();
+    let entry = FederationJournalEntry {
+        index: u64::from(seed),
+        operation_id,
+        envelope,
+        conflict_keys,
+        previous_order_digest: FederationJournalDigest::genesis(),
+        order_digest: FederationJournalDigest::from_bytes([seed; 32]),
+        consensus_evidence: None,
+        application: FederationApplicationState::Applied {},
+    };
+    (entry, action_id, commitment.to_bytes().to_vec())
+}
+
+#[tokio::test]
+async fn multi_session_custody_allows_disjoint_concurrent_actions_and_blocks_vtxo_overlap() {
+    let config = federated_config();
+    let validated = ValidatedFederatedBarkConfig::validate(true, &config, &local_config(&config))
+        .expect("validated config");
+    let (entry_a, action_a, ctx_a) = applied_revocation_plan_entry(&config, 1, 10, 1);
+    let (entry_b, action_b, ctx_b) = applied_revocation_plan_entry(&config, 2, 20, 2);
+    let (entry_overlap, _, ctx_overlap) = applied_revocation_plan_entry(&config, 3, 10, 3);
+
+    let client = std::sync::Arc::new(MultiSessionMockCustodyClient::new(Some(action_b)));
+    let custody = CdkFrostVtxoCustody::with_client(validated, config, client.clone());
+
+    // Activate two disjoint actions concurrently.
+    let guard_a = custody
+        .activate_revocation(entry_a.clone(), entry_a.clone(), ctx_a.clone())
+        .expect("activate action a");
+    let guard_b = custody
+        .activate_revocation(entry_b.clone(), entry_b.clone(), ctx_b.clone())
+        .expect("activate action b concurrently");
+
+    // Duplicate action ID must be rejected.
+    assert!(
+        custody
+            .activate_revocation(entry_a.clone(), entry_a.clone(), ctx_a.clone())
+            .is_err(),
+        "duplicate active action must fail closed"
+    );
+
+    // Overlapping VTXO ID must be rejected even for a distinct action ID.
+    assert!(
+        custody
+            .activate_revocation(
+                entry_overlap.clone(),
+                entry_overlap.clone(),
+                ctx_overlap.clone()
+            )
+            .is_err(),
+        "overlapping VTXO reservation must fail closed"
+    );
+
+    // Sign two objects for action A and one failing object for action B concurrently.
+    let req_a0 = SchnorrSigningRequest {
+        session_id: CustodySessionId::from_bytes([11; 32]).expect("session a0"),
+        locator: VtxoKeyLocator { index: 1 },
+        message: [1; 32],
+        operation: VtxoSigningOperation::LightningSend,
+        authorization: ctx_a.clone(),
+    };
+    let req_a1 = SchnorrSigningRequest {
+        session_id: CustodySessionId::from_bytes([12; 32]).expect("session a1"),
+        locator: VtxoKeyLocator { index: 1 },
+        message: [2; 32],
+        operation: VtxoSigningOperation::LightningSend,
+        authorization: ctx_a.clone(),
+    };
+    let req_b0 = SchnorrSigningRequest {
+        session_id: CustodySessionId::from_bytes([21; 32]).expect("session b0"),
+        locator: VtxoKeyLocator { index: 2 },
+        message: [3; 32],
+        operation: VtxoSigningOperation::LightningSend,
+        authorization: ctx_b.clone(),
+    };
+
+    custody
+        .sign_schnorr(req_a0)
+        .await
+        .expect("action a first signature");
+    assert!(
+        custody.sign_schnorr(req_b0).await.is_err(),
+        "action b simulated signer failure"
+    );
+    custody
+        .sign_schnorr(req_a1)
+        .await
+        .expect("action a second signature");
+
+    // Signer unavailability is isolated per action.
+    assert!(!guard_a.take_signer_unavailable());
+    assert!(guard_b.take_signer_unavailable());
+
+    // Object ordinals are isolated per action (A got 0, 1; B got 0).
+    let ordinals = client
+        .recorded_ordinals
+        .lock()
+        .expect("ordinals lock")
+        .clone();
+    assert_eq!(ordinals, vec![(action_a, 0), (action_b, 0), (action_a, 1)]);
+
+    // Dropping guard_a releases VTXO 10 while leaving guard_b active.
+    drop(guard_a);
+    let guard_overlap = custody
+        .activate_revocation(entry_overlap.clone(), entry_overlap, ctx_overlap)
+        .expect("VTXO 10 must be free after guard_a dropped");
+    drop(guard_overlap);
+    guard_b.deactivate();
+}
+
+#[tokio::test]
+async fn virtual_musig_batch_preserves_order_and_aborts_on_partial_failure() {
+    use crate::{FederatedBarkCustodyClient, VirtualMusigCommitmentInput};
+
+    let config = federated_config();
+    let validated = ValidatedFederatedBarkConfig::validate(true, &config, &local_config(&config))
+        .expect("validated config");
+    let registration = validated.public_adapter().application().registration();
+    let signers = vec![
+        cdk_frost::MemberId::new(1).expect("m1"),
+        cdk_frost::MemberId::new(2).expect("m2"),
+    ];
+    let make_input = |seed: u8| {
+        let derived = validated
+            .public_adapter()
+            .derive(cdk_frost_bark::BarkKeyLocator::vtxo(u32::from(seed)))
+            .expect("derived");
+        let scope = cdk_frost::SigningAuthorizationScope::new(
+            config.federation_id.to_bytes(),
+            cdk_frost::RootKeyEpoch::new(1).expect("epoch"),
+            registration,
+            derived.signing_derivation().binding(),
+            [seed; 32],
+            [seed.saturating_add(1); 32],
+        )
+        .expect("scope");
+        let context = cdk_frost::SigningSessionContext::new_for_protocol(
+            scope,
+            1,
+            signers.clone(),
+            cdk_frost::CustodyProtocol::VirtualMusig2,
+        )
+        .expect("context");
+        let authorization = cdk_frost::AuthorizationRequest::new(
+            registration.id(),
+            registration.key_epoch(),
+            registration.derivation_version(),
+            context.session_id(),
+            vec![seed],
+        )
+        .expect("auth");
+        VirtualMusigCommitmentInput {
+            context,
+            derivation: derived.signing_derivation().clone(),
+            authorization,
+        }
+    };
+    let inputs = vec![make_input(1), make_input(2), make_input(3)];
+
+    // Happy path: all 3 inputs succeed in order.
+    let ok_client = MultiSessionMockCustodyClient::new(None);
+    let sets = ok_client
+        .collect_virtual_musig_commitments_batch(&inputs)
+        .await
+        .expect("batch commitments");
+    assert_eq!(sets.len(), 3);
+    assert!(ok_client
+        .aborted_sessions
+        .lock()
+        .expect("aborts")
+        .is_empty());
+
+    // Partial failure: failing 1 input aborts the 2 already-committed sessions.
+    let mut failing_client = MultiSessionMockCustodyClient::new(None);
+    failing_client.fail_commit_index = Some(1);
+    assert!(failing_client
+        .collect_virtual_musig_commitments_batch(&inputs)
+        .await
+        .is_err());
+    assert_eq!(
+        failing_client
+            .aborted_sessions
+            .lock()
+            .expect("aborts")
+            .len(),
+        2
+    );
+}

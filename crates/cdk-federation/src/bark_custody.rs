@@ -18,6 +18,9 @@ use cdk_frost::{
     AuthorizationRequest, CustodyProtocol, DerivedPublicPackage, SigningDerivation,
     SigningSessionContext, VirtualMusigNonceCommitmentSet, VirtualMusigTranscript,
 };
+use futures::stream::{self, StreamExt};
+
+const MAX_CONCURRENT_VIRTUAL_MUSIG_INPUTS: usize = 8;
 
 /// Owned authenticated peer client installed behind `cdk-bark`'s custody
 /// boundary. It contains public verification material but no root share.
@@ -144,6 +147,26 @@ impl cdk_bark::FederatedBarkCustodyClient for FederatedBarkCustodyPeerClient {
             .with_local_signer(self.local_member_id, &self.mint, &self.local_signing)
             .abort_selected(&self.public_config, context, authorization, reason)
             .await;
+    }
+
+    async fn collect_virtual_musig_commitments_batch(
+        &self,
+        inputs: &[cdk_bark::VirtualMusigCommitmentInput],
+    ) -> anyhow::Result<Vec<VirtualMusigNonceCommitmentSet>> {
+        FederationBarkCustodyCoordinator::new(&self.client, self.custody_public.clone())
+            .with_local_signer(self.local_member_id, &self.mint, &self.local_signing)
+            .collect_virtual_musig_commitments_batch(&self.public_config, inputs)
+            .await
+    }
+
+    async fn collect_virtual_musig_partial_batch(
+        &self,
+        inputs: &[cdk_bark::VirtualMusigPartialInput],
+    ) -> anyhow::Result<Vec<[u8; 32]>> {
+        FederationBarkCustodyCoordinator::new(&self.client, self.custody_public.clone())
+            .with_local_signer(self.local_member_id, &self.mint, &self.local_signing)
+            .collect_virtual_musig_partial_batch(&self.public_config, inputs)
+            .await
     }
 }
 
@@ -327,6 +350,114 @@ where
             transcript,
             contributions,
         )?)
+    }
+
+    /// Collect virtual MuSig2 commitments across multiple distinct inputs in
+    /// parallel while preserving each input's independent single-use durable
+    /// nonce session. Already-committed inputs are aborted on any failure.
+    pub async fn collect_virtual_musig_commitments_batch(
+        &self,
+        public_config: &FederationConfig,
+        inputs: &[cdk_bark::VirtualMusigCommitmentInput],
+    ) -> anyhow::Result<Vec<VirtualMusigNonceCommitmentSet>> {
+        let mut futures = Vec::with_capacity(inputs.len());
+        for (index, input) in inputs.iter().enumerate() {
+            futures.push(async move {
+                let result = self
+                    .collect_virtual_musig_commitments(
+                        public_config,
+                        &input.context,
+                        &input.derivation,
+                        &input.authorization,
+                    )
+                    .await;
+                (index, result)
+            });
+        }
+        let mut results = stream::iter(futures)
+            .buffer_unordered(MAX_CONCURRENT_VIRTUAL_MUSIG_INPUTS)
+            .collect::<Vec<_>>()
+            .await;
+        results.sort_by_key(|(index, _)| *index);
+
+        let mut first_error = None;
+        let mut commitments = Vec::with_capacity(inputs.len());
+        let mut succeeded_indices = Vec::new();
+        for (index, result) in results {
+            match result {
+                Ok(set) => {
+                    succeeded_indices.push(index);
+                    commitments.push(set);
+                }
+                Err(error) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
+            }
+        }
+        if let Some(error) = first_error {
+            for index in succeeded_indices {
+                let input = &inputs[index];
+                self.abort_selected(
+                    public_config,
+                    &input.context,
+                    &input.authorization,
+                    cdk_frost::NonceBurnReason::Aborted,
+                )
+                .await;
+            }
+            return Err(error);
+        }
+        Ok(commitments)
+    }
+
+    /// Collect, verify, and combine virtual MuSig2 partial shares across
+    /// multiple distinct inputs in parallel while preserving each input's
+    /// single-use commitment binding.
+    pub async fn collect_virtual_musig_partial_batch(
+        &self,
+        public_config: &FederationConfig,
+        inputs: &[cdk_bark::VirtualMusigPartialInput],
+    ) -> anyhow::Result<Vec<[u8; 32]>> {
+        let mut futures = Vec::with_capacity(inputs.len());
+        for (index, input) in inputs.iter().enumerate() {
+            futures.push(async move {
+                let result = self
+                    .collect_virtual_musig_partial(
+                        public_config,
+                        &input.context,
+                        &input.derivation,
+                        &input.authorization,
+                        &input.commitments,
+                        &input.transcript,
+                    )
+                    .await;
+                (index, result)
+            });
+        }
+        let mut results = stream::iter(futures)
+            .buffer_unordered(MAX_CONCURRENT_VIRTUAL_MUSIG_INPUTS)
+            .collect::<Vec<_>>()
+            .await;
+        results.sort_by_key(|(index, _)| *index);
+
+        let mut first_error = None;
+        let mut partials = Vec::with_capacity(inputs.len());
+        for (_, result) in results {
+            match result {
+                Ok(partial) => partials.push(partial),
+                Err(error) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        Ok(partials)
     }
 
     /// Collect, verify, and interpolate an operation-bound threshold-DH point.

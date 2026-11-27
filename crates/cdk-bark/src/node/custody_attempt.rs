@@ -1,18 +1,20 @@
 //! Shared accepted-attempt lookup for Bark custody orchestration.
 
 use cdk::federation::{
-    FederationBarkActionRecord, FederationBarkOperation, FederationBarkProjectionSnapshot,
-    FederationBarkSemanticPhase, FederationJournalEntry,
+    FederationBarkActionRecord, FederationBarkOperation, FederationBarkSemanticPhase,
+    FederationJournalEntry,
 };
 use cdk::mint::Mint;
 use cdk_common::database::mint::FederationJournalEntryKey;
+
+use crate::IndexedBarkProjection;
 
 /// Resolve the consensus entry authorizing the action's current custody
 /// attempt. The action plan authorizes attempt one; a later attempt is
 /// authorized only by its accepted `SigningAttemptAdvanced` transition.
 pub async fn accepted_bark_custody_authorization(
     mint: &Mint,
-    projection: &FederationBarkProjectionSnapshot,
+    projection: &IndexedBarkProjection,
     action: &FederationBarkActionRecord,
     plan_entry: &FederationJournalEntry,
 ) -> Result<FederationJournalEntry, cdk::Error> {
@@ -31,12 +33,10 @@ pub async fn accepted_bark_custody_authorization(
         return Ok(plan_entry.clone());
     }
     let operation_id = projection
-        .transitions
-        .iter()
+        .transitions_for_action(action.action_id)
         .filter_map(|record| match &record.operation {
             FederationBarkOperation::ActionTransition(transition)
-                if record.action_id == action.action_id
-                    && transition.phase == FederationBarkSemanticPhase::SigningAttemptAdvanced
+                if transition.phase == FederationBarkSemanticPhase::SigningAttemptAdvanced
                     && transition.plan_operation_id == plan_entry.operation_id
                     && transition.attempt == action.attempt =>
             {

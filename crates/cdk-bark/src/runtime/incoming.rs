@@ -683,7 +683,8 @@ impl FederatedBarkRuntime {
                 .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
         let authorization_context = plan_commitment.to_bytes().to_vec();
         let custody_attempt = accepted_custody_attempt(&accepted_plan, &accepted_authorization)?;
-        self.custody
+        let custody_guard = self
+            .custody
             .activate_claim(
                 accepted_plan.clone(),
                 custody_attempt.entry.clone(),
@@ -700,7 +701,7 @@ impl FederatedBarkRuntime {
             .wallet
             .execute_lightning_receive_claim(&receive, &claim, &execution)
             .await;
-        let signer_unavailable = self.custody.take_signer_unavailable();
+        let signer_unavailable = custody_guard.take_signer_unavailable();
         let disclosed = match &result {
             Ok(_) => true,
             Err(_) => matches!(
@@ -708,7 +709,7 @@ impl FederatedBarkRuntime {
                 Ok(FederationLightningReceivePhase::PreimageRevealed)
             ),
         };
-        self.custody.deactivate_claim();
+        custody_guard.deactivate();
         if !disclosed {
             return match result {
                 Err(error) => Err(classify_receive_claim_error(&error, signer_unavailable)),

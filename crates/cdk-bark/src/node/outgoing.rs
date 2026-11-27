@@ -20,14 +20,14 @@ use super::observer::{
     unselected_bark_observer_wait,
 };
 use super::FederatedBarkNode;
+use crate::IndexedBarkProjection;
 
 fn matching_observers(
-    projection: &cdk::federation::FederationBarkProjectionSnapshot,
+    projection: &IndexedBarkProjection,
     expected: &FederationBarkMemberObservation,
 ) -> BTreeSet<MemberId> {
     projection
-        .observations
-        .iter()
+        .observations_for_action(expected.action_id)
         .filter_map(|record| match &record.operation {
             FederationBarkOperation::MemberObservation(existing)
                 if existing.action_id == expected.action_id
@@ -46,14 +46,13 @@ fn matching_observers(
 }
 
 fn matching_observer_count(
-    projection: &cdk::federation::FederationBarkProjectionSnapshot,
+    projection: &IndexedBarkProjection,
     action_id: cdk::federation::FederationBarkActionId,
     status: FederationBarkObservationStatus,
     result_hash: Option<FederationBarkDigest>,
 ) -> usize {
     projection
-        .observations
-        .iter()
+        .observations_for_action(action_id)
         .filter_map(|record| match &record.operation {
             FederationBarkOperation::MemberObservation(observation)
                 if observation.action_id == action_id
@@ -70,6 +69,28 @@ fn matching_observer_count(
 
 fn send_needs_initiation(status: &crate::FederatedBarkSendTerminalStatus) -> bool {
     matches!(status, crate::FederatedBarkSendTerminalStatus::Missing)
+}
+
+/// Whether the actor may skip the initial `observe_lightning_send_terminal`
+/// probe and call `initiate_lightning_send` directly.
+///
+/// Only permitted on the first pass (`observer_fallback_round == 0`,
+/// `next_epoch == 1`) by the accepted actor immediately after this process
+/// finalized `SendHtlcsCosigned`. After any restart, on any retry, or on any
+/// fallback observer, `freshly_cosigned_locally` is `false` and the observer
+/// still probes first and requires a typed `Missing` status before initiation
+/// (`docs/federation/payment-trust-model.md`).
+fn should_skip_initial_send_probe(
+    observer_fallback_round: u32,
+    plan_actor: MemberId,
+    local_member: MemberId,
+    next_epoch: u64,
+    freshly_cosigned_locally: bool,
+) -> bool {
+    observer_fallback_round == 0
+        && plan_actor == local_member
+        && next_epoch == 1
+        && freshly_cosigned_locally
 }
 
 /// Advance one accepted pending melt by at most one consensus-visible phase.
@@ -103,24 +124,24 @@ pub async fn advance_federated_bark_melt_quote(
     // Accepted actions must remain recoverable when an earlier external action
     // requires recovery. The recovery gate still requires complete local replay.
     let projection_result =
-        super::projection::federation_bark_recovery_projection(state, runtime).await;
+        super::projection::federation_bark_recovery_indexed_projection(state, runtime).await;
     projection_timer.finish(super::latency::FederationLatencyOutcome::from_success(
         projection_result.is_ok(),
     ));
     let projection = projection_result.map_err(super::projection::projection_error)?;
+    let snapshot = projection.snapshot();
     let quote_label = quote_id.to_string();
-    let existing_action = projection.actions.iter().find(|action| {
-        action.quote.as_deref() == Some(quote_label.as_str())
-            && matches!(
-                action.phase,
-                FederationBarkSemanticPhase::SendPlanned
-                    | FederationBarkSemanticPhase::SendHtlcsCosigned
-                    | FederationBarkSemanticPhase::PaymentSucceeded
-                    | FederationBarkSemanticPhase::PaymentFailed
-                    | FederationBarkSemanticPhase::RevocationPlanned
-                    | FederationBarkSemanticPhase::RevocationCompleted
-                    | FederationBarkSemanticPhase::SigningAttemptAdvanced
-            )
+    let existing_action = projection.actions_for_quote(&quote_label).find(|action| {
+        matches!(
+            action.phase,
+            FederationBarkSemanticPhase::SendPlanned
+                | FederationBarkSemanticPhase::SendHtlcsCosigned
+                | FederationBarkSemanticPhase::PaymentSucceeded
+                | FederationBarkSemanticPhase::PaymentFailed
+                | FederationBarkSemanticPhase::RevocationPlanned
+                | FederationBarkSemanticPhase::RevocationCompleted
+                | FederationBarkSemanticPhase::SigningAttemptAdvanced
+        )
     });
 
     if let Some(action) = existing_action {
@@ -138,7 +159,7 @@ pub async fn advance_federated_bark_melt_quote(
             return Err(cdk::Error::Internal);
         };
         runtime
-            .apply_lightning_send_plan(&quote, &projection, &plan)
+            .apply_lightning_send_plan(&quote, snapshot, &plan)
             .await
             .map_err(|error| {
                 error.into_federation_error("apply outgoing plan", Some(plan_entry.operation_id))
@@ -166,7 +187,7 @@ pub async fn advance_federated_bark_melt_quote(
         };
         if let Some(htlcs) = &htlc_entry {
             runtime
-                .apply_lightning_send_htlcs(&quote, &projection, &plan_entry, htlcs)
+                .apply_lightning_send_htlcs(&quote, snapshot, &plan_entry, htlcs)
                 .await
                 .map_err(|error| {
                     error.into_federation_error(
@@ -199,7 +220,7 @@ pub async fn advance_federated_bark_melt_quote(
             // itself a runtime failure. Degrading here would make the readiness
             // gate reject the projection needed to propose that revocation.
             runtime
-                .apply_lightning_send_failed(&quote, &projection, &plan_entry, failed)
+                .apply_lightning_send_failed(&quote, snapshot, &plan_entry, failed)
                 .await
                 .map_err(|error| {
                     error.into_federation_error(
@@ -250,7 +271,7 @@ pub async fn advance_federated_bark_melt_quote(
                 let htlc_result = runtime
                     .execute_lightning_send_htlcs(
                         &quote,
-                        &projection,
+                        snapshot,
                         &plan_entry,
                         &authorization_entry,
                     )
@@ -286,13 +307,15 @@ pub async fn advance_federated_bark_melt_quote(
                             .into())
                     }
                 };
-                submit_bark_operation(
+                let advancement = submit_bark_operation(
                     state,
                     federation.operation_envelope(super::bark_federation_operation(
                         FederationBarkOperation::ActionTransition(transition),
                     )?),
                 )
-                .await
+                .await?;
+                runtime.mark_send_htlcs_freshly_cosigned(action.action_id);
+                Ok(advancement)
             }
             FederationBarkSemanticPhase::SendHtlcsCosigned => {
                 let htlcs = htlc_entry.as_ref().ok_or(cdk::Error::Internal)?;
@@ -335,16 +358,18 @@ pub async fn advance_federated_bark_melt_quote(
                     )
                     .await;
                 }
-                let already_reported_failure = projection.observations.iter().any(|record| {
-                    matches!(
-                        &record.operation,
-                        FederationBarkOperation::MemberObservation(observation)
-                            if observation.action_id == action.action_id
-                                && observation.observer == federation.member_id()
-                                && observation.status
-                                    == FederationBarkObservationStatus::Failed
-                    )
-                });
+                let already_reported_failure = projection
+                    .observations_for_action(action.action_id)
+                    .any(|record| {
+                        matches!(
+                            &record.operation,
+                            FederationBarkOperation::MemberObservation(observation)
+                                if observation.action_id == action.action_id
+                                    && observation.observer == federation.member_id()
+                                    && observation.status
+                                        == FederationBarkObservationStatus::Failed
+                        )
+                    });
                 if already_reported_failure {
                     return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
                 }
@@ -359,45 +384,57 @@ pub async fn advance_federated_bark_melt_quote(
                 }
                 let next_epoch =
                     next_observation_epoch(&projection, action.action_id, federation.member_id())?;
-                // A peer may have initiated this exact accepted payment while
-                // the actor still has an HTLC-only local checkpoint. Observe
-                // terminal state before retrying initiation, including on actor.
-                let terminal_timer = super::latency::FederationLatencyTimer::start(
-                    super::latency::FederationLatencyCorrelation::Action,
-                    action.action_id.to_string(),
-                    super::latency::FederationLatencyBackend::Bark,
-                    super::latency::FederationLatencyDirection::Outgoing,
-                    if wait_for_backend_update {
-                        super::latency::FederationLatencyPhase::BarkLightningServerWait
-                    } else {
-                        super::latency::FederationLatencyPhase::BarkLightningTerminalPoll
-                    },
+                let skip_initial_probe = should_skip_initial_send_probe(
+                    observer_fallback_round,
+                    plan.actor,
+                    federation.member_id(),
+                    next_epoch,
+                    runtime.take_send_htlcs_freshly_cosigned(action.action_id),
                 );
-                let status_result = runtime
-                    .observe_lightning_send_terminal(
-                        &quote,
-                        &projection,
-                        &plan_entry,
-                        htlcs,
-                        next_epoch,
-                        wait_for_backend_update,
-                    )
-                    .await;
-                let terminal_outcome = match &status_result {
-                    Ok(crate::FederatedBarkSendTerminalStatus::Pending)
-                    | Ok(crate::FederatedBarkSendTerminalStatus::Missing) => {
-                        super::latency::FederationLatencyOutcome::Pending
-                    }
-                    Ok(_) => super::latency::FederationLatencyOutcome::Success,
-                    Err(_) => super::latency::FederationLatencyOutcome::Error,
+                let mut status = if skip_initial_probe {
+                    crate::FederatedBarkSendTerminalStatus::Missing
+                } else {
+                    // A peer may have initiated this exact accepted payment while
+                    // the actor still has an HTLC-only local checkpoint. Observe
+                    // terminal state before retrying initiation, including on actor
+                    // after a restart or fallback.
+                    let terminal_timer = super::latency::FederationLatencyTimer::start(
+                        super::latency::FederationLatencyCorrelation::Action,
+                        action.action_id.to_string(),
+                        super::latency::FederationLatencyBackend::Bark,
+                        super::latency::FederationLatencyDirection::Outgoing,
+                        if wait_for_backend_update {
+                            super::latency::FederationLatencyPhase::BarkLightningServerWait
+                        } else {
+                            super::latency::FederationLatencyPhase::BarkLightningTerminalPoll
+                        },
+                    );
+                    let status_result = runtime
+                        .observe_lightning_send_terminal(
+                            &quote,
+                            snapshot,
+                            &plan_entry,
+                            htlcs,
+                            next_epoch,
+                            wait_for_backend_update,
+                        )
+                        .await;
+                    let terminal_outcome = match &status_result {
+                        Ok(crate::FederatedBarkSendTerminalStatus::Pending)
+                        | Ok(crate::FederatedBarkSendTerminalStatus::Missing) => {
+                            super::latency::FederationLatencyOutcome::Pending
+                        }
+                        Ok(_) => super::latency::FederationLatencyOutcome::Success,
+                        Err(_) => super::latency::FederationLatencyOutcome::Error,
+                    };
+                    terminal_timer.finish(terminal_outcome);
+                    status_result.map_err(|error| {
+                        error.into_federation_error(
+                            "observe outgoing payment",
+                            Some(plan_entry.operation_id),
+                        )
+                    })?
                 };
-                terminal_timer.finish(terminal_outcome);
-                let mut status = status_result.map_err(|error| {
-                    error.into_federation_error(
-                        "observe outgoing payment",
-                        Some(plan_entry.operation_id),
-                    )
-                })?;
                 if send_needs_initiation(&status) {
                     let initiation_timer = super::latency::FederationLatencyTimer::start(
                         super::latency::FederationLatencyCorrelation::Action,
@@ -407,7 +444,7 @@ pub async fn advance_federated_bark_melt_quote(
                         super::latency::FederationLatencyPhase::BarkLightningInitiation,
                     );
                     let initiation_result = runtime
-                        .initiate_lightning_send(&quote, &projection, &plan_entry, htlcs)
+                        .initiate_lightning_send(&quote, snapshot, &plan_entry, htlcs)
                         .await;
                     initiation_timer.finish(
                         super::latency::FederationLatencyOutcome::from_success(
@@ -434,7 +471,7 @@ pub async fn advance_federated_bark_melt_quote(
                     let status_result = runtime
                         .observe_lightning_send_terminal(
                             &quote,
-                            &projection,
+                            snapshot,
                             &plan_entry,
                             htlcs,
                             next_epoch,
@@ -482,7 +519,7 @@ pub async fn advance_federated_bark_melt_quote(
                         let observation_result = runtime
                             .attest_lightning_send_succeeded_candidate(
                                 &quote,
-                                &projection,
+                                snapshot,
                                 &plan_entry,
                                 htlcs,
                                 &transition,
@@ -567,7 +604,7 @@ pub async fn advance_federated_bark_melt_quote(
                 let apply_result = runtime
                     .apply_lightning_send_succeeded(
                         &quote,
-                        &projection,
+                        snapshot,
                         &plan_entry,
                         &success_entry,
                         next_epoch,
@@ -590,7 +627,7 @@ pub async fn advance_federated_bark_melt_quote(
                 }
                 let revocation = runtime
                     .propose_failed_send_revocation(
-                        &projection,
+                        snapshot,
                         &plan_entry,
                         failed_entry.as_ref().ok_or(cdk::Error::Internal)?,
                     )
@@ -625,7 +662,7 @@ pub async fn advance_federated_bark_melt_quote(
                 let transition = match runtime
                     .execute_failed_send_revocation(
                         &quote,
-                        &projection,
+                        snapshot,
                         &plan_entry,
                         revocation_plan_entry,
                         &authorization_entry,
@@ -683,17 +720,20 @@ pub async fn advance_federated_bark_melt_quote(
                 else {
                     return Err(cdk::Error::Internal);
                 };
-                let already_observed = projection.observations.iter().any(|record| {
-                    matches!(
-                        &record.operation,
-                        FederationBarkOperation::MemberObservation(observation)
-                            if observation.action_id == action.action_id
-                                && observation.observer == federation.member_id()
-                                && observation.status
-                                    == FederationBarkObservationStatus::Failed
-                                && observation.result_hash == completed.result_hash
-                    )
-                });
+                let already_observed =
+                    projection
+                        .observations_for_action(action.action_id)
+                        .any(|record| {
+                            matches!(
+                                &record.operation,
+                                FederationBarkOperation::MemberObservation(observation)
+                                    if observation.action_id == action.action_id
+                                        && observation.observer == federation.member_id()
+                                        && observation.status
+                                            == FederationBarkObservationStatus::Failed
+                                        && observation.result_hash == completed.result_hash
+                            )
+                        });
                 if already_observed {
                     return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
                 }
@@ -727,7 +767,7 @@ pub async fn advance_federated_bark_melt_quote(
                 let observation = match runtime
                     .apply_failed_send_revocation(
                         &quote,
-                        &projection,
+                        snapshot,
                         &plan_entry,
                         revocation_plan_entry.as_ref().ok_or(cdk::Error::Internal)?,
                         &completed_entry,
@@ -814,7 +854,7 @@ pub async fn advance_federated_bark_melt_quote(
         .propose_lightning_send(
             &quote,
             predecessor_operation_id,
-            &projection,
+            snapshot,
             crate::FederatedBarkSendProposal {
                 actor,
                 signer_set,
@@ -835,9 +875,12 @@ pub async fn advance_federated_bark_melt_quote(
     )?);
     state.submit_envelope(envelope).await?.ensure_accepted()?;
 
-    let accepted_projection = state.mint().federation_bark_projection_snapshot().await?;
+    let accepted_projection =
+        super::projection::federation_bark_recovery_indexed_projection(state, runtime)
+            .await
+            .map_err(super::projection::projection_error)?;
     if let Err(error) = runtime
-        .apply_lightning_send_plan(&quote, &accepted_projection, &plan)
+        .apply_lightning_send_plan(&quote, accepted_projection.snapshot(), &plan)
         .await
     {
         runtime
@@ -894,9 +937,10 @@ pub async fn submit_federated_bark_melt_with_plan(
         .await?
         .ok_or(cdk::Error::UnknownQuote)?;
     quote.state = MeltQuoteState::Pending;
-    let projection = super::projection::federation_bark_ready_projection(state.mint(), runtime)
-        .await
-        .map_err(super::projection::projection_error)?;
+    let projection =
+        super::projection::federation_bark_ready_indexed_projection(state.mint(), runtime)
+            .await
+            .map_err(super::projection::projection_error)?;
     let application = super::bark_application(federation.public_config())?;
     let signer_set = federation
         .public_config()
@@ -913,7 +957,7 @@ pub async fn submit_federated_bark_melt_with_plan(
         .propose_lightning_send(
             &quote,
             melt_operation_id,
-            &projection,
+            projection.snapshot(),
             crate::FederatedBarkSendProposal {
                 actor: federation.member_id(),
                 signer_set,
@@ -938,14 +982,12 @@ pub async fn submit_federated_bark_melt_with_plan(
 
 async fn send_transition_entry(
     state: &dyn FederatedBarkNode,
-    projection: &cdk::federation::FederationBarkProjectionSnapshot,
+    projection: &IndexedBarkProjection,
     action_id: cdk::federation::FederationBarkActionId,
     phase: FederationBarkSemanticPhase,
 ) -> Result<cdk::federation::FederationJournalEntry, cdk::Error> {
     let operation_id = projection
-        .transitions
-        .iter()
-        .find(|record| record.action_id == action_id && record.phase == phase)
+        .first_transition_for_phase(action_id, phase)
         .map(|record| record.operation_id)
         .ok_or(cdk::Error::Internal)?;
     state
@@ -957,13 +999,12 @@ async fn send_transition_entry(
 }
 
 fn next_observation_epoch(
-    projection: &cdk::federation::FederationBarkProjectionSnapshot,
+    projection: &IndexedBarkProjection,
     action_id: cdk::federation::FederationBarkActionId,
     member_id: MemberId,
 ) -> Result<u64, cdk::Error> {
     projection
-        .observations
-        .iter()
+        .observations_for_action(action_id)
         .filter_map(|record| match &record.operation {
             FederationBarkOperation::MemberObservation(observation)
                 if observation.action_id == action_id && observation.observer == member_id =>
@@ -996,7 +1037,8 @@ mod tests {
     };
     use cdk::Amount;
 
-    use super::{matching_observer_count, send_needs_initiation};
+    use super::{matching_observer_count, send_needs_initiation, should_skip_initial_send_probe};
+    use crate::IndexedBarkProjection;
 
     fn member(id: u16) -> MemberId {
         MemberId::new(id).expect("member ID")
@@ -1044,10 +1086,11 @@ mod tests {
             ],
             ..FederationBarkProjectionSnapshot::default()
         };
+        let indexed = IndexedBarkProjection::from_snapshot(projection.clone());
 
         assert_eq!(
             matching_observer_count(
-                &projection,
+                &indexed,
                 action_id,
                 FederationBarkObservationStatus::Failed,
                 None,
@@ -1056,7 +1099,7 @@ mod tests {
         );
         assert_eq!(
             matching_observer_count(
-                &projection,
+                &indexed,
                 action_id,
                 FederationBarkObservationStatus::Failed,
                 Some(expected_result),
@@ -1067,9 +1110,10 @@ mod tests {
         projection
             .observations
             .push(observation(action_id, member(3), 4, 9));
+        let indexed = IndexedBarkProjection::from_snapshot(projection);
         assert_eq!(
             matching_observer_count(
-                &projection,
+                &indexed,
                 action_id,
                 FederationBarkObservationStatus::Failed,
                 Some(expected_result),
@@ -1086,5 +1130,20 @@ mod tests {
         assert!(send_needs_initiation(
             &crate::FederatedBarkSendTerminalStatus::Missing,
         ));
+    }
+
+    #[test]
+    fn attempt_zero_probe_skip_requires_freshly_cosigned_primary_actor_first_pass() {
+        let actor = member(1);
+        let peer = member(2);
+        assert!(should_skip_initial_send_probe(0, actor, actor, 1, true));
+        // Restart / already-consumed marker must still probe before initiating.
+        assert!(!should_skip_initial_send_probe(0, actor, actor, 1, false));
+        // Fallback rounds must probe first.
+        assert!(!should_skip_initial_send_probe(1, actor, actor, 1, true));
+        // Non-actor observers must probe first.
+        assert!(!should_skip_initial_send_probe(0, actor, peer, 1, true));
+        // Later observation epochs (retries) must probe first.
+        assert!(!should_skip_initial_send_probe(0, actor, actor, 2, true));
     }
 }
