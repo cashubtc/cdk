@@ -1216,6 +1216,8 @@ impl CdkAlephBftDbBackupWriter {
     }
 }
 
+const MAX_ALEPH_BFT_PENDING_BACKUP_BUFFER_BYTES: usize = 256 * 1024;
+
 impl AsyncWrite for CdkAlephBftDbBackupWriter {
     fn poll_write(
         self: Pin<&mut Self>,
@@ -1232,11 +1234,26 @@ impl AsyncWrite for CdkAlephBftDbBackupWriter {
             }
         };
 
-        if state.flush.is_some() {
-            match poll_aleph_bft_db_backup_flush(&this.db, this.session_id, &mut state, cx) {
-                Poll::Ready(Ok(())) => {}
-                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
-                Poll::Pending => return Poll::Pending,
+        if let Some(flush) = state.flush.as_mut() {
+            match flush.as_mut().poll(cx) {
+                Poll::Ready(Ok(())) => {
+                    state.flush = None;
+                    state.persisted_bytes = state.persisted_bytes.saturating_add(state.flush_bytes);
+                    state.persisted_chunks = state.persisted_chunks.saturating_add(1);
+                    state.flush_bytes = 0;
+                }
+                Poll::Ready(Err(err)) => {
+                    state.flush = None;
+                    state.flush_bytes = 0;
+                    return Poll::Ready(Err(err));
+                }
+                Poll::Pending => {
+                    if state.pending.len().saturating_add(buf.len())
+                        > MAX_ALEPH_BFT_PENDING_BACKUP_BUFFER_BYTES
+                    {
+                        return Poll::Pending;
+                    }
+                }
             }
         }
 
@@ -2628,6 +2645,27 @@ mod tests {
                 .concat(),
             b"first-second".to_vec()
         );
+    }
+
+    #[tokio::test]
+    async fn cdk_aleph_bft_db_backup_writer_coalesces_pending_writes_before_flush() {
+        let db: DynMintDatabase =
+            Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+        let backup = CdkAlephBftDbBackup::new(Arc::clone(&db), 108);
+        let mut writer = backup.writer();
+
+        writer.write_all(b"part-1|").await.expect("write part 1");
+        writer.write_all(b"part-2|").await.expect("write part 2");
+        writer.write_all(b"part-3").await.expect("write part 3");
+        writer.flush().await.expect("flush coalesced writes");
+
+        let chunks = db
+            .get_federation_aleph_bft_backup_chunks(108, FederationIndexRange::ALL)
+            .await
+            .expect("backup chunks");
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], b"part-1|part-2|part-3".to_vec());
+        assert_eq!(writer.persisted_chunks(), 1);
     }
 
     #[tokio::test]

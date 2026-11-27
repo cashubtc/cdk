@@ -210,6 +210,19 @@ where
                 .fetch_all(&*conn)
                 .await?
             }
+            FederationSignatureShareKey::Operation(operation_id) => {
+                query(
+                    r#"
+                    SELECT share_json
+                    FROM federation_signature_shares
+                    WHERE operation_id = :operation_id
+                    ORDER BY output_index ASC, member_id ASC
+                    "#,
+                )?
+                .bind("operation_id", operation_id.to_string())
+                .fetch_all(&*conn)
+                .await?
+            }
             FederationSignatureShareKey::BlindedMessage(blinded_message) => {
                 query(
                     r#"

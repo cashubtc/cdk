@@ -298,6 +298,9 @@ pub enum FederationSignatureShareKey {
         /// Output position in the operation.
         output_index: u32,
     },
+    /// Every member's share for every output of one accepted operation, in
+    /// output and member order.
+    Operation(FederationOperationId),
     /// Every share for one blinded message, in operation, output and member
     /// order.
     BlindedMessage(PublicKey),
@@ -364,6 +367,18 @@ pub trait FederationJournalTransaction {
         entry: &FederationJournalEntry,
     ) -> Result<(), Self::Err>;
 
+    /// Persist a batch of accepted federation journal entries in consensus order,
+    /// advancing durable frontiers once for the batch.
+    async fn add_federation_journal_entries(
+        &mut self,
+        entries: &[FederationJournalEntry],
+    ) -> Result<(), Self::Err> {
+        for entry in entries {
+            self.add_federation_journal_entry(entry).await?;
+        }
+        Ok(())
+    }
+
     /// Get the latest accepted journal entry for `key` inside this
     /// transaction, ordered before `before` when it is given.
     async fn get_federation_journal_entry(
@@ -378,6 +393,47 @@ pub trait FederationJournalTransaction {
         operation_id: FederationOperationId,
         application: &FederationApplicationState,
     ) -> Result<(), Self::Err>;
+
+    /// Persist one legal post-consensus application state for an already-loaded
+    /// journal entry without advancing the rolling application frontier yet.
+    ///
+    /// Callers using this method inside a batched unit-application transaction
+    /// must invoke [`Self::advance_federation_application_frontier`] before
+    /// committing the transaction.
+    async fn record_federation_operation_application_state_deferred(
+        &mut self,
+        entry: &FederationJournalEntry,
+        application: &FederationApplicationState,
+    ) -> Result<(), Self::Err> {
+        self.set_federation_operation_application_state(entry.operation_id, application)
+            .await
+    }
+
+    /// Advance the durable application frontier and rolling application digest
+    /// across all contiguous terminal journal entries persisted so far.
+    async fn advance_federation_application_frontier(&mut self) -> Result<(), Self::Err> {
+        Ok(())
+    }
+
+    /// Begin a nested savepoint inside this transaction to isolate per-operation
+    /// deterministic rejections during batched unit application.
+    async fn begin_federation_apply_savepoint(&mut self, _name: &str) -> Result<(), Self::Err> {
+        Ok(())
+    }
+
+    /// Release a nested savepoint created by [`Self::begin_federation_apply_savepoint`].
+    async fn release_federation_apply_savepoint(&mut self, _name: &str) -> Result<(), Self::Err> {
+        Ok(())
+    }
+
+    /// Roll back and release a nested savepoint created by
+    /// [`Self::begin_federation_apply_savepoint`].
+    async fn rollback_federation_apply_savepoint(&mut self, _name: &str) -> Result<(), Self::Err> {
+        Err(Error::Internal(
+            "federation apply savepoint rollback is not supported by this backend".to_string(),
+        )
+        .into())
+    }
 
     /// Persist the highest accepted effectful DKG sequence for one federation member.
     async fn set_federation_dkg_member_sequence(
@@ -555,6 +611,18 @@ pub trait FederationJournalTransaction {
         &mut self,
         operation_id: FederationOperationId,
     ) -> Result<(), Self::Err>;
+
+    /// Remove a batch of local AlephBFT pending operations after they are decided.
+    async fn remove_federation_aleph_bft_pending_operations(
+        &mut self,
+        operation_ids: &[FederationOperationId],
+    ) -> Result<(), Self::Err> {
+        for operation_id in operation_ids {
+            self.remove_federation_aleph_bft_pending_operation(*operation_id)
+                .await?;
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -797,6 +865,62 @@ pub trait FederationJournalDatabase {
         key: FederationJournalEntryKey<'_>,
         before: Option<u64>,
     ) -> Result<Option<FederationJournalEntry>, Self::Err>;
+
+    /// Get the deduplicated set of latest accepted journal entries matching any
+    /// of `operation_ids` or `conflict_keys`, ordered before `before` when it
+    /// is given, returned in ascending `index` order.
+    async fn get_federation_journal_entries_by_keys(
+        &self,
+        operation_ids: &[FederationOperationId],
+        conflict_keys: &[FederationOperationConflictKey],
+        before: Option<u64>,
+    ) -> Result<Vec<FederationJournalEntry>, Self::Err> {
+        let mut entries = BTreeMap::new();
+        for operation_id in operation_ids {
+            if let Some(entry) = self
+                .get_federation_journal_entry(
+                    FederationJournalEntryKey::Operation(*operation_id),
+                    before,
+                )
+                .await?
+            {
+                entries.insert(entry.index, entry);
+            }
+        }
+        for conflict_key in conflict_keys {
+            if let Some(entry) = self
+                .get_federation_journal_entry(
+                    FederationJournalEntryKey::ConflictKey(conflict_key),
+                    before,
+                )
+                .await?
+            {
+                entries.insert(entry.index, entry);
+            }
+        }
+        Ok(entries.into_values().collect())
+    }
+
+    /// Get the latest persisted `(operation_index, application_state)` for each
+    /// requested `operation_id` without decoding full operation envelopes.
+    async fn get_federation_journal_application_states(
+        &self,
+        operation_ids: &[FederationOperationId],
+    ) -> Result<BTreeMap<FederationOperationId, (u64, FederationApplicationState)>, Self::Err> {
+        let mut states = BTreeMap::new();
+        for operation_id in operation_ids {
+            if let Some(entry) = self
+                .get_federation_journal_entry(
+                    FederationJournalEntryKey::Operation(*operation_id),
+                    None,
+                )
+                .await?
+            {
+                states.insert(entry.operation_id, (entry.index, entry.application));
+            }
+        }
+        Ok(states)
+    }
 
     /// Get persisted effectful DKG sequence watermarks by member.
     async fn get_federation_dkg_member_sequences(
