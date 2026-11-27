@@ -66,8 +66,9 @@ use self::dkg_routes::{
     post_frost_dkg_round1, post_frost_dkg_round2,
 };
 use self::frost_signing_routes::{
-    post_frost_aggregate_result, post_frost_signing_abort, post_frost_signing_commitment,
-    post_frost_signing_package,
+    post_frost_aggregate_batch_result, post_frost_aggregate_result, post_frost_signing_abort,
+    post_frost_signing_batch_abort, post_frost_signing_batch_commitment,
+    post_frost_signing_batch_package, post_frost_signing_commitment, post_frost_signing_package,
 };
 #[cfg(feature = "federation-bark")]
 use self::operator_routes::{
@@ -137,6 +138,26 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
     let frost_signing_router = frost_signing_router.layer(DefaultBodyLimit::max(
         cdk::federation::FEDERATION_MAX_FROST_SIGNING_REQUEST_BODY_BYTES,
     ));
+    let frost_signing_batch_router = Router::new()
+        .route(
+            "/frost/signing/commitments/batch",
+            post(post_frost_signing_batch_commitment),
+        )
+        .route(
+            "/frost/signing/packages/batch",
+            post(post_frost_signing_batch_package),
+        )
+        .route(
+            "/frost/signing/aborts/batch",
+            post(post_frost_signing_batch_abort),
+        )
+        .route(
+            "/frost/signing/results/batch",
+            post(post_frost_aggregate_batch_result),
+        )
+        .layer(DefaultBodyLimit::max(
+            cdk::federation::FEDERATION_MAX_FROST_BATCH_SIGNING_REQUEST_BODY_BYTES,
+        ));
     #[cfg(feature = "federation-bark")]
     let bark_secret_router = Router::new()
         .route(
@@ -155,6 +176,7 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
     let router = Router::new()
         .merge(dkg_router)
         .merge(frost_signing_router)
+        .merge(frost_signing_batch_router)
         .route("/config", get(get_public_config))
         .route("/status", post(post_status))
         .route("/checkpoints/summary", post(post_checkpoint_summary))

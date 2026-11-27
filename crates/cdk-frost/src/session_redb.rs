@@ -5,11 +5,19 @@
 
 use std::fmt;
 use std::marker::PhantomData;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
-use crate::session::{check_attempt, Failure, SessionRecord};
-use crate::{Error, SigningSessionContext, SigningSessionId};
+use crate::session::{
+    check_attempt, validate_nonce_commit_batch, validate_nonce_transition_batch,
+    validate_retryable_existing_nonce, validate_session_burn_batch, Failure, SessionRecord,
+};
+use crate::{
+    Error, NonceBurnReason, NonceLifecycle, NonceRecord, NonceReservation, NonceTransitionChain,
+    SigningSessionContext, SigningSessionId,
+};
 
 type BytesTable = TableDefinition<'static, &'static [u8], &'static [u8]>;
 
@@ -96,6 +104,8 @@ pub(crate) fn initialize_tables(
 /// One record kind's tables in a redb database.
 pub(crate) struct RedbSessionTable<'a, R> {
     database: &'a Database,
+    #[cfg(test)]
+    write_transactions: Option<&'a AtomicUsize>,
     record: PhantomData<R>,
 }
 
@@ -113,15 +123,31 @@ where
         }
         Self {
             database,
+            #[cfg(test)]
+            write_transactions: None,
             record: PhantomData,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_write_counter(mut self, write_transactions: &'a AtomicUsize) -> Self {
+        self.write_transactions = Some(write_transactions);
+        self
+    }
+
+    fn begin_write(&self) -> Result<redb::WriteTransaction, Error> {
+        #[cfg(test)]
+        if let Some(counter) = self.write_transactions {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }
+        self.database.begin_write().map_err(persistence)
     }
 
     /// Advance the attempt high-water mark, burning an older active record.
     pub(crate) fn activate_attempt(&self, context: &SigningSessionContext) -> Result<(), Error> {
         R::validate_activation(context)?;
         let tables = R::TABLES;
-        let transaction = self.database.begin_write().map_err(persistence)?;
+        let transaction = self.begin_write()?;
         let slot_key = context.slot_id().to_bytes();
         let current = read_attempt(&transaction, &tables, &slot_key)?;
         if check_attempt::<R>(current, context)? {
@@ -164,7 +190,7 @@ where
     pub(crate) fn reserve(&self, record: R) -> Result<R::Reservation, Error> {
         record.validate_new()?;
         let tables = R::TABLES;
-        let transaction = self.database.begin_write().map_err(persistence)?;
+        let transaction = self.begin_write()?;
         let session_key = record.context().session_id().to_bytes();
         let slot_key = record.context().slot_id().to_bytes();
         let record_key = R::key_bytes(record.key());
@@ -231,6 +257,18 @@ where
         self.load_key_bytes(&transaction, &R::key_bytes(key))
     }
 
+    /// Load a batch of detailed records by key in one read transaction.
+    pub(crate) fn load_keys_batch(
+        &self,
+        keys: &[R::Key],
+    ) -> Result<Vec<Result<Option<R>, Error>>, Error> {
+        let transaction = self.database.begin_read().map_err(persistence)?;
+        Ok(keys
+            .iter()
+            .map(|key| self.load_key_bytes(&transaction, &R::key_bytes(*key)))
+            .collect())
+    }
+
     /// Load a detailed record by session.
     pub(crate) fn load_session(&self, session_id: SigningSessionId) -> Result<Option<R>, Error> {
         let transaction = self.database.begin_read().map_err(persistence)?;
@@ -262,7 +300,7 @@ where
     pub(crate) fn compare_and_swap(&self, expected: &R, replacement: R) -> Result<(), Error> {
         R::validate_transition(expected, &replacement)?;
         let tables = R::TABLES;
-        let transaction = self.database.begin_write().map_err(persistence)?;
+        let transaction = self.begin_write()?;
         let record_key = R::key_bytes(expected.key());
         let current = read_record::<R>(&transaction, &record_key)?
             .ok_or_else(|| R::error(Failure::RecordDisappeared))?;
@@ -311,7 +349,7 @@ where
     /// Compact old terminal detail into replay tombstones, oldest first.
     pub(crate) fn compact_terminal(&self, retain_detailed: usize) -> Result<usize, Error> {
         let tables = R::TABLES;
-        let transaction = self.database.begin_write().map_err(persistence)?;
+        let transaction = self.begin_write()?;
         let terminal = {
             let order = transaction
                 .open_table(tables.terminal_order)
@@ -381,6 +419,210 @@ where
             return Err(R::error(Failure::KeyCompacted));
         }
         Ok(None)
+    }
+}
+
+impl RedbSessionTable<'_, NonceRecord> {
+    /// Atomically activate attempts, reserve, and publish commitments for a
+    /// batch of freshly generated nonce records in one redb write transaction.
+    pub(crate) fn commit_nonce_batch(
+        &self,
+        records: Vec<NonceRecord>,
+    ) -> Result<Vec<NonceReservation>, Error> {
+        validate_nonce_commit_batch(&records)?;
+        let tables = NonceRecord::TABLES;
+        let sessions_table = tables
+            .sessions
+            .ok_or_else(|| Error::Internal("nonce session index table missing".to_string()))?;
+        let transaction = self.begin_write()?;
+        let mut reservations = Vec::with_capacity(records.len());
+
+        for generated in records {
+            let context = generated.context();
+            let slot_key = context.slot_id().to_bytes();
+            let session_key = context.session_id().to_bytes();
+            let record_key = NonceRecord::key_bytes(generated.key());
+
+            let current = read_attempt(&transaction, &tables, &slot_key)?;
+            if !check_attempt::<NonceRecord>(current, context)? {
+                if let Some(active_key) = read_bytes(&transaction, tables.active_slots, &slot_key)?
+                {
+                    let existing = read_record::<NonceRecord>(&transaction, &active_key)?
+                        .ok_or_else(|| NonceRecord::error(Failure::ActiveRecordMissing))?;
+                    let burned = existing.burned_for_replacement()?;
+                    NonceRecord::validate_transition(&existing, &burned)?;
+                    let bytes = burned.encode()?;
+                    {
+                        let mut records_table = transaction
+                            .open_table(tables.records)
+                            .map_err(persistence)?;
+                        records_table
+                            .insert(active_key.as_slice(), bytes.as_slice())
+                            .map_err(persistence)?;
+                        let mut slots_table = transaction
+                            .open_table(tables.active_slots)
+                            .map_err(persistence)?;
+                        slots_table
+                            .remove(slot_key.as_slice())
+                            .map_err(persistence)?;
+                    }
+                    append_terminal(&transaction, &tables, &active_key)?;
+                }
+                let encoded = encode_attempt(context.attempt(), context.session_id());
+                {
+                    let mut attempts_table = transaction
+                        .open_table(tables.latest_attempts)
+                        .map_err(persistence)?;
+                    attempts_table
+                        .insert(slot_key.as_slice(), encoded.as_slice())
+                        .map_err(persistence)?;
+                }
+            }
+
+            if let Some(existing_key) = read_bytes(&transaction, sessions_table, &session_key)? {
+                let existing = read_record::<NonceRecord>(&transaction, &existing_key)?
+                    .ok_or_else(|| NonceRecord::error(Failure::SessionCompacted))?;
+                validate_retryable_existing_nonce(&existing, &generated)?;
+                reservations.push(NonceReservation::Existing(Box::new(existing)));
+                continue;
+            }
+            if read_attempt(&transaction, &tables, &slot_key)?
+                != Some((context.attempt(), context.session_id()))
+            {
+                return Err(NonceRecord::error(Failure::NotActivated));
+            }
+            if contains(&transaction, tables.active_slots, &slot_key)? {
+                return Err(NonceRecord::error(Failure::SlotClaimed));
+            }
+            if contains(&transaction, tables.records, &record_key)?
+                || contains(&transaction, tables.tombstones, &record_key)?
+            {
+                return Err(NonceRecord::error(Failure::KeyClaimed));
+            }
+            let reserved = generated.transition(NonceLifecycle::Reserved, true, None)?;
+            NonceRecord::validate_transition(&generated, &reserved)?;
+            let sent = reserved.transition(NonceLifecycle::CommitmentSent, true, None)?;
+            NonceRecord::validate_transition(&reserved, &sent)?;
+            let bytes = sent.encode()?;
+            {
+                let mut records_table = transaction
+                    .open_table(tables.records)
+                    .map_err(persistence)?;
+                records_table
+                    .insert(record_key.as_slice(), bytes.as_slice())
+                    .map_err(persistence)?;
+                let mut sessions = transaction
+                    .open_table(sessions_table)
+                    .map_err(persistence)?;
+                sessions
+                    .insert(session_key.as_slice(), record_key.as_slice())
+                    .map_err(persistence)?;
+                let mut slots_table = transaction
+                    .open_table(tables.active_slots)
+                    .map_err(persistence)?;
+                slots_table
+                    .insert(slot_key.as_slice(), record_key.as_slice())
+                    .map_err(persistence)?;
+            }
+            reservations.push(NonceReservation::Inserted);
+        }
+
+        transaction.commit().map_err(persistence)?;
+        Ok(reservations)
+    }
+
+    /// Atomically apply a batch of validated nonce transition chains in one
+    /// redb write transaction.
+    pub(crate) fn apply_nonce_batch_transitions(
+        &self,
+        chains: Vec<NonceTransitionChain>,
+    ) -> Result<(), Error> {
+        validate_nonce_transition_batch(&chains)?;
+        let tables = NonceRecord::TABLES;
+        let transaction = self.begin_write()?;
+
+        for chain in chains {
+            let expected = chain.expected();
+            let replacement = chain.final_record();
+            let record_key = NonceRecord::key_bytes(expected.key());
+            let current = read_record::<NonceRecord>(&transaction, &record_key)?
+                .ok_or_else(|| NonceRecord::error(Failure::RecordDisappeared))?;
+            if current != *expected {
+                return Err(NonceRecord::error(Failure::ChangedConcurrently));
+            }
+            let bytes = replacement.encode()?;
+            {
+                let mut records_table = transaction
+                    .open_table(tables.records)
+                    .map_err(persistence)?;
+                records_table
+                    .insert(record_key.as_slice(), bytes.as_slice())
+                    .map_err(persistence)?;
+            }
+            if !expected.is_terminal() && replacement.is_terminal() {
+                let slot_key = expected.context().slot_id().to_bytes();
+                {
+                    let mut slots_table = transaction
+                        .open_table(tables.active_slots)
+                        .map_err(persistence)?;
+                    slots_table
+                        .remove(slot_key.as_slice())
+                        .map_err(persistence)?;
+                }
+                append_terminal(&transaction, &tables, &record_key)?;
+            }
+        }
+
+        transaction.commit().map_err(persistence)
+    }
+
+    /// Atomically burn every nonterminal record for a batch of sessions in one
+    /// redb write transaction.
+    pub(crate) fn burn_nonce_sessions_batch(
+        &self,
+        sessions: &[SigningSessionId],
+        reason: NonceBurnReason,
+    ) -> Result<(), Error> {
+        validate_session_burn_batch(sessions)?;
+        let tables = NonceRecord::TABLES;
+        let sessions_table = tables
+            .sessions
+            .ok_or_else(|| Error::Internal("nonce session index table missing".to_string()))?;
+        let transaction = self.begin_write()?;
+
+        for session_id in sessions {
+            let session_key = session_id.to_bytes();
+            let Some(record_key) = read_bytes(&transaction, sessions_table, &session_key)? else {
+                continue;
+            };
+            let Some(record) = read_record::<NonceRecord>(&transaction, &record_key)? else {
+                continue;
+            };
+            if record.is_terminal() {
+                continue;
+            }
+            let burned = record.transition(NonceLifecycle::Burned { reason }, false, None)?;
+            NonceRecord::validate_transition(&record, &burned)?;
+            let bytes = burned.encode()?;
+            let slot_key = record.context().slot_id().to_bytes();
+            {
+                let mut records_table = transaction
+                    .open_table(tables.records)
+                    .map_err(persistence)?;
+                records_table
+                    .insert(record_key.as_slice(), bytes.as_slice())
+                    .map_err(persistence)?;
+                let mut slots_table = transaction
+                    .open_table(tables.active_slots)
+                    .map_err(persistence)?;
+                slots_table
+                    .remove(slot_key.as_slice())
+                    .map_err(persistence)?;
+            }
+            append_terminal(&transaction, &tables, &record_key)?;
+        }
+
+        transaction.commit().map_err(persistence)
     }
 }
 

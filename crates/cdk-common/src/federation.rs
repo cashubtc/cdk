@@ -55,6 +55,8 @@ pub const FEDERATION_MAX_DKG_KEYSET_AMOUNTS: usize = 64;
 pub const FEDERATION_MAX_DKG_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 /// Maximum JSON body accepted by one private FROST signing REST route.
 pub const FEDERATION_MAX_FROST_SIGNING_REQUEST_BODY_BYTES: usize = 512 * 1024;
+/// Maximum JSON body accepted by one batched private FROST signing REST route.
+pub const FEDERATION_MAX_FROST_BATCH_SIGNING_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
 
 pub use self::address_allocation::{
     apply_federation_address_allocation_in_tx, load_federation_address_allocation_in_tx,
@@ -267,6 +269,8 @@ pub use self::transaction_proposal::{
     FEDERATION_TRANSACTION_INDEX_NAMESPACE,
 };
 pub use self::transport::{
+    DecodedFrostBatchAggregateResultItem, DecodedFrostBatchCommitmentItem,
+    DecodedFrostBatchSigningAbortItem, DecodedFrostBatchSigningPackageItem,
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
     FederationAlephBftBackupRequest, FederationAlephBftBackupResponse,
     FederationAlephBftBackupStatus, FederationAlephBftNetworkMessageRequest,
@@ -285,18 +289,26 @@ pub use self::transport::{
     FederationDkgActivationRequest, FederationDkgCommitmentRequest, FederationDkgReadinessRequest,
     FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupResponse,
     FederationDkgTranscriptSignatureRequest, FederationFrostAggregateResultNotification,
-    FederationFrostCommitmentRequest, FederationFrostCommitmentResponse,
-    FederationFrostSignatureShareResponse, FederationFrostSigningAbortRequest,
-    FederationFrostSigningAck, FederationFrostSigningPackageRequest,
-    FederationInvalidOperationAlertSummary, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationLocalStatusResponse, FederationOnchainWalletStatus,
-    FederationPeerStatus, FederationPeerStatusRequest, FederationRecoveryRetentionStatus,
-    FederationRestBodyHash, FederationRestMessageKind, FederationRestSequenceTracker,
-    FederationRestSignature, FederationSignedRequest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, FederationWalletRebroadcastResponse,
-    FederationWalletTransactionRequest, FEDERATION_MAX_ALEPH_BFT_BACKUP_CHUNKS_PER_PAGE,
-    FEDERATION_MAX_ALEPH_BFT_BACKUP_PAGE_BYTES, FEDERATION_MAX_ALEPH_BFT_BACKUP_RAW_BYTES_PER_PAGE,
-    FEDERATION_MAX_ALEPH_BFT_BACKUP_REQUEST_BYTES, FEDERATION_REST_API_VERSION,
+    FederationFrostBatchAggregateResultItem, FederationFrostBatchAggregateResultNotification,
+    FederationFrostBatchCommitmentItem, FederationFrostBatchCommitmentRequest,
+    FederationFrostBatchCommitmentResponse, FederationFrostBatchCommitmentResponseItem,
+    FederationFrostBatchSignatureShareResponse, FederationFrostBatchSignatureShareResponseItem,
+    FederationFrostBatchSigningAbortItem, FederationFrostBatchSigningAbortRequest,
+    FederationFrostBatchSigningAck, FederationFrostBatchSigningPackageItem,
+    FederationFrostBatchSigningPackageRequest, FederationFrostCommitmentRequest,
+    FederationFrostCommitmentResponse, FederationFrostSignatureShareResponse,
+    FederationFrostSigningAbortRequest, FederationFrostSigningAck,
+    FederationFrostSigningPackageRequest, FederationInvalidOperationAlertSummary,
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
+    FederationLocalStatusResponse, FederationOnchainWalletStatus, FederationPeerStatus,
+    FederationPeerStatusRequest, FederationRecoveryRetentionStatus, FederationRestBodyHash,
+    FederationRestMessageKind, FederationRestSequenceTracker, FederationRestSignature,
+    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    FederationWalletRebroadcastResponse, FederationWalletTransactionRequest,
+    FEDERATION_MAX_ALEPH_BFT_BACKUP_CHUNKS_PER_PAGE, FEDERATION_MAX_ALEPH_BFT_BACKUP_PAGE_BYTES,
+    FEDERATION_MAX_ALEPH_BFT_BACKUP_RAW_BYTES_PER_PAGE,
+    FEDERATION_MAX_ALEPH_BFT_BACKUP_REQUEST_BYTES, FEDERATION_MAX_FROST_SIGNING_BATCH_ITEMS,
+    FEDERATION_REST_API_VERSION,
 };
 #[cfg(any(test, feature = "test"))]
 pub use self::trusted_dealer::{

@@ -91,12 +91,20 @@ pub enum FederationRestMessageKind {
     FrostDkgConfirmation,
     /// Ask one selected signer for a durable single-use nonce commitment.
     FrostSigningCommitment,
+    /// Ask one selected signer for a batched set of durable single-use nonce commitments.
+    FrostSigningBatchCommitment,
     /// Deliver an exact authorized signing package and request one signature share.
     FrostSigningPackage,
+    /// Deliver a batched set of authorized signing packages and request signature shares.
+    FrostSigningBatchPackage,
     /// Burn a session nonce after timeout, ambiguity, or coordinator failover.
     FrostSigningAbort,
+    /// Burn a batched set of session nonces after timeout, ambiguity, or failover.
+    FrostSigningBatchAbort,
     /// Notify selected signers of the independently verified aggregate result.
     FrostAggregateResult,
+    /// Notify selected signers of a batched set of independently verified aggregate results.
+    FrostAggregateBatchResult,
     /// Ask one application signer for a durable virtual MuSig2 commitment.
     ApplicationVirtualMusigCommitment,
     /// Deliver an application's finalized MuSig2 transcript and request one partial.
@@ -171,9 +179,13 @@ impl FederationRestMessageKind {
             Self::FrostDkgRound2 => b"frost_dkg_round2",
             Self::FrostDkgConfirmation => b"frost_dkg_confirmation",
             Self::FrostSigningCommitment => b"frost_signing_commitment",
+            Self::FrostSigningBatchCommitment => b"frost_signing_batch_commitment",
             Self::FrostSigningPackage => b"frost_signing_package",
+            Self::FrostSigningBatchPackage => b"frost_signing_batch_package",
             Self::FrostSigningAbort => b"frost_signing_abort",
+            Self::FrostSigningBatchAbort => b"frost_signing_batch_abort",
             Self::FrostAggregateResult => b"frost_aggregate_result",
+            Self::FrostAggregateBatchResult => b"frost_aggregate_batch_result",
             Self::ApplicationVirtualMusigCommitment => b"application_virtual_musig_commitment",
             Self::ApplicationVirtualMusigPartial => b"application_virtual_musig_partial",
             Self::ApplicationThresholdDh => b"application_threshold_dh",
@@ -1097,6 +1109,641 @@ impl FederationFrostSigningAck {
             kind,
         }
     }
+}
+
+/// Maximum number of inputs admitted in one batched FROST signing request.
+pub const FEDERATION_MAX_FROST_SIGNING_BATCH_ITEMS: usize = cdk_frost::MAX_SIGNING_BATCH_SIZE;
+
+/// Decoded and cross-checked round-one item in a batched FROST commitment request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedFrostBatchCommitmentItem {
+    /// Transaction input index bound to this session.
+    pub input_index: u32,
+    /// Decoded canonical signing session context.
+    pub context: cdk_frost::SigningSessionContext,
+    /// Decoded canonical additive derivation plan.
+    pub derivation: cdk_frost::SigningDerivation,
+    /// Decoded canonical application authorization request.
+    pub authorization: cdk_frost::AuthorizationRequest,
+}
+
+/// Decoded and cross-checked round-two item in a batched FROST signing package request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedFrostBatchSigningPackageItem {
+    /// Transaction input index bound to this session.
+    pub input_index: u32,
+    /// Decoded canonical signing session context.
+    pub context: cdk_frost::SigningSessionContext,
+    /// Signer's round-one single-use nonce identifier.
+    pub nonce_id: cdk_frost::NonceId,
+    /// Decoded canonical application authorization request.
+    pub authorization: cdk_frost::AuthorizationRequest,
+    /// Decoded canonical commitment set.
+    pub commitments: cdk_frost::NonceCommitmentSet,
+    /// Canonical signing package hash.
+    pub package_hash: [u8; 32],
+}
+
+/// Decoded and cross-checked item in a batched FROST signing abort request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedFrostBatchSigningAbortItem {
+    /// Transaction input index bound to this session.
+    pub input_index: u32,
+    /// Decoded canonical signing session context.
+    pub context: cdk_frost::SigningSessionContext,
+    /// Decoded canonical application authorization request.
+    pub authorization: cdk_frost::AuthorizationRequest,
+}
+
+/// Decoded and cross-checked item in a batched FROST aggregate-result notification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedFrostBatchAggregateResultItem {
+    /// Transaction input index bound to this session.
+    pub input_index: u32,
+    /// Decoded canonical signing session context.
+    pub context: cdk_frost::SigningSessionContext,
+    /// Decoded canonical application authorization request.
+    pub authorization: cdk_frost::AuthorizationRequest,
+    /// Canonical signing package hash.
+    pub package_hash: [u8; 32],
+    /// Decoded compact BIP340 aggregate signature.
+    pub signature: cdk_frost::AggregateSignature,
+}
+
+/// One input item in a batched FROST round-one commitment request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationFrostBatchCommitmentItem {
+    /// Canonical transaction input index.
+    pub input_index: u32,
+    /// Per-input round-one commitment request.
+    pub request: FederationFrostCommitmentRequest,
+}
+
+/// Coordinator request asking one signer for durable single-use commitments
+/// across a bounded batch of inputs in one atomic write transaction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationFrostBatchCommitmentRequest {
+    /// Private signing payload version.
+    pub version: u16,
+    /// Canonically ordered per-input commitment requests.
+    pub items: Vec<FederationFrostBatchCommitmentItem>,
+}
+
+impl FederationFrostBatchCommitmentRequest {
+    /// Construct a bounded batched round-one commitment request.
+    #[must_use]
+    pub fn new(items: Vec<FederationFrostBatchCommitmentItem>) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            items,
+        }
+    }
+
+    /// Decode and cross-check every item, rejecting empty/oversized batches,
+    /// duplicate or out-of-order input indices, duplicate sessions/slots, and
+    /// mismatched batch scope.
+    pub fn decode(
+        &self,
+        federation_id: FederationId,
+        signer: MemberId,
+    ) -> Result<Vec<DecodedFrostBatchCommitmentItem>> {
+        ensure_frost_signing_version(self.version)?;
+        ensure_frost_batch_len(self.items.len())?;
+
+        let mut decoded = Vec::with_capacity(self.items.len());
+        let mut previous_input: Option<u32> = None;
+        let mut seen_sessions = BTreeSet::new();
+        let mut seen_slots = BTreeSet::new();
+        let mut batch_root_epoch = None;
+        let mut batch_signers: Option<Vec<cdk_frost::MemberId>> = None;
+
+        for item in &self.items {
+            if previous_input.is_some_and(|prev| prev >= item.input_index) {
+                return Err(frost_signing_invalid(
+                    "batch commitment input indices are duplicated or not strictly ordered",
+                ));
+            }
+            previous_input = Some(item.input_index);
+            let (context, derivation, authorization) =
+                item.request.decode(federation_id, signer)?;
+            if !seen_sessions.insert(context.session_id()) || !seen_slots.insert(context.slot_id())
+            {
+                return Err(frost_signing_invalid(
+                    "batch commitment contains duplicate signing sessions or slots",
+                ));
+            }
+            match batch_root_epoch {
+                None => batch_root_epoch = Some(context.root_epoch()),
+                Some(epoch) if epoch != context.root_epoch() => {
+                    return Err(frost_signing_invalid(
+                        "batch commitment items disagree on root key epoch",
+                    ));
+                }
+                Some(_) => {}
+            }
+            match batch_signers.as_deref() {
+                None => batch_signers = Some(context.signer_set().to_vec()),
+                Some(signers) if signers != context.signer_set() => {
+                    return Err(frost_signing_invalid(
+                        "batch commitment items disagree on signer set",
+                    ));
+                }
+                Some(_) => {}
+            }
+            decoded.push(DecodedFrostBatchCommitmentItem {
+                input_index: item.input_index,
+                context,
+                derivation,
+                authorization,
+            });
+        }
+        Ok(decoded)
+    }
+}
+
+/// One input commitment in a batched signer round-one response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationFrostBatchCommitmentResponseItem {
+    /// Canonical transaction input index.
+    pub input_index: u32,
+    /// Per-input commitment response.
+    pub response: FederationFrostCommitmentResponse,
+}
+
+/// Signed signer response containing one durable commitment per batched input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationFrostBatchCommitmentResponse {
+    /// Private signing payload version.
+    pub version: u16,
+    /// Canonically ordered per-input commitment responses.
+    pub items: Vec<FederationFrostBatchCommitmentResponseItem>,
+}
+
+impl FederationFrostBatchCommitmentResponse {
+    /// Construct a batched commitment response in canonical input order.
+    #[must_use]
+    pub fn new(commitments: &[(u32, cdk_frost::NonceCommitment)]) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            items: commitments
+                .iter()
+                .map(
+                    |(input_index, commitment)| FederationFrostBatchCommitmentResponseItem {
+                        input_index: *input_index,
+                        response: FederationFrostCommitmentResponse::new(commitment),
+                    },
+                )
+                .collect(),
+        }
+    }
+
+    /// Decode and verify exact ordering, signer ownership, and session identity
+    /// for every commitment in the batch.
+    pub fn decode(
+        &self,
+        signer: MemberId,
+        expected: &[(u32, cdk_frost::SigningSessionId)],
+    ) -> Result<Vec<cdk_frost::NonceCommitment>> {
+        ensure_frost_signing_version(self.version)?;
+        ensure_frost_batch_len(self.items.len())?;
+        if self.items.len() != expected.len() {
+            return Err(frost_signing_invalid(
+                "batch commitment response length differs from request",
+            ));
+        }
+        let mut commitments = Vec::with_capacity(self.items.len());
+        for (item, (expected_input_index, expected_session)) in self.items.iter().zip(expected) {
+            if item.input_index != *expected_input_index {
+                return Err(frost_signing_invalid(
+                    "batch commitment response input index mismatch",
+                ));
+            }
+            commitments.push(item.response.decode(signer, *expected_session)?);
+        }
+        Ok(commitments)
+    }
+}
+
+/// One input item in a batched FROST round-two signing package request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationFrostBatchSigningPackageItem {
+    /// Canonical transaction input index.
+    pub input_index: u32,
+    /// Per-input round-two signing package request.
+    pub request: FederationFrostSigningPackageRequest,
+}
+
+/// Coordinator request delivering a bounded batch of exact authorized FROST
+/// signing packages for one signer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationFrostBatchSigningPackageRequest {
+    /// Private signing payload version.
+    pub version: u16,
+    /// Canonically ordered per-input signing package requests.
+    pub items: Vec<FederationFrostBatchSigningPackageItem>,
+}
+
+impl FederationFrostBatchSigningPackageRequest {
+    /// Construct a bounded batched round-two signing package request.
+    #[must_use]
+    pub fn new(items: Vec<FederationFrostBatchSigningPackageItem>) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            items,
+        }
+    }
+
+    /// Decode and cross-check every signing package, rejecting empty/oversized
+    /// batches, duplicate or out-of-order input indices, duplicate sessions/slots/nonces,
+    /// and mismatched batch scope.
+    pub fn decode(
+        &self,
+        federation_id: FederationId,
+        signer: MemberId,
+    ) -> Result<Vec<DecodedFrostBatchSigningPackageItem>> {
+        ensure_frost_signing_version(self.version)?;
+        ensure_frost_batch_len(self.items.len())?;
+
+        let mut decoded = Vec::with_capacity(self.items.len());
+        let mut previous_input: Option<u32> = None;
+        let mut seen_sessions = BTreeSet::new();
+        let mut seen_slots = BTreeSet::new();
+        let mut seen_nonces = BTreeSet::new();
+        let mut batch_root_epoch = None;
+        let mut batch_signers: Option<Vec<cdk_frost::MemberId>> = None;
+
+        for item in &self.items {
+            if previous_input.is_some_and(|prev| prev >= item.input_index) {
+                return Err(frost_signing_invalid(
+                    "batch signing package input indices are duplicated or not strictly ordered",
+                ));
+            }
+            previous_input = Some(item.input_index);
+            let (context, nonce_id, authorization, commitments) =
+                item.request.decode(federation_id, signer)?;
+            if !seen_sessions.insert(context.session_id())
+                || !seen_slots.insert(context.slot_id())
+                || !seen_nonces.insert(nonce_id)
+            {
+                return Err(frost_signing_invalid(
+                    "batch signing package contains duplicate sessions, slots, or nonces",
+                ));
+            }
+            match batch_root_epoch {
+                None => batch_root_epoch = Some(context.root_epoch()),
+                Some(epoch) if epoch != context.root_epoch() => {
+                    return Err(frost_signing_invalid(
+                        "batch signing package items disagree on root key epoch",
+                    ));
+                }
+                Some(_) => {}
+            }
+            match batch_signers.as_deref() {
+                None => batch_signers = Some(context.signer_set().to_vec()),
+                Some(signers) if signers != context.signer_set() => {
+                    return Err(frost_signing_invalid(
+                        "batch signing package items disagree on signer set",
+                    ));
+                }
+                Some(_) => {}
+            }
+            decoded.push(DecodedFrostBatchSigningPackageItem {
+                input_index: item.input_index,
+                context,
+                nonce_id,
+                authorization,
+                commitments,
+                package_hash: item.request.package_hash,
+            });
+        }
+        Ok(decoded)
+    }
+}
+
+/// One signature share in a batched signer round-two response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationFrostBatchSignatureShareResponseItem {
+    /// Canonical transaction input index.
+    pub input_index: u32,
+    /// Per-input signature share response.
+    pub response: FederationFrostSignatureShareResponse,
+}
+
+/// Signed signer response containing one signature share per batched input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationFrostBatchSignatureShareResponse {
+    /// Private signing payload version.
+    pub version: u16,
+    /// Canonically ordered per-input signature share responses.
+    pub items: Vec<FederationFrostBatchSignatureShareResponseItem>,
+}
+
+impl FederationFrostBatchSignatureShareResponse {
+    /// Construct a batched signature share response after durable consumption.
+    #[must_use]
+    pub fn new(shares: &[(u32, [u8; 32], cdk_frost::SignatureShare)]) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            items: shares
+                .iter()
+                .map(|(input_index, package_hash, share)| {
+                    FederationFrostBatchSignatureShareResponseItem {
+                        input_index: *input_index,
+                        response: FederationFrostSignatureShareResponse::new(*package_hash, share),
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    /// Decode and verify exact ordering, signer ownership, session identity,
+    /// and package hash for every signature share in the batch.
+    pub fn decode(
+        &self,
+        signer: MemberId,
+        expected: &[(u32, cdk_frost::SigningSessionId, [u8; 32])],
+    ) -> Result<Vec<cdk_frost::SignatureShare>> {
+        ensure_frost_signing_version(self.version)?;
+        ensure_frost_batch_len(self.items.len())?;
+        if self.items.len() != expected.len() {
+            return Err(frost_signing_invalid(
+                "batch signature share response length differs from request",
+            ));
+        }
+        let mut shares = Vec::with_capacity(self.items.len());
+        for (item, (expected_input_index, expected_session, expected_hash)) in
+            self.items.iter().zip(expected)
+        {
+            if item.input_index != *expected_input_index {
+                return Err(frost_signing_invalid(
+                    "batch signature share response input index mismatch",
+                ));
+            }
+            shares.push(
+                item.response
+                    .decode(signer, *expected_session, *expected_hash)?,
+            );
+        }
+        Ok(shares)
+    }
+}
+
+/// One input item in a batched FROST signing abort request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationFrostBatchSigningAbortItem {
+    /// Canonical transaction input index.
+    pub input_index: u32,
+    /// Canonical signing-session context bytes.
+    pub context: Vec<u8>,
+    /// Canonical typed application authorization bytes.
+    pub authorization: Vec<u8>,
+}
+
+/// Coordinator request to permanently burn every nonterminal nonce for a
+/// bounded batch of signing sessions in one atomic write transaction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationFrostBatchSigningAbortRequest {
+    /// Private signing payload version.
+    pub version: u16,
+    /// Terminal reason for burning every nonterminal local nonce in the batch.
+    pub reason: cdk_frost::NonceBurnReason,
+    /// Canonically ordered per-input abort bindings.
+    pub items: Vec<FederationFrostBatchSigningAbortItem>,
+}
+
+impl FederationFrostBatchSigningAbortRequest {
+    /// Construct a bounded batched abort request.
+    #[must_use]
+    pub fn new(
+        reason: cdk_frost::NonceBurnReason,
+        items: Vec<FederationFrostBatchSigningAbortItem>,
+    ) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            reason,
+            items,
+        }
+    }
+
+    /// Decode and cross-check every abort item in the batch.
+    pub fn decode(
+        &self,
+        federation_id: FederationId,
+        signer: MemberId,
+    ) -> Result<(
+        cdk_frost::NonceBurnReason,
+        Vec<DecodedFrostBatchSigningAbortItem>,
+    )> {
+        ensure_frost_signing_version(self.version)?;
+        ensure_frost_batch_len(self.items.len())?;
+
+        let mut decoded = Vec::with_capacity(self.items.len());
+        let mut previous_input: Option<u32> = None;
+        let mut seen_sessions = BTreeSet::new();
+        let mut batch_root_epoch = None;
+        let mut batch_signers: Option<Vec<cdk_frost::MemberId>> = None;
+
+        for item in &self.items {
+            if previous_input.is_some_and(|prev| prev >= item.input_index) {
+                return Err(frost_signing_invalid(
+                    "batch abort input indices are duplicated or not strictly ordered",
+                ));
+            }
+            previous_input = Some(item.input_index);
+            let context = cdk_frost::SigningSessionContext::decode(&item.context)
+                .map_err(frost_signing_error)?;
+            let authorization = cdk_frost::AuthorizationRequest::decode(&item.authorization)
+                .map_err(frost_signing_error)?;
+            if context.federation_id() != federation_id.to_bytes()
+                || authorization.session_id() != context.session_id()
+                || authorization.application_id() != context.registration().id()
+                || !context
+                    .signer_set()
+                    .iter()
+                    .any(|member| member.get() == signer.get())
+            {
+                return Err(frost_signing_invalid(
+                    "batch signing abort bindings are inconsistent",
+                ));
+            }
+            if !seen_sessions.insert(context.session_id()) {
+                return Err(frost_signing_invalid(
+                    "batch signing abort contains duplicate sessions",
+                ));
+            }
+            match batch_root_epoch {
+                None => batch_root_epoch = Some(context.root_epoch()),
+                Some(epoch) if epoch != context.root_epoch() => {
+                    return Err(frost_signing_invalid(
+                        "batch signing abort items disagree on root key epoch",
+                    ));
+                }
+                Some(_) => {}
+            }
+            match batch_signers.as_deref() {
+                None => batch_signers = Some(context.signer_set().to_vec()),
+                Some(signers) if signers != context.signer_set() => {
+                    return Err(frost_signing_invalid(
+                        "batch signing abort items disagree on signer set",
+                    ));
+                }
+                Some(_) => {}
+            }
+            decoded.push(DecodedFrostBatchSigningAbortItem {
+                input_index: item.input_index,
+                context,
+                authorization,
+            });
+        }
+        Ok((self.reason, decoded))
+    }
+}
+
+/// One input aggregate result in a batched coordinator notification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationFrostBatchAggregateResultItem {
+    /// Canonical transaction input index.
+    pub input_index: u32,
+    /// Per-input aggregate-result notification.
+    pub notification: FederationFrostAggregateResultNotification,
+}
+
+/// Coordinator notification carrying a bounded batch of independently verified
+/// aggregate signatures for one accepted transaction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationFrostBatchAggregateResultNotification {
+    /// Private signing payload version.
+    pub version: u16,
+    /// Canonically ordered per-input aggregate-result notifications.
+    pub items: Vec<FederationFrostBatchAggregateResultItem>,
+}
+
+impl FederationFrostBatchAggregateResultNotification {
+    /// Construct a bounded batched aggregate-result notification.
+    #[must_use]
+    pub fn new(items: Vec<FederationFrostBatchAggregateResultItem>) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            items,
+        }
+    }
+
+    /// Decode and cross-check every aggregate-result item in the batch.
+    pub fn decode(&self) -> Result<Vec<DecodedFrostBatchAggregateResultItem>> {
+        ensure_frost_signing_version(self.version)?;
+        ensure_frost_batch_len(self.items.len())?;
+
+        let mut decoded = Vec::with_capacity(self.items.len());
+        let mut previous_input: Option<u32> = None;
+        let mut seen_sessions = BTreeSet::new();
+        let mut batch_root_epoch = None;
+
+        for item in &self.items {
+            if previous_input.is_some_and(|prev| prev >= item.input_index) {
+                return Err(frost_signing_invalid(
+                    "batch aggregate result input indices are duplicated or not strictly ordered",
+                ));
+            }
+            previous_input = Some(item.input_index);
+            let (context, authorization, package_hash, signature) = item.notification.decode()?;
+            if !seen_sessions.insert(context.session_id()) {
+                return Err(frost_signing_invalid(
+                    "batch aggregate result contains duplicate sessions",
+                ));
+            }
+            match batch_root_epoch {
+                None => batch_root_epoch = Some(context.root_epoch()),
+                Some(epoch) if epoch != context.root_epoch() => {
+                    return Err(frost_signing_invalid(
+                        "batch aggregate result items disagree on root key epoch",
+                    ));
+                }
+                Some(_) => {}
+            }
+            decoded.push(DecodedFrostBatchAggregateResultItem {
+                input_index: item.input_index,
+                context,
+                authorization,
+                package_hash,
+                signature,
+            });
+        }
+        Ok(decoded)
+    }
+}
+
+/// Signed acknowledgement for a batched signing abort or aggregate-result notification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationFrostBatchSigningAck {
+    /// Private signing payload version.
+    pub version: u16,
+    /// Accepted request kind.
+    pub kind: FederationRestMessageKind,
+    /// Accepted session identifiers in canonical input order.
+    pub session_ids: Vec<[u8; 32]>,
+}
+
+impl FederationFrostBatchSigningAck {
+    /// Construct a batched signing acknowledgement.
+    #[must_use]
+    pub fn new(
+        session_ids: &[cdk_frost::SigningSessionId],
+        kind: FederationRestMessageKind,
+    ) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            kind,
+            session_ids: session_ids
+                .iter()
+                .map(|session| session.to_bytes())
+                .collect(),
+        }
+    }
+
+    /// Validate version, message kind, and exact ordered session identifiers.
+    pub fn validate(
+        &self,
+        expected_kind: FederationRestMessageKind,
+        expected_sessions: &[cdk_frost::SigningSessionId],
+    ) -> Result<()> {
+        ensure_frost_signing_version(self.version)?;
+        ensure_frost_batch_len(self.session_ids.len())?;
+        if self.kind != expected_kind
+            || self.session_ids.len() != expected_sessions.len()
+            || self
+                .session_ids
+                .iter()
+                .zip(expected_sessions)
+                .any(|(actual, expected)| *actual != expected.to_bytes())
+        {
+            return Err(frost_signing_invalid(
+                "batch signing acknowledgement bindings are inconsistent",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn ensure_frost_batch_len(len: usize) -> Result<()> {
+    if len == 0 || len > FEDERATION_MAX_FROST_SIGNING_BATCH_ITEMS {
+        return Err(frost_signing_invalid(
+            "FROST signing batch length is empty or exceeds the protocol bound",
+        ));
+    }
+    Ok(())
 }
 
 /// Coordinator request for one durable application virtual MuSig2 commitment.

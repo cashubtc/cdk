@@ -32,7 +32,7 @@ pub use crate::key_manager::{
 };
 pub use crate::nonce::{
     CustodyProtocol, DurableNonceStore, MemoryNonceStore, NonceBurnReason, NonceLifecycle,
-    NonceRecord, NonceReservation, NonceTombstone, SigningAuthorizationScope,
+    NonceRecord, NonceReservation, NonceTombstone, NonceTransitionChain, SigningAuthorizationScope,
     SigningSessionContext, SigningSlotId, DEFAULT_TERMINAL_NONCE_RETENTION,
 };
 pub use crate::nonce_redb::RedbNonceStore;
@@ -51,7 +51,7 @@ pub use crate::types::{
     ApplicationRegistration, AuthorizationRequest, AuthorizedSigningRequest, DerivedPublicPackage,
     DerivedSigningPublicPackage, FrostCiphersuite, MemberId, NonceCommitment, NonceCommitmentSet,
     NonceId, RootKeyEpoch, RootPublicPackage, SignatureMode, SignatureShare, SigningDerivation,
-    SigningSessionId,
+    SigningSessionId, MAX_SIGNING_BATCH_SIZE,
 };
 pub use crate::virtual_musig::{
     combine_partial_shares as combine_virtual_musig_partial_shares,

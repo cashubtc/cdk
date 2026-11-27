@@ -8,6 +8,8 @@
 
 use std::fmt;
 use std::path::Path;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use redb::{Database, TableDefinition};
@@ -17,8 +19,8 @@ use crate::session_redb::{
     initialize_tables, persistence, RedbSessionRecord, RedbSessionTable, RedbTables,
 };
 use crate::{
-    DurableNonceStore, Error, NonceId, NonceLifecycle, NonceRecord, NonceReservation,
-    SigningSessionContext, SigningSessionId,
+    DurableNonceStore, Error, NonceBurnReason, NonceId, NonceLifecycle, NonceRecord,
+    NonceReservation, NonceTransitionChain, SigningSessionContext, SigningSessionId,
 };
 
 const RECORDS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("frost_nonce_records_v1");
@@ -37,6 +39,8 @@ const NEXT_TERMINAL_SEQUENCE: &str = "next_terminal_sequence";
 #[derive(Clone)]
 pub struct RedbNonceStore {
     pub(crate) database: Arc<Database>,
+    #[cfg(test)]
+    write_transactions: Arc<AtomicUsize>,
 }
 
 impl fmt::Debug for RedbNonceStore {
@@ -54,10 +58,22 @@ impl RedbNonceStore {
         let database = Database::create(path).map_err(persistence)?;
         let store = Self {
             database: Arc::new(database),
+            #[cfg(test)]
+            write_transactions: Arc::new(AtomicUsize::new(0)),
         };
         store.initialize()?;
         crate::protocol_redb::initialize_database(&store.database)?;
         Ok(store)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn write_tx_count(&self) -> usize {
+        self.write_transactions.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_write_tx_count(&self) {
+        self.write_transactions.store(0, Ordering::SeqCst);
     }
 
     fn initialize(&self) -> Result<(), Error> {
@@ -70,7 +86,10 @@ impl RedbNonceStore {
     where
         R: RedbSessionRecord,
     {
-        RedbSessionTable::new(&self.database)
+        let table = RedbSessionTable::new(&self.database);
+        #[cfg(test)]
+        let table = table.with_write_counter(&self.write_transactions);
+        table
     }
 }
 
@@ -83,8 +102,19 @@ impl DurableNonceStore for RedbNonceStore {
         self.table::<NonceRecord>().reserve(record)
     }
 
+    fn commit_batch(&self, records: Vec<NonceRecord>) -> Result<Vec<NonceReservation>, Error> {
+        self.table::<NonceRecord>().commit_nonce_batch(records)
+    }
+
     fn load_nonce(&self, nonce_id: NonceId) -> Result<Option<NonceRecord>, Error> {
         self.table::<NonceRecord>().load_key(nonce_id)
+    }
+
+    fn load_nonces_batch(
+        &self,
+        nonce_ids: &[NonceId],
+    ) -> Result<Vec<Result<Option<NonceRecord>, Error>>, Error> {
+        self.table::<NonceRecord>().load_keys_batch(nonce_ids)
     }
 
     fn load_session(&self, session_id: SigningSessionId) -> Result<Option<NonceRecord>, Error> {
@@ -98,6 +128,20 @@ impl DurableNonceStore for RedbNonceStore {
     ) -> Result<(), Error> {
         self.table::<NonceRecord>()
             .compare_and_swap(expected, replacement)
+    }
+
+    fn apply_batch_transitions(&self, chains: Vec<NonceTransitionChain>) -> Result<(), Error> {
+        self.table::<NonceRecord>()
+            .apply_nonce_batch_transitions(chains)
+    }
+
+    fn burn_sessions_batch(
+        &self,
+        sessions: &[SigningSessionId],
+        reason: NonceBurnReason,
+    ) -> Result<(), Error> {
+        self.table::<NonceRecord>()
+            .burn_nonce_sessions_batch(sessions, reason)
     }
 
     fn nonterminal_records(&self) -> Result<Vec<NonceRecord>, Error> {

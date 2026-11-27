@@ -1,6 +1,6 @@
 //! Participant-local application registry, nonce lifecycle, and signing API.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use frost_secp256k1_tr as frost;
@@ -12,7 +12,7 @@ use crate::canonical::{
 };
 use crate::nonce::{
     CustodyProtocol, DurableNonceStore, MemoryNonceStore, NonceBurnReason, NonceLifecycle,
-    NonceRecord, NonceReservation, SigningSessionContext,
+    NonceRecord, NonceReservation, NonceTransitionChain, SigningSessionContext,
 };
 use crate::protocol::{
     DurableProtocolStore, ThresholdDhLifecycle, ThresholdDhRecord, ThresholdDhReservation,
@@ -24,6 +24,7 @@ use crate::types::{
     AuthorizationRequest, AuthorizedSigningRequest, DerivedPublicPackage,
     DerivedSigningPublicPackage, NonceCommitment, NonceCommitmentSet, NonceId, SignatureMode,
     SignatureShare, SigningDerivation, SigningSessionId, MAX_COMMITMENT_BYTES,
+    MAX_SIGNING_BATCH_SIZE,
 };
 use crate::virtual_musig::{
     self, VirtualMusigNonceCommitment, VirtualMusigNonceCommitmentSet, VirtualMusigNonceId,
@@ -292,6 +293,126 @@ impl ParticipantKeyManager {
         }
     }
 
+    /// Generate and durably persist a unique single-use nonce for each input
+    /// in a bounded batch using one atomic store write transaction.
+    pub fn commit_nonces_batch<R>(
+        &mut self,
+        items: &[(&SigningSessionContext, SigningDerivation)],
+        rng: &mut R,
+    ) -> Result<Vec<NonceCommitment>, Error>
+    where
+        R: CryptoRng + RngCore,
+    {
+        if items.is_empty() {
+            return Err(Error::InvalidSigningSession(
+                "signing commitment batch cannot be empty".to_string(),
+            ));
+        }
+        if items.len() > MAX_SIGNING_BATCH_SIZE {
+            return Err(Error::OversizedInput {
+                kind: "signing commitment batch",
+                max: MAX_SIGNING_BATCH_SIZE,
+            });
+        }
+
+        let mut seen_sessions = BTreeSet::new();
+        let mut seen_slots = BTreeSet::new();
+        let mut generated_records = Vec::with_capacity(items.len());
+        let mut generated_commitments = Vec::with_capacity(items.len());
+
+        for (context, derivation) in items {
+            if context.protocol() != CustodyProtocol::OrdinaryFrost {
+                return Err(Error::InvalidSigningSession(
+                    "batch signing requires the ordinary FROST protocol".to_string(),
+                ));
+            }
+            if !seen_sessions.insert(context.session_id()) || !seen_slots.insert(context.slot_id())
+            {
+                return Err(Error::InvalidSigningSession(
+                    "duplicate signing session or slot in commitment batch".to_string(),
+                ));
+            }
+            let registration = context.registration();
+            let application = self
+                .applications
+                .get(&registration.id())
+                .ok_or_else(|| Error::Application("application is not registered".to_string()))?;
+            if application.adapter.registration() != registration
+                || context.root_epoch() != self.root.public().epoch()
+                || context.derivation_binding() != derivation.binding()
+                || context.signer_set().len() < usize::from(self.root.public().threshold())
+                || !context.signer_set().contains(&self.root.participant())
+                || context
+                    .signer_set()
+                    .iter()
+                    .any(|member| !self.root.public().verifying_shares().contains_key(member))
+            {
+                return Err(Error::InvalidSigningSession(
+                    "session does not match the root, application, derivation, threshold, or participant"
+                        .to_string(),
+                ));
+            }
+
+            let derived = self.root.derive_signing_target(registration, derivation)?;
+            let (nonces, commitments) = frost::round1::commit(derived.key.signing_share(), rng);
+            let encoded = commitments
+                .serialize()
+                .map_err(|err| Error::Frost(err.to_string()))?;
+            if encoded.len() > MAX_COMMITMENT_BYTES {
+                return Err(Error::OversizedInput {
+                    kind: "nonce commitment",
+                    max: MAX_COMMITMENT_BYTES,
+                });
+            }
+            let nonce_id = derive_nonce_id(
+                self.root.public().epoch(),
+                registration,
+                context.session_id(),
+                derivation.binding(),
+                self.root.participant(),
+                &encoded,
+            );
+            let public = NonceCommitment {
+                root_epoch: self.root.public().epoch(),
+                registration,
+                session_id: context.session_id(),
+                derivation_binding: derivation.binding(),
+                nonce_id,
+                participant: self.root.participant(),
+                commitments: encoded,
+            };
+            let serialized_nonces = nonces
+                .serialize()
+                .map_err(|error| Error::Frost(error.to_string()))?;
+            let encrypted_nonces = sealed::seal(
+                &self.nonce_encryption_key,
+                &nonce_secret_aad(context, nonce_id, self.root.participant()),
+                &serialized_nonces,
+                rng,
+            )?;
+            let generated = NonceRecord::generated(
+                (*context).clone(),
+                nonce_id,
+                derivation.clone(),
+                public.clone(),
+                encrypted_nonces,
+            );
+            generated_records.push(generated);
+            generated_commitments.push(public);
+        }
+
+        let reservations = self.nonce_store.commit_batch(generated_records)?;
+        let commitments = generated_commitments
+            .into_iter()
+            .zip(reservations)
+            .map(|(public, reservation)| match reservation {
+                NonceReservation::Inserted => public,
+                NonceReservation::Existing(existing) => existing.commitment().clone(),
+            })
+            .collect();
+        Ok(commitments)
+    }
+
     /// Authorize a request through its registered adapter, consume the local
     /// nonce, and produce one signature share.
     pub fn sign_share(
@@ -491,6 +612,347 @@ impl ParticipantKeyManager {
         )?;
         self.nonce_store.compare_and_swap(&produced, consumed)?;
         Ok(share)
+    }
+
+    /// Authorize every input in a bounded batch, durably consume and burn every
+    /// single-use nonce in one atomic store write transaction, and return the
+    /// signature shares only after persistence succeeds.
+    pub fn sign_shares_batch(
+        &mut self,
+        items: &[(NonceId, &AuthorizationRequest, &NonceCommitmentSet)],
+    ) -> Result<Vec<SignatureShare>, Error> {
+        enum BatchItemPlan {
+            Replay(SignatureShare),
+            Sign {
+                registration: ApplicationRegistration,
+                authorized: AuthorizedSigningRequest,
+                package_hash: [u8; 32],
+            },
+        }
+
+        if items.is_empty() {
+            return Err(Error::InvalidSigningSession(
+                "signing share batch cannot be empty".to_string(),
+            ));
+        }
+        if items.len() > MAX_SIGNING_BATCH_SIZE {
+            return Err(Error::OversizedInput {
+                kind: "signing share batch",
+                max: MAX_SIGNING_BATCH_SIZE,
+            });
+        }
+        let mut seen_nonces = BTreeSet::new();
+        let mut seen_sessions = BTreeSet::new();
+        let mut nonce_ids = Vec::with_capacity(items.len());
+        for (nonce_id, request, _) in items {
+            if !seen_nonces.insert(*nonce_id) || !seen_sessions.insert(request.session_id()) {
+                return Err(Error::InvalidSigningSession(
+                    "duplicate nonce or signing session in share batch".to_string(),
+                ));
+            }
+            nonce_ids.push(*nonce_id);
+        }
+
+        let loaded_results = self.nonce_store.load_nonces_batch(&nonce_ids)?;
+        let mut records = Vec::with_capacity(items.len());
+        let mut first_load_error: Option<Error> = None;
+        for result in loaded_results {
+            match result {
+                Ok(Some(record)) => records.push(Some(record)),
+                Ok(None) => {
+                    if first_load_error.is_none() {
+                        first_load_error =
+                            Some(Error::InvalidCommitment("nonce is unknown".to_string()));
+                    }
+                    records.push(None);
+                }
+                Err(error) => {
+                    if first_load_error.is_none() {
+                        first_load_error = Some(error);
+                    }
+                    records.push(None);
+                }
+            }
+        }
+        if let Some(error) = first_load_error {
+            self.burn_nonterminal_batch(records.iter().flatten(), NonceBurnReason::InvalidPackage)?;
+            return Err(error);
+        }
+        let records = records
+            .into_iter()
+            .map(|record| {
+                record.ok_or_else(|| Error::InvalidCommitment("nonce is unknown".to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Phase 1: Validate every input BEFORE decrypting any secret nonce.
+        let mut plans = Vec::with_capacity(items.len());
+        let mut expected_package_hashes = Vec::with_capacity(items.len());
+        let mut validation_error: Option<Error> = None;
+        for ((_, request, commitment_set), record) in items.iter().zip(&records) {
+            let validated = (|| -> Result<(BatchItemPlan, [u8; 32]), Error> {
+                let application = self
+                    .applications
+                    .get(&request.application_id())
+                    .ok_or_else(|| {
+                        Error::Application("application is not registered".to_string())
+                    })?;
+                let registration = application.adapter.registration();
+                if request.application_key_epoch() != registration.key_epoch()
+                    || request.derivation_version() != registration.derivation_version()
+                {
+                    return Err(Error::Application(
+                        "request uses another application key epoch or derivation version"
+                            .to_string(),
+                    ));
+                }
+                if record.context().registration() != registration
+                    || record.context().session_id() != request.session_id()
+                {
+                    return Err(Error::WrongSession);
+                }
+                let authorized = application.adapter.authorize(request)?;
+                if authorized.derivation() != record.derivation()
+                    || authorized.message() != record.context().message_commitment()
+                {
+                    return Err(Error::WrongSession);
+                }
+                validate_commitment_set(
+                    commitment_set,
+                    self.root.public().epoch(),
+                    registration,
+                    request.session_id(),
+                    record.derivation().binding(),
+                    self.root.public().threshold(),
+                )?;
+                let commitment_signers = commitment_set
+                    .commitments()
+                    .keys()
+                    .copied()
+                    .collect::<Vec<_>>();
+                if commitment_signers != record.context().signer_set() {
+                    return Err(Error::InvalidCommitment(
+                        "commitment signer set differs from the accepted session".to_string(),
+                    ));
+                }
+                let own_commitment = commitment_set
+                    .commitments()
+                    .get(&self.root.participant())
+                    .ok_or_else(|| {
+                        Error::InvalidCommitment(
+                            "local participant is absent from signer set".to_string(),
+                        )
+                    })?;
+                if own_commitment != record.commitment() {
+                    return Err(Error::InvalidCommitment(
+                        "coordinator supplied another local commitment".to_string(),
+                    ));
+                }
+                let package_hash = signing_package_hash(
+                    request.session_id(),
+                    &authorized.message(),
+                    commitment_set,
+                )?;
+                let plan = match record.lifecycle() {
+                    NonceLifecycle::Consumed {
+                        package_hash: consumed_hash,
+                    } if consumed_hash == &package_hash => {
+                        let share = record.cached_share().cloned().ok_or_else(|| {
+                            Error::InvalidCommitment(
+                                "consumed nonce retry metadata was unavailable".to_string(),
+                            )
+                        })?;
+                        BatchItemPlan::Replay(share)
+                    }
+                    NonceLifecycle::CommitmentSent => BatchItemPlan::Sign {
+                        registration,
+                        authorized,
+                        package_hash,
+                    },
+                    _ => {
+                        return Err(Error::InvalidCommitment(
+                            "nonce is not available for round two".to_string(),
+                        ));
+                    }
+                };
+                Ok((plan, package_hash))
+            })();
+            match validated {
+                Ok((plan, package_hash)) => {
+                    plans.push(plan);
+                    expected_package_hashes.push(package_hash);
+                }
+                Err(error) => {
+                    validation_error = Some(error);
+                    break;
+                }
+            }
+        }
+        if let Some(error) = validation_error {
+            self.burn_nonterminal_batch(records.iter(), NonceBurnReason::InvalidPackage)?;
+            return Err(error);
+        }
+
+        // Pure idempotent replay of already-consumed shares requires no write.
+        if plans
+            .iter()
+            .all(|plan| matches!(plan, BatchItemPlan::Replay(_)))
+        {
+            return Ok(plans
+                .into_iter()
+                .map(|plan| match plan {
+                    BatchItemPlan::Replay(share) => share,
+                    BatchItemPlan::Sign { .. } => unreachable!("all batch items are replays"),
+                })
+                .collect());
+        }
+
+        // Phase 2: Decrypt each nonterminal nonce, produce its share, and build
+        // its validated lifecycle transition chain.
+        let mut shares = Vec::with_capacity(items.len());
+        let mut chains = Vec::with_capacity(items.len());
+        let mut signing_error: Option<Error> = None;
+        for (((nonce_id, request, commitment_set), record), plan) in
+            items.iter().zip(&records).zip(plans)
+        {
+            match plan {
+                BatchItemPlan::Replay(share) => {
+                    shares.push(share);
+                }
+                BatchItemPlan::Sign {
+                    registration,
+                    authorized,
+                    package_hash,
+                } => {
+                    let produced_item =
+                        (|| -> Result<(SignatureShare, NonceTransitionChain), Error> {
+                            let encrypted = record.encrypted_nonces().ok_or_else(|| {
+                                Error::InvalidCommitment(
+                                    "nonce secret is unavailable before round two".to_string(),
+                                )
+                            })?;
+                            let serialized_nonces = sealed::open(
+                                &self.nonce_encryption_key,
+                                &nonce_secret_aad(
+                                    record.context(),
+                                    *nonce_id,
+                                    self.root.participant(),
+                                ),
+                                encrypted,
+                            )?;
+                            let nonces =
+                                frost::round1::SigningNonces::deserialize(&serialized_nonces)
+                                    .map_err(|error| Error::Frost(error.to_string()))?;
+                            let signing = record.transition(
+                                NonceLifecycle::Signing { package_hash },
+                                false,
+                                None,
+                            )?;
+                            let package = signing_package(commitment_set, &authorized.message())?;
+                            let derived = self
+                                .root
+                                .derive_signing_target(registration, signing.derivation())?;
+                            let share_result = match signing.derivation().signature_mode() {
+                                SignatureMode::Plain => {
+                                    frost::round2::sign(&package, &nonces, &derived.key)
+                                }
+                                SignatureMode::TaprootKeyPath { merkle_root } => {
+                                    frost::round2::sign_with_tweak(
+                                        &package,
+                                        &nonces,
+                                        &derived.key,
+                                        merkle_root.as_ref().map(|root| root.as_slice()),
+                                    )
+                                }
+                            };
+                            let share = share_result
+                                .map_err(|error| Error::InvalidShare(error.to_string()))?;
+                            let share: [u8; 32] = share.serialize().try_into().map_err(|_| {
+                                Error::Internal("FROST signature share is not 32 bytes".to_string())
+                            })?;
+                            let share = SignatureShare {
+                                root_epoch: self.root.public().epoch(),
+                                registration,
+                                session_id: request.session_id(),
+                                derivation_binding: signing.derivation().binding(),
+                                participant: self.root.participant(),
+                                share,
+                            };
+                            let produced = signing.transition(
+                                NonceLifecycle::ShareProduced { package_hash },
+                                false,
+                                Some(share.clone()),
+                            )?;
+                            let consumed = produced.transition(
+                                NonceLifecycle::Consumed { package_hash },
+                                false,
+                                Some(share.clone()),
+                            )?;
+                            let chain = NonceTransitionChain::new(
+                                record.clone(),
+                                vec![signing, produced, consumed],
+                            )?;
+                            Ok((share, chain))
+                        })();
+                    match produced_item {
+                        Ok((share, chain)) => {
+                            shares.push(share);
+                            chains.push(chain);
+                        }
+                        Err(error) => {
+                            signing_error = Some(error);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(error) = signing_error {
+            self.burn_nonterminal_batch(records.iter(), NonceBurnReason::InternalFailure)?;
+            return Err(error);
+        }
+
+        // Phase 3: Atomically persist every consumed nonce (with secrets erased)
+        // in ONE durable write transaction BEFORE returning any signature share.
+        if let Err(error) = self.nonce_store.apply_batch_transitions(chains) {
+            if let Ok(latest_results) = self.nonce_store.load_nonces_batch(&nonce_ids) {
+                let mut replayed = Vec::with_capacity(items.len());
+                let mut all_consumed_matching = true;
+                for (result, expected_hash) in
+                    latest_results.into_iter().zip(&expected_package_hashes)
+                {
+                    match result {
+                        Ok(Some(latest)) => match latest.lifecycle() {
+                            NonceLifecycle::Consumed { package_hash }
+                                if package_hash == expected_hash =>
+                            {
+                                match latest.cached_share().cloned() {
+                                    Some(share) => replayed.push(share),
+                                    None => {
+                                        all_consumed_matching = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            _ => {
+                                all_consumed_matching = false;
+                                break;
+                            }
+                        },
+                        _ => {
+                            all_consumed_matching = false;
+                            break;
+                        }
+                    }
+                }
+                if all_consumed_matching && replayed.len() == items.len() {
+                    return Ok(replayed);
+                }
+            }
+            return Err(error);
+        }
+
+        Ok(shares)
     }
 
     /// Generate, seal, and durably reserve a virtual MuSig2 nonce before
@@ -935,6 +1397,16 @@ impl ParticipantKeyManager {
         self.burn_record(&record, reason)
     }
 
+    /// Permanently burn every nonterminal nonce for a batch of sessions in one
+    /// atomic store write transaction.
+    pub fn burn_sessions_batch(
+        &self,
+        session_ids: &[SigningSessionId],
+        reason: NonceBurnReason,
+    ) -> Result<(), Error> {
+        self.nonce_store.burn_sessions_batch(session_ids, reason)
+    }
+
     /// Compact old terminal detail while preserving replay tombstones.
     pub fn cleanup_terminal_nonces(&self, retain_detailed: usize) -> Result<usize, Error> {
         self.nonce_store.compact_terminal(retain_detailed)
@@ -980,6 +1452,25 @@ impl ParticipantKeyManager {
         }
         let burned = record.transition(NonceLifecycle::Burned { reason }, false, None)?;
         self.nonce_store.compare_and_swap(record, burned)
+    }
+
+    fn burn_nonterminal_batch<'a>(
+        &self,
+        records: impl IntoIterator<Item = &'a NonceRecord>,
+        reason: NonceBurnReason,
+    ) -> Result<(), Error> {
+        let mut chains = Vec::new();
+        for record in records {
+            if record.lifecycle().is_terminal() {
+                continue;
+            }
+            let burned = record.transition(NonceLifecycle::Burned { reason }, false, None)?;
+            chains.push(NonceTransitionChain::new(record.clone(), vec![burned])?);
+        }
+        if !chains.is_empty() {
+            self.nonce_store.apply_batch_transitions(chains)?;
+        }
+        Ok(())
     }
 
     fn burn_virtual_musig_record(

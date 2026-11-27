@@ -40,10 +40,13 @@ use cdk::federation::{
 use cdk::federation::{FederationBarkThresholdDhRequest, FederationBarkThresholdDhResponse};
 #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 use cdk::federation::{
-    FederationFrostAggregateResultNotification, FederationFrostCommitmentRequest,
-    FederationFrostCommitmentResponse, FederationFrostSignatureShareResponse,
-    FederationFrostSigningAbortRequest, FederationFrostSigningAck,
-    FederationFrostSigningPackageRequest,
+    FederationFrostAggregateResultNotification, FederationFrostBatchAggregateResultNotification,
+    FederationFrostBatchCommitmentRequest, FederationFrostBatchCommitmentResponse,
+    FederationFrostBatchSignatureShareResponse, FederationFrostBatchSigningAbortRequest,
+    FederationFrostBatchSigningAck, FederationFrostBatchSigningPackageRequest,
+    FederationFrostCommitmentRequest, FederationFrostCommitmentResponse,
+    FederationFrostSignatureShareResponse, FederationFrostSigningAbortRequest,
+    FederationFrostSigningAck, FederationFrostSigningPackageRequest,
 };
 #[cfg(any(test, feature = "test-utils"))]
 use cdk::federation::{FederationSubmitOperationRequest, FederationSubmitOperationResponse};
@@ -76,6 +79,57 @@ pub enum FederationRestPeerClientError {
     },
 }
 
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
+#[async_trait::async_trait]
+pub(crate) trait FrostAggregateResultNotifier: Send + Sync + std::fmt::Debug {
+    #[allow(dead_code)]
+    async fn notify_single(
+        &self,
+        member: MemberConfigPublic,
+        notification: FederationFrostAggregateResultNotification,
+    ) -> anyhow::Result<()>;
+
+    #[allow(dead_code)]
+    async fn notify_batch(
+        &self,
+        member: MemberConfigPublic,
+        notification: FederationFrostBatchAggregateResultNotification,
+    ) -> anyhow::Result<()>;
+}
+
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
+#[derive(Debug, Clone)]
+struct PeerFrostAggregateResultNotifier<T>(FederationRestPeerClient<T>);
+
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
+#[async_trait::async_trait]
+impl<T> FrostAggregateResultNotifier for PeerFrostAggregateResultNotifier<T>
+where
+    T: Transport + 'static,
+{
+    #[allow(dead_code)]
+    async fn notify_single(
+        &self,
+        member: MemberConfigPublic,
+        notification: FederationFrostAggregateResultNotification,
+    ) -> anyhow::Result<()> {
+        self.0
+            .notify_frost_aggregate_result(&member, &notification)
+            .await
+    }
+
+    #[allow(dead_code)]
+    async fn notify_batch(
+        &self,
+        member: MemberConfigPublic,
+        notification: FederationFrostBatchAggregateResultNotification,
+    ) -> anyhow::Result<()> {
+        self.0
+            .notify_frost_aggregate_results_batch(&member, &notification)
+            .await
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FederationRestPeerClient<T = Async> {
     transport: T,
@@ -85,16 +139,14 @@ pub struct FederationRestPeerClient<T = Async> {
     pub sync_config: FederationPeerSyncConfig,
     next_sequence: Arc<AtomicU64>,
     pub outbound_admission: Arc<tokio::sync::Semaphore>,
+    #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
+    aggregate_notifier: Option<Arc<dyn FrostAggregateResultNotifier>>,
 }
 
 impl<T> FederationRestPeerClient<T>
 where
-    T: Transport,
+    T: Transport + 'static,
 {
-    pub fn cloned_transport(&self) -> T {
-        self.transport.clone()
-    }
-
     #[cfg(any(test, feature = "test-utils"))]
     pub fn new(
         transport: T,
@@ -128,7 +180,8 @@ where
     ) -> anyhow::Result<Self> {
         sync_config.validate()?;
         private_config.validate_against_public(public_config)?;
-        Ok(Self {
+        #[allow(unused_mut)]
+        let mut client = Self {
             transport,
             public_config: public_config.clone(),
             federation_id: public_config.federation_id,
@@ -138,7 +191,30 @@ where
             outbound_admission: Arc::new(tokio::sync::Semaphore::new(
                 sync_config.private_rest_outbound_concurrency_limit,
             )),
-        })
+            #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
+            aggregate_notifier: None,
+        };
+        #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
+        {
+            let notifier_client = client.clone();
+            client.aggregate_notifier =
+                Some(Arc::new(PeerFrostAggregateResultNotifier(notifier_client)));
+        }
+        Ok(client)
+    }
+}
+
+impl<T> FederationRestPeerClient<T>
+where
+    T: Transport,
+{
+    pub fn cloned_transport(&self) -> T {
+        self.transport.clone()
+    }
+
+    #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
+    pub(crate) fn aggregate_notifier(&self) -> Option<Arc<dyn FrostAggregateResultNotifier>> {
+        self.aggregate_notifier.clone()
     }
 
     async fn http_post_with_timeout<P, R>(
@@ -893,6 +969,118 @@ where
             }
             .into());
         }
+        Ok(())
+    }
+
+    #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
+    pub async fn request_frost_batch_commitments(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationFrostBatchCommitmentRequest,
+    ) -> anyhow::Result<Vec<cdk_frost::NonceCommitment>> {
+        let kind = FederationRestMessageKind::FrostSigningBatchCommitment;
+        let expected = request
+            .decode(self.federation_id, member.member_id)?
+            .into_iter()
+            .map(|item| (item.input_index, item.context.session_id()))
+            .collect::<Vec<_>>();
+        let signed = self.signed_request(member, kind, request.clone())?;
+        let response: FederationSignedRequest<FederationFrostBatchCommitmentResponse> = self
+            .http_post_with_timeout(
+                member,
+                "frost/signing/commitments/batch",
+                "FROST batch commitment request",
+                &signed,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        self.validate_signed_response(&response, member, kind)?;
+        Ok(response.payload.decode(member.member_id, &expected)?)
+    }
+
+    #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
+    pub async fn request_frost_batch_signature_shares(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationFrostBatchSigningPackageRequest,
+    ) -> anyhow::Result<Vec<cdk_frost::SignatureShare>> {
+        let kind = FederationRestMessageKind::FrostSigningBatchPackage;
+        let expected = request
+            .decode(self.federation_id, member.member_id)?
+            .into_iter()
+            .map(|item| {
+                (
+                    item.input_index,
+                    item.context.session_id(),
+                    item.package_hash,
+                )
+            })
+            .collect::<Vec<_>>();
+        let signed = self.signed_request(member, kind, request.clone())?;
+        let response: FederationSignedRequest<FederationFrostBatchSignatureShareResponse> = self
+            .http_post_with_timeout(
+                member,
+                "frost/signing/packages/batch",
+                "FROST batch signature-share request",
+                &signed,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        self.validate_signed_response(&response, member, kind)?;
+        Ok(response.payload.decode(member.member_id, &expected)?)
+    }
+
+    #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
+    pub async fn notify_frost_aggregate_results_batch(
+        &self,
+        member: &MemberConfigPublic,
+        notification: &FederationFrostBatchAggregateResultNotification,
+    ) -> anyhow::Result<()> {
+        let kind = FederationRestMessageKind::FrostAggregateBatchResult;
+        let expected_sessions = notification
+            .decode()?
+            .into_iter()
+            .map(|item| item.context.session_id())
+            .collect::<Vec<_>>();
+        let signed = self.signed_request(member, kind, notification.clone())?;
+        let response: FederationSignedRequest<FederationFrostBatchSigningAck> = self
+            .http_post_with_timeout(
+                member,
+                "frost/signing/results/batch",
+                "FROST batch aggregate-result notification",
+                &signed,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        self.validate_signed_response(&response, member, kind)?;
+        response.payload.validate(kind, &expected_sessions)?;
+        Ok(())
+    }
+
+    #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
+    pub async fn abort_frost_signing_batch(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationFrostBatchSigningAbortRequest,
+    ) -> anyhow::Result<()> {
+        let kind = FederationRestMessageKind::FrostSigningBatchAbort;
+        let (_, items) = request.decode(self.federation_id, member.member_id)?;
+        let expected_sessions = items
+            .into_iter()
+            .map(|item| item.context.session_id())
+            .collect::<Vec<_>>();
+        let signed = self.signed_request(member, kind, request.clone())?;
+        let response: FederationSignedRequest<FederationFrostBatchSigningAck> = self
+            .http_post_with_timeout(
+                member,
+                "frost/signing/aborts/batch",
+                "FROST batch signing abort",
+                &signed,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        self.validate_signed_response(&response, member, kind)?;
+        response.payload.validate(kind, &expected_sessions)?;
         Ok(())
     }
 

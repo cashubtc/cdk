@@ -10,6 +10,8 @@ use crate::Error;
 
 /// Maximum participant count accepted by canonical root packages.
 pub const MAX_PARTICIPANTS: usize = 64;
+/// Maximum number of inputs admitted in one batched FROST signing round.
+pub const MAX_SIGNING_BATCH_SIZE: usize = 64;
 /// Maximum opaque authorization payload accepted by the key manager.
 pub const MAX_AUTHORIZATION_BYTES: usize = 64 * 1024;
 /// Maximum serialized FROST commitment accepted from the wire.

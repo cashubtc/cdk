@@ -1,6 +1,6 @@
 //! Application-aware FROST signing runtime and private REST handlers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -10,10 +10,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(feature = "federation-bark")]
 use cdk_common::database::mint::FederationJournalEntryKey;
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
+use futures::stream::{self, StreamExt};
 
 #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 use super::signer_fan_out::{
     concurrency_limit, fan_out, known_signer_members, signer_members, LocalFrostSigner,
+};
+#[cfg(any(
+    feature = "federation-bark",
+    all(feature = "federation-bdk", any(test, feature = "test-utils"))
+))]
+use cdk::federation::FederationFrostSigningAbortRequest;
+use cdk::federation::{
+    DecodedFrostBatchAggregateResultItem, DecodedFrostBatchCommitmentItem,
+    DecodedFrostBatchSigningAbortItem, DecodedFrostBatchSigningPackageItem,
+    FEDERATION_MAX_FROST_SIGNING_BATCH_ITEMS,
 };
 #[cfg(feature = "federation-bark")]
 use cdk::federation::{
@@ -31,7 +43,17 @@ use cdk::federation::{
 #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 use cdk::federation::{
     FederationFrostAggregateResultNotification, FederationFrostCommitmentRequest,
-    FederationFrostSigningAbortRequest, FederationFrostSigningPackageRequest, MemberConfigPublic,
+    FederationFrostSigningPackageRequest, MemberConfigPublic,
+};
+#[cfg(any(
+    feature = "federation-bdk",
+    all(feature = "federation-bark", any(test, feature = "test-utils"))
+))]
+use cdk::federation::{
+    FederationFrostBatchAggregateResultItem, FederationFrostBatchAggregateResultNotification,
+    FederationFrostBatchCommitmentItem, FederationFrostBatchCommitmentRequest,
+    FederationFrostBatchSigningAbortItem, FederationFrostBatchSigningAbortRequest,
+    FederationFrostBatchSigningPackageItem, FederationFrostBatchSigningPackageRequest,
 };
 use cdk::mint::{FederationRuntimeConfig, Mint};
 #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
@@ -53,6 +75,11 @@ use sha2::{Digest, Sha256};
 use crate::FederationNode;
 
 const RESULT_CACHE_LIMIT: usize = 1_024;
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
+const MAX_CONCURRENT_AGGREGATE_NOTIFICATIONS: usize = 8;
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
+static FROST_AGGREGATE_NOTIFY_ADMISSION: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(MAX_CONCURRENT_AGGREGATE_NOTIFICATIONS);
 #[cfg(feature = "federation-bark")]
 const BARK_CUSTODY_PROJECTION_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 #[cfg(feature = "federation-bark")]
@@ -272,6 +299,17 @@ struct CoordinatedFrostSignature {
     package_hash: [u8; 32],
 }
 
+#[cfg(any(
+    feature = "federation-bdk",
+    all(feature = "federation-bark", any(test, feature = "test-utils"))
+))]
+struct PreparedBatchSigningInput {
+    input_index: u32,
+    context: SigningSessionContext,
+    derivation: SigningDerivation,
+    authorization: AuthorizationRequest,
+}
+
 #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 #[derive(Debug, Clone)]
 /// Correlation metadata for one application-neutral FROST signing request.
@@ -344,7 +382,7 @@ where
         self
     }
 
-    /// Run both rounds, verify every response, aggregate, and notify signers.
+    /// Run both rounds, verify every response, aggregate, and notify signers asynchronously.
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn sign(
         &self,
@@ -357,6 +395,39 @@ where
             .sign_with_audit(public_config, context, derivation, authorization, None)
             .await?
             .signature)
+    }
+
+    /// Run batched round one and round two across a bounded set of inputs in
+    /// two parallel peer fanouts, verify and aggregate locally, and notify
+    /// signers asynchronously.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn sign_batch(
+        &self,
+        public_config: &cdk::federation::FederationConfig,
+        inputs: &[(
+            u32,
+            SigningSessionContext,
+            SigningDerivation,
+            AuthorizationRequest,
+        )],
+    ) -> anyhow::Result<Vec<cdk_frost::AggregateSignature>> {
+        let prepared = inputs
+            .iter()
+            .map(
+                |(input_index, context, derivation, authorization)| PreparedBatchSigningInput {
+                    input_index: *input_index,
+                    context: context.clone(),
+                    derivation: derivation.clone(),
+                    authorization: authorization.clone(),
+                },
+            )
+            .collect::<Vec<_>>();
+        Ok(self
+            .sign_batch_with_audit(public_config, &prepared, None, None, None)
+            .await?
+            .into_iter()
+            .map(|result| result.signature)
+            .collect())
     }
 
     /// Run both rounds while attributing their latency to the calling backend.
@@ -381,6 +452,7 @@ where
             .signature)
     }
 
+    #[cfg(any(feature = "federation-bark", test, feature = "test-utils"))]
     async fn sign_with_audit(
         &self,
         public_config: &cdk::federation::FederationConfig,
@@ -539,28 +611,292 @@ where
             package_hash,
             signature,
         );
-        fan_out(
+        self.dispatch_single_aggregate_notification(
+            &signer_members,
+            limit,
+            context,
+            authorization,
+            package_hash,
+            signature,
+            notification,
+        )
+        .await;
+        Ok(CoordinatedFrostSignature {
+            signature,
+            #[cfg(feature = "federation-bdk")]
+            package_hash,
+        })
+    }
+
+    #[cfg(any(
+        feature = "federation-bdk",
+        all(feature = "federation-bark", any(test, feature = "test-utils"))
+    ))]
+    async fn sign_batch_with_audit(
+        &self,
+        public_config: &cdk::federation::FederationConfig,
+        inputs: &[PreparedBatchSigningInput],
+        latency: Option<&FrostLatencyContext>,
+        tasks: Option<&super::services::FederationTaskGroup>,
+        local_mint: Option<Arc<Mint>>,
+    ) -> anyhow::Result<Vec<CoordinatedFrostSignature>> {
+        if inputs.is_empty() || inputs.len() > FEDERATION_MAX_FROST_SIGNING_BATCH_ITEMS {
+            anyhow::bail!(
+                "FROST signing batch length {} is outside 1..={}",
+                inputs.len(),
+                FEDERATION_MAX_FROST_SIGNING_BATCH_ITEMS
+            );
+        }
+        let first_signers = inputs[0].context.signer_set();
+        if first_signers.len() < usize::from(self.public.threshold()) {
+            anyhow::bail!("FROST signer set is below threshold");
+        }
+        let mut previous_index: Option<u32> = None;
+        let mut seen_sessions = BTreeSet::new();
+        let mut seen_slots = BTreeSet::new();
+        for input in inputs {
+            if previous_index.is_some_and(|prev| prev >= input.input_index) {
+                anyhow::bail!(
+                    "FROST signing batch input indices are duplicated or not strictly ordered"
+                );
+            }
+            previous_index = Some(input.input_index);
+            if input.context.signer_set() != first_signers {
+                anyhow::bail!("FROST signing batch items disagree on signer set");
+            }
+            if !seen_sessions.insert(input.context.session_id())
+                || !seen_slots.insert(input.context.slot_id())
+            {
+                anyhow::bail!("FROST signing batch contains duplicate sessions or slots");
+            }
+        }
+
+        let signer_members = signer_members(public_config, first_signers)?;
+        let limit = concurrency_limit(self.client, signer_members.len());
+        let default_correlation_id = cdk::federation::FederationOperationId::from_bytes(
+            inputs[0].context.session_id().to_bytes(),
+        )
+        .to_string();
+        let (correlation, correlation_id, backend, direction) = latency.map_or(
+            (
+                super::latency::FederationLatencyCorrelation::Operation,
+                default_correlation_id.as_str(),
+                super::latency::FederationLatencyBackend::Consensus,
+                super::latency::FederationLatencyDirection::Internal,
+            ),
+            |latency| {
+                (
+                    latency.correlation,
+                    latency.correlation_id.as_str(),
+                    latency.backend,
+                    latency.direction,
+                )
+            },
+        );
+
+        let batch_commitment_request = FederationFrostBatchCommitmentRequest::new(
+            inputs
+                .iter()
+                .map(|input| FederationFrostBatchCommitmentItem {
+                    input_index: input.input_index,
+                    request: FederationFrostCommitmentRequest::new(
+                        &input.context,
+                        &input.derivation,
+                        &input.authorization,
+                    ),
+                })
+                .collect(),
+        );
+        let local_commit_items = inputs
+            .iter()
+            .map(|input| DecodedFrostBatchCommitmentItem {
+                input_index: input.input_index,
+                context: input.context.clone(),
+                derivation: input.derivation.clone(),
+                authorization: input.authorization.clone(),
+            })
+            .collect::<Vec<_>>();
+
+        // Round 1: 1 parallel peer fanout covering all N inputs.
+        let commitment_timer = super::latency::FederationLatencyTimer::start(
+            correlation,
+            correlation_id.to_owned(),
+            backend,
+            direction,
+            super::latency::FederationLatencyPhase::FrostCommitmentRound,
+        );
+        let commitments_by_signer = fan_out(
             signer_members
                 .iter()
                 .map(|(_, member)| (*member, ()))
                 .collect(),
             self.local_signer,
             limit,
-            |local, ()| async move {
+            |local, ()| {
+                let items = &local_commit_items;
+                async move {
+                    local
+                        .runtime
+                        .commit_batch(local.mint, items)
+                        .await
+                        .map_err(anyhow::Error::from)
+                }
+            },
+            |member, ()| {
+                self.request_frost_batch_commitments_resilient(member, &batch_commitment_request)
+            },
+        )
+        .await;
+        commitment_timer.finish(super::latency::FederationLatencyOutcome::from_success(
+            commitments_by_signer.is_ok(),
+        ));
+        let commitments_by_signer = match commitments_by_signer {
+            Ok(commitments) => commitments,
+            Err(error) => {
+                self.abort_selected_batch(
+                    public_config,
+                    inputs,
+                    cdk_frost::NonceBurnReason::AmbiguousResponse,
+                )
+                .await;
+                return Err(error);
+            }
+        };
+
+        let mut commitment_sets = Vec::with_capacity(inputs.len());
+        for (idx, _) in inputs.iter().enumerate() {
+            let mut per_input = Vec::with_capacity(commitments_by_signer.len());
+            for signer_commitments in &commitments_by_signer {
+                let commitment = signer_commitments.get(idx).ok_or_else(|| {
+                    anyhow::anyhow!("signer batch commitment response is missing input {idx}")
+                })?;
+                per_input.push(commitment.clone());
+            }
+            commitment_sets.push(cdk_frost::NonceCommitmentSet::new(per_input)?);
+        }
+
+        let signing_packages = signer_members
+            .iter()
+            .map(|(signer, member)| {
+                let mut package_items = Vec::with_capacity(inputs.len());
+                for (input, commitment_set) in inputs.iter().zip(&commitment_sets) {
+                    let commitment = commitment_set
+                        .commitments()
+                        .get(signer)
+                        .ok_or_else(|| anyhow::anyhow!("selected signer commitment is missing"))?;
+                    let package = FederationFrostSigningPackageRequest::new(
+                        &input.context,
+                        commitment.nonce_id(),
+                        &input.authorization,
+                        commitment_set,
+                    )?;
+                    package_items.push(FederationFrostBatchSigningPackageItem {
+                        input_index: input.input_index,
+                        request: package,
+                    });
+                }
+                Ok((
+                    *member,
+                    FederationFrostBatchSigningPackageRequest::new(package_items),
+                ))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        // Round 2: 1 parallel peer fanout covering all N inputs.
+        let share_timer = super::latency::FederationLatencyTimer::start(
+            correlation,
+            correlation_id.to_owned(),
+            backend,
+            direction,
+            super::latency::FederationLatencyPhase::FrostSignatureRound,
+        );
+        let shares_by_signer = fan_out(
+            signing_packages
+                .iter()
+                .map(|(member, package)| (*member, package))
+                .collect(),
+            self.local_signer,
+            limit,
+            |local, package| async move {
+                let decoded = package.decode(public_config.federation_id, local.member_id)?;
                 local
                     .runtime
-                    .record_aggregate(local.mint, context, authorization, package_hash, signature)
+                    .sign_batch(local.mint, &decoded)
                     .await
                     .map_err(anyhow::Error::from)
             },
-            |member, ()| self.notify_frost_aggregate_result_resilient(member, &notification),
+            |member, package| self.request_frost_batch_signature_shares_resilient(member, package),
         )
-        .await?;
-        Ok(CoordinatedFrostSignature {
-            signature,
-            #[cfg(feature = "federation-bdk")]
-            package_hash,
-        })
+        .await;
+        share_timer.finish(super::latency::FederationLatencyOutcome::from_success(
+            shares_by_signer.is_ok(),
+        ));
+        let shares_by_signer = match shares_by_signer {
+            Ok(shares) => shares,
+            Err(error) => {
+                self.abort_selected_batch(
+                    public_config,
+                    inputs,
+                    cdk_frost::NonceBurnReason::AmbiguousResponse,
+                )
+                .await;
+                return Err(error);
+            }
+        };
+
+        // Aggregate and verify every input signature locally.
+        let mut results = Vec::with_capacity(inputs.len());
+        let mut notification_items = Vec::with_capacity(inputs.len());
+        for (idx, (input, commitment_set)) in inputs.iter().zip(&commitment_sets).enumerate() {
+            let mut per_input_shares = Vec::with_capacity(shares_by_signer.len());
+            for signer_shares in &shares_by_signer {
+                let share = signer_shares.get(idx).ok_or_else(|| {
+                    anyhow::anyhow!("signer batch signature response is missing input {idx}")
+                })?;
+                per_input_shares.push(share.clone());
+            }
+            let signature = ParticipantKeyManager::aggregate_for_derivation(
+                &self.public,
+                &input.derivation,
+                input.context.session_id(),
+                &input.context.message_commitment(),
+                commitment_set,
+                per_input_shares,
+            )?;
+            let package_hash = cdk_frost::signing_package_hash(
+                input.context.session_id(),
+                &input.context.message_commitment(),
+                commitment_set,
+            )?;
+            notification_items.push(FederationFrostBatchAggregateResultItem {
+                input_index: input.input_index,
+                notification: FederationFrostAggregateResultNotification::new(
+                    &input.context,
+                    &input.authorization,
+                    package_hash,
+                    signature,
+                ),
+            });
+            results.push(CoordinatedFrostSignature {
+                signature,
+                #[cfg(feature = "federation-bdk")]
+                package_hash,
+            });
+        }
+
+        // Round 3: Fire-and-forget background aggregate notification.
+        let batch_notification =
+            FederationFrostBatchAggregateResultNotification::new(notification_items);
+        self.dispatch_batch_aggregate_notification(
+            &signer_members,
+            limit,
+            batch_notification,
+            tasks,
+            local_mint,
+        )
+        .await;
+
+        Ok(results)
     }
 
     /// Sign every input, finalize through BDK, then order the signed record in consensus.
@@ -627,8 +963,7 @@ where
             anyhow::bail!("accepted transaction uses a different local BDK wallet scope");
         }
         let adapter = FrostBip32::new(self.public.clone(), accepted.proposal.scope.network)?;
-        let mut signatures = Vec::with_capacity(accepted.proposal.selected_inputs.len());
-        let mut audits = Vec::with_capacity(accepted.proposal.selected_inputs.len());
+        let mut prepared_inputs = Vec::with_capacity(accepted.proposal.selected_inputs.len());
         for (input_index, selected) in accepted.proposal.selected_inputs.iter().enumerate() {
             let branch = match selected.allocation.keychain {
                 cdk::federation::FederationAddressKeychain::External => WalletBranch::External,
@@ -661,21 +996,32 @@ where
                 context.session_id(),
                 typed.to_bytes()?,
             )?;
-            let result = self
-                .sign_with_audit(
-                    runtime.public_config(),
-                    &context,
-                    derived.signing_derivation(),
-                    &authorization,
-                    Some(&latency),
-                )
-                .await?;
+            prepared_inputs.push(PreparedBatchSigningInput {
+                input_index: u32::try_from(input_index)?,
+                context,
+                derivation: derived.signing_derivation().clone(),
+                authorization,
+            });
+        }
+        let batch_results = self
+            .sign_batch_with_audit(
+                runtime.public_config(),
+                &prepared_inputs,
+                Some(&latency),
+                Some(&state.federation.tasks),
+                Some(Arc::clone(&state.mint)),
+            )
+            .await?;
+        let mut signatures = Vec::with_capacity(prepared_inputs.len());
+        let mut audits = Vec::with_capacity(prepared_inputs.len());
+        for (prepared, result) in prepared_inputs.iter().zip(batch_results) {
             signatures.push(result.signature.to_bytes());
             audits.push(FederationFrostInputSignatureAudit {
-                input_index: u32::try_from(input_index)?,
-                session_id: context.session_id().to_bytes(),
+                input_index: prepared.input_index,
+                session_id: prepared.context.session_id().to_bytes(),
                 attempt,
-                signer_set: context
+                signer_set: prepared
+                    .context
                     .signer_set()
                     .iter()
                     .map(|member| member.get())
@@ -730,6 +1076,7 @@ where
         Ok(durable)
     }
 
+    #[cfg(any(feature = "federation-bark", test, feature = "test-utils"))]
     async fn abort_selected(
         &self,
         public_config: &cdk::federation::FederationConfig,
@@ -757,6 +1104,354 @@ where
         .await;
     }
 
+    #[cfg(any(
+        feature = "federation-bdk",
+        all(feature = "federation-bark", any(test, feature = "test-utils"))
+    ))]
+    async fn abort_selected_batch(
+        &self,
+        public_config: &cdk::federation::FederationConfig,
+        inputs: &[PreparedBatchSigningInput],
+        reason: cdk_frost::NonceBurnReason,
+    ) {
+        let Some(first) = inputs.first() else {
+            return;
+        };
+        let request = FederationFrostBatchSigningAbortRequest::new(
+            reason,
+            inputs
+                .iter()
+                .map(|input| FederationFrostBatchSigningAbortItem {
+                    input_index: input.input_index,
+                    context: input.context.encode(),
+                    authorization: input.authorization.encode(),
+                })
+                .collect(),
+        );
+        let local_items = inputs
+            .iter()
+            .map(|input| DecodedFrostBatchSigningAbortItem {
+                input_index: input.input_index,
+                context: input.context.clone(),
+                authorization: input.authorization.clone(),
+            })
+            .collect::<Vec<_>>();
+        let members = known_signer_members(public_config, first.context.signer_set());
+        let limit = concurrency_limit(self.client, members.len());
+        // Best effort: every selected signer is told, and failures are ignored.
+        let _ = fan_out(
+            members.into_iter().map(|member| (member, ())).collect(),
+            self.local_signer,
+            limit,
+            |local, ()| {
+                let items = &local_items;
+                async move {
+                    local
+                        .runtime
+                        .abort_batch(local.mint, items, reason)
+                        .await
+                        .map_err(anyhow::Error::from)
+                }
+            },
+            |member, ()| self.client.abort_frost_signing_batch(member, &request),
+        )
+        .await;
+    }
+
+    #[cfg(any(
+        feature = "federation-bdk",
+        all(feature = "federation-bark", any(test, feature = "test-utils"))
+    ))]
+    async fn request_frost_batch_commitments_resilient(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationFrostBatchCommitmentRequest,
+    ) -> anyhow::Result<Vec<NonceCommitment>> {
+        match self
+            .client
+            .request_frost_batch_commitments(member, request)
+            .await
+        {
+            Err(error) if frost_transport_error_is_retryable(&error) => {
+                tracing::debug!(
+                    member = %member.member_id,
+                    "Retrying the same idempotent FROST batch commitment after a transport error"
+                );
+                self.client
+                    .request_frost_batch_commitments(member, request)
+                    .await
+            }
+            result => result,
+        }
+    }
+
+    #[cfg(any(
+        feature = "federation-bdk",
+        all(feature = "federation-bark", any(test, feature = "test-utils"))
+    ))]
+    async fn request_frost_batch_signature_shares_resilient(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationFrostBatchSigningPackageRequest,
+    ) -> anyhow::Result<Vec<SignatureShare>> {
+        match self
+            .client
+            .request_frost_batch_signature_shares(member, request)
+            .await
+        {
+            Err(error) if frost_transport_error_is_retryable(&error) => {
+                tracing::debug!(
+                    member = %member.member_id,
+                    "Retrying the same idempotent FROST batch signature request after a transport error"
+                );
+                self.client
+                    .request_frost_batch_signature_shares(member, request)
+                    .await
+            }
+            result => result,
+        }
+    }
+
+    #[cfg(any(feature = "federation-bark", test, feature = "test-utils"))]
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch_single_aggregate_notification(
+        &self,
+        signer_members: &[(cdk_frost::MemberId, &MemberConfigPublic)],
+        limit: usize,
+        context: &SigningSessionContext,
+        authorization: &AuthorizationRequest,
+        package_hash: [u8; 32],
+        signature: cdk_frost::AggregateSignature,
+        notification: FederationFrostAggregateResultNotification,
+    ) {
+        if let Some(local) = self.local_signer {
+            if signer_members
+                .iter()
+                .any(|(_, member)| member.member_id == local.member_id)
+            {
+                if let Err(error) = local
+                    .runtime
+                    .record_aggregate(local.mint, context, authorization, package_hash, signature)
+                    .await
+                {
+                    tracing::warn!(
+                        member = %local.member_id,
+                        "Local FROST aggregate-result recording failed: {}",
+                        cdk::federation::redact_federation_operator_message(&error.to_string())
+                    );
+                }
+            }
+        }
+        let remote_members = signer_members
+            .iter()
+            .filter(|(_, member)| {
+                self.local_signer
+                    .is_none_or(|local| local.member_id != member.member_id)
+            })
+            .map(|(_, member)| (*member).clone())
+            .collect::<Vec<_>>();
+        if remote_members.is_empty() {
+            return;
+        }
+        let Some(notifier) = self.client.aggregate_notifier() else {
+            return;
+        };
+        let Ok(permit) = FROST_AGGREGATE_NOTIFY_ADMISSION.try_acquire() else {
+            tracing::warn!(
+                "Skipping background FROST aggregate-result notification: concurrency limit reached"
+            );
+            return;
+        };
+        tokio::spawn(async move {
+            let _permit = permit;
+            let futures = remote_members
+                .into_iter()
+                .map(|member| {
+                    let notifier = Arc::clone(&notifier);
+                    let notification = notification.clone();
+                    async move {
+                        let result = match notifier
+                            .notify_single(member.clone(), notification.clone())
+                            .await
+                        {
+                            Err(error) if frost_transport_error_is_retryable(&error) => {
+                                tracing::debug!(
+                                    member = %member.member_id,
+                                    "Retrying background FROST aggregate result after a transport error"
+                                );
+                                notifier.notify_single(member.clone(), notification).await
+                            }
+                            result => result,
+                        };
+                        if let Err(error) = result {
+                            tracing::warn!(
+                                member = %member.member_id,
+                                "Background FROST aggregate-result notification failed: {}",
+                                cdk::federation::redact_federation_operator_message(
+                                    &error.to_string()
+                                )
+                            );
+                        }
+                    }
+                })
+                .collect::<Vec<_>>();
+            stream::iter(futures)
+                .buffered(limit.max(1))
+                .collect::<Vec<_>>()
+                .await;
+        });
+    }
+
+    #[cfg(any(
+        feature = "federation-bdk",
+        all(feature = "federation-bark", any(test, feature = "test-utils"))
+    ))]
+    async fn dispatch_batch_aggregate_notification(
+        &self,
+        signer_members: &[(cdk_frost::MemberId, &MemberConfigPublic)],
+        limit: usize,
+        notification: FederationFrostBatchAggregateResultNotification,
+        tasks: Option<&super::services::FederationTaskGroup>,
+        local_mint: Option<Arc<Mint>>,
+    ) {
+        let local_target = self.local_signer.filter(|local| {
+            signer_members
+                .iter()
+                .any(|(_, member)| member.member_id == local.member_id)
+        });
+        let local_bg = match (local_target, local_mint) {
+            (Some(local), Some(mint)) => Some((local.member_id, mint, local.runtime.clone())),
+            (Some(local), None) => {
+                match notification.decode() {
+                    Ok(decoded) => {
+                        if let Err(error) = local
+                            .runtime
+                            .record_aggregate_batch(local.mint, &decoded)
+                            .await
+                        {
+                            tracing::warn!(
+                                member = %local.member_id,
+                                "Local FROST batch aggregate-result recording failed: {}",
+                                cdk::federation::redact_federation_operator_message(
+                                    &error.to_string()
+                                )
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            member = %local.member_id,
+                            "Local FROST batch aggregate-result decode failed: {}",
+                            cdk::federation::redact_federation_operator_message(&error.to_string())
+                        );
+                    }
+                }
+                None
+            }
+            (None, _) => None,
+        };
+        let remote_members = signer_members
+            .iter()
+            .filter(|(_, member)| {
+                self.local_signer
+                    .is_none_or(|local| local.member_id != member.member_id)
+            })
+            .map(|(_, member)| (*member).clone())
+            .collect::<Vec<_>>();
+        let notifier = if remote_members.is_empty() {
+            None
+        } else {
+            self.client.aggregate_notifier()
+        };
+        if local_bg.is_none() && notifier.is_none() {
+            return;
+        }
+        let Ok(permit) = FROST_AGGREGATE_NOTIFY_ADMISSION.try_acquire() else {
+            tracing::warn!(
+                "Skipping background FROST batch aggregate-result notification: concurrency limit reached"
+            );
+            return;
+        };
+        let work = async move {
+            let _permit = permit;
+            if let Some((member_id, mint, runtime)) = local_bg {
+                match notification.decode() {
+                    Ok(decoded) => {
+                        if let Err(error) = runtime.record_aggregate_batch(&mint, &decoded).await {
+                            tracing::warn!(
+                                member = %member_id,
+                                "Background local FROST batch aggregate-result recording failed: {}",
+                                cdk::federation::redact_federation_operator_message(
+                                    &error.to_string()
+                                )
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            member = %member_id,
+                            "Background local FROST batch aggregate-result decode failed: {}",
+                            cdk::federation::redact_federation_operator_message(&error.to_string())
+                        );
+                    }
+                }
+            }
+            let Some(notifier) = notifier else {
+                return;
+            };
+            let futures = remote_members
+                .into_iter()
+                .map(|member| {
+                    let notifier = Arc::clone(&notifier);
+                    let notification = notification.clone();
+                    async move {
+                        let result = match notifier
+                            .notify_batch(member.clone(), notification.clone())
+                            .await
+                        {
+                            Err(error) if frost_transport_error_is_retryable(&error) => {
+                                tracing::debug!(
+                                    member = %member.member_id,
+                                    "Retrying background FROST batch aggregate result after a transport error"
+                                );
+                                notifier.notify_batch(member.clone(), notification).await
+                            }
+                            result => result,
+                        };
+                        if let Err(error) = result {
+                            tracing::warn!(
+                                member = %member.member_id,
+                                "Background FROST batch aggregate-result notification failed: {}",
+                                cdk::federation::redact_federation_operator_message(
+                                    &error.to_string()
+                                )
+                            );
+                        }
+                    }
+                })
+                .collect::<Vec<_>>();
+            stream::iter(futures)
+                .buffered(limit.max(1))
+                .collect::<Vec<_>>()
+                .await;
+        };
+        match tasks {
+            Some(tasks) => {
+                let stop = tasks.stop_token();
+                tasks.spawn("frost_aggregate_notify", false, async move {
+                    tokio::select! {
+                        _ = stop.cancelled() => {}
+                        _ = work => {}
+                    }
+                });
+            }
+            None => {
+                tokio::spawn(work);
+            }
+        }
+    }
+
+    #[cfg(any(feature = "federation-bark", test, feature = "test-utils"))]
     async fn request_frost_commitment_resilient(
         &self,
         member: &MemberConfigPublic,
@@ -774,6 +1469,7 @@ where
         }
     }
 
+    #[cfg(any(feature = "federation-bark", test, feature = "test-utils"))]
     async fn request_frost_signature_share_resilient(
         &self,
         member: &MemberConfigPublic,
@@ -791,29 +1487,6 @@ where
                 );
                 self.client
                     .request_frost_signature_share(member, request)
-                    .await
-            }
-            result => result,
-        }
-    }
-
-    async fn notify_frost_aggregate_result_resilient(
-        &self,
-        member: &MemberConfigPublic,
-        notification: &FederationFrostAggregateResultNotification,
-    ) -> anyhow::Result<()> {
-        match self
-            .client
-            .notify_frost_aggregate_result(member, notification)
-            .await
-        {
-            Err(error) if frost_transport_error_is_retryable(&error) => {
-                tracing::debug!(
-                    member = %member.member_id,
-                    "Retrying the same FROST aggregate result after a transport error"
-                );
-                self.client
-                    .notify_frost_aggregate_result(member, notification)
                     .await
             }
             result => result,
@@ -987,6 +1660,13 @@ impl FederationFrostSigningRuntime {
         }
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn root_epoch_nonterminal_count(&self, root_epoch: u64) -> anyhow::Result<usize> {
+        let manager = self.manager(root_epoch)?;
+        let manager = manager.lock().await;
+        Ok(manager.nonce_store().nonterminal_records()?.len())
+    }
+
     /// Return bounded nonterminal protocol counts for one public root epoch.
     #[cfg(feature = "federation-bark")]
     pub async fn operator_protocol_status(
@@ -1128,6 +1808,149 @@ impl FederationFrostSigningRuntime {
             .map_err(frost_boundary_error)
     }
 
+    pub async fn commit_batch(
+        &self,
+        mint: &Mint,
+        items: &[DecodedFrostBatchCommitmentItem],
+    ) -> Result<Vec<NonceCommitment>, cdk::Error> {
+        let auth_items = items
+            .iter()
+            .map(|item| (item.input_index, &item.context, &item.authorization))
+            .collect::<Vec<_>>();
+        let validated = self
+            .validate_signing_authorization_batch(mint, &auth_items)
+            .await?;
+        for (item, expected) in items.iter().zip(&validated) {
+            if expected.derivation != item.derivation {
+                return Err(frost_invalid(
+                    "round-one batch derivation differs from accepted input",
+                )
+                .into());
+            }
+        }
+        let root_epoch =
+            batch_root_epoch(items.iter().map(|item| item.context.root_epoch().get()))?;
+        let batch_inputs = items
+            .iter()
+            .map(|item| (&item.context, item.derivation.clone()))
+            .collect::<Vec<_>>();
+        self.manager(root_epoch)?
+            .lock()
+            .await
+            .commit_nonces_batch(&batch_inputs, &mut cdk_frost::rand_core::OsRng)
+            .map_err(frost_boundary_error)
+    }
+
+    pub async fn sign_batch(
+        &self,
+        mint: &Mint,
+        items: &[DecodedFrostBatchSigningPackageItem],
+    ) -> Result<Vec<SignatureShare>, cdk::Error> {
+        let auth_items = items
+            .iter()
+            .map(|item| (item.input_index, &item.context, &item.authorization))
+            .collect::<Vec<_>>();
+        self.validate_signing_authorization_batch(mint, &auth_items)
+            .await?;
+        let root_epoch =
+            batch_root_epoch(items.iter().map(|item| item.context.root_epoch().get()))?;
+        let batch_inputs = items
+            .iter()
+            .map(|item| (item.nonce_id, &item.authorization, &item.commitments))
+            .collect::<Vec<_>>();
+        self.manager(root_epoch)?
+            .lock()
+            .await
+            .sign_shares_batch(&batch_inputs)
+            .map_err(frost_boundary_error)
+    }
+
+    pub async fn abort_batch(
+        &self,
+        mint: &Mint,
+        items: &[DecodedFrostBatchSigningAbortItem],
+        reason: cdk_frost::NonceBurnReason,
+    ) -> Result<(), cdk::Error> {
+        let auth_items = items
+            .iter()
+            .map(|item| (item.input_index, &item.context, &item.authorization))
+            .collect::<Vec<_>>();
+        self.validate_signing_authorization_batch(mint, &auth_items)
+            .await?;
+        let root_epoch =
+            batch_root_epoch(items.iter().map(|item| item.context.root_epoch().get()))?;
+        let session_ids = items
+            .iter()
+            .map(|item| item.context.session_id())
+            .collect::<Vec<_>>();
+        self.manager(root_epoch)?
+            .lock()
+            .await
+            .burn_sessions_batch(&session_ids, reason)
+            .map_err(frost_boundary_error)
+    }
+
+    pub async fn record_aggregate_batch(
+        &self,
+        mint: &Mint,
+        items: &[DecodedFrostBatchAggregateResultItem],
+    ) -> Result<(), cdk::Error> {
+        let auth_items = items
+            .iter()
+            .map(|item| (item.input_index, &item.context, &item.authorization))
+            .collect::<Vec<_>>();
+        let validated = self
+            .validate_signing_authorization_batch(mint, &auth_items)
+            .await?;
+        for item in items {
+            if item.package_hash == [0; 32] {
+                return Err(frost_invalid("aggregate result package hash is empty").into());
+            }
+        }
+        let root_epoch =
+            batch_root_epoch(items.iter().map(|item| item.context.root_epoch().get()))?;
+        let manager = self.manager(root_epoch)?;
+        let manager = manager.lock().await;
+        for (item, expected) in items.iter().zip(&validated) {
+            let public = manager
+                .public_package(item.authorization.application_id())
+                .map_err(frost_boundary_error)?;
+            ParticipantKeyManager::verify_aggregate_for_derivation(
+                public,
+                &expected.derivation,
+                &item.context.message_commitment(),
+                item.signature,
+            )
+            .map_err(frost_boundary_error)?;
+        }
+        drop(manager);
+
+        let mut results = self.aggregate_results.lock().await;
+        for item in items {
+            if let Some(existing) = results.get(&item.context.session_id().to_bytes()) {
+                if existing != &(item.package_hash, item.signature.to_bytes()) {
+                    return Err(frost_invalid("aggregate result equivocation").into());
+                }
+            }
+        }
+        for item in items {
+            let key = item.context.session_id().to_bytes();
+            if results.contains_key(&key) {
+                continue;
+            }
+            while results.len() >= RESULT_CACHE_LIMIT {
+                let first = results
+                    .keys()
+                    .next()
+                    .copied()
+                    .expect("non-empty bounded result cache");
+                results.remove(&first);
+            }
+            results.insert(key, (item.package_hash, item.signature.to_bytes()));
+        }
+        Ok(())
+    }
+
     #[cfg(feature = "federation-bark")]
     pub async fn commit_bark_virtual_musig(
         &self,
@@ -1250,6 +2073,69 @@ impl FederationFrostSigningRuntime {
         self.authorizer
             .validate_onchain(mint, context, authorization)
             .await
+    }
+
+    async fn validate_onchain_batch(
+        &self,
+        mint: &Mint,
+        items: &[(u32, &SigningSessionContext, &AuthorizationRequest)],
+    ) -> Result<Vec<ValidatedCdkAuthorization>, cdk::Error> {
+        self.authorizer.validate_onchain_batch(mint, items).await
+    }
+
+    async fn validate_signing_authorization_batch(
+        &self,
+        mint: &Mint,
+        items: &[(u32, &SigningSessionContext, &AuthorizationRequest)],
+    ) -> Result<Vec<ValidatedCdkAuthorization>, cdk::Error> {
+        validate_batch_item_shape(items)?;
+        #[cfg(feature = "federation-bark")]
+        {
+            let bark_application = mint.federation_config().and_then(|runtime| {
+                cdk::federation::federation_bark_application(runtime.public_config())
+                    .ok()
+                    .flatten()
+            });
+            let recovery_application = mint.federation_config().and_then(|runtime| {
+                cdk::federation::federation_bark_recovery_application(runtime.public_config())
+                    .ok()
+                    .flatten()
+            });
+            let first_app = items[0].2.application_id().to_bytes();
+            if items
+                .iter()
+                .any(|(_, _, auth)| auth.application_id().to_bytes() != first_app)
+            {
+                return Err(frost_invalid(
+                    "batch signing items disagree on application identifier",
+                )
+                .into());
+            }
+            match (bark_application, recovery_application) {
+                (_, Some(application)) if first_app == application.application_id().to_bytes() => {
+                    let mut validated = Vec::with_capacity(items.len());
+                    for (_, context, authorization) in items {
+                        validated.push(
+                            self.validate_bark_recovery(mint, context, authorization)
+                                .await?,
+                        );
+                    }
+                    Ok(validated)
+                }
+                (Some(application), _) if first_app == application.application_id.to_bytes() => {
+                    let mut validated = Vec::with_capacity(items.len());
+                    for (_, context, authorization) in items {
+                        validated.push(self.validate_bark(mint, context, authorization).await?);
+                    }
+                    Ok(validated)
+                }
+                _ => self.validate_onchain_batch(mint, items).await,
+            }
+        }
+        #[cfg(not(feature = "federation-bark"))]
+        {
+            self.validate_onchain_batch(mint, items).await
+        }
     }
 
     async fn validate_signing_authorization(
@@ -1692,6 +2578,14 @@ trait SigningAuthorizer: Send + Sync {
         validate_onchain_authorization(mint, context, authorization).await
     }
 
+    async fn validate_onchain_batch(
+        &self,
+        mint: &Mint,
+        items: &[(u32, &SigningSessionContext, &AuthorizationRequest)],
+    ) -> Result<Vec<ValidatedCdkAuthorization>, cdk::Error> {
+        validate_onchain_batch_authorization(mint, items).await
+    }
+
     #[cfg(feature = "federation-bark")]
     async fn validate_bark(
         &self,
@@ -1722,6 +2616,24 @@ async fn validate_onchain_authorization(
     #[cfg(not(feature = "federation-bdk"))]
     {
         let _ = (mint, context, authorization);
+        Err(frost_invalid("CDK on-chain FROST application is disabled").into())
+    }
+}
+
+/// The mint's own check that a batched on-chain signing request is bound to
+/// one accepted transaction, loading the transaction and checking the active
+/// signing lease once for the whole batch.
+async fn validate_onchain_batch_authorization(
+    mint: &Mint,
+    items: &[(u32, &SigningSessionContext, &AuthorizationRequest)],
+) -> Result<Vec<ValidatedCdkAuthorization>, cdk::Error> {
+    #[cfg(feature = "federation-bdk")]
+    {
+        validate_cdk_batch_authorization(mint, items).await
+    }
+    #[cfg(not(feature = "federation-bdk"))]
+    {
+        let _ = (mint, items);
         Err(frost_invalid("CDK on-chain FROST application is disabled").into())
     }
 }
@@ -1774,6 +2686,43 @@ impl SigningAuthorizer for FixedSigningAuthorizations {
             Some(validated) => Ok(validated),
             None => validate_onchain_authorization(mint, context, authorization).await,
         }
+    }
+
+    async fn validate_onchain_batch(
+        &self,
+        mint: &Mint,
+        items: &[(u32, &SigningSessionContext, &AuthorizationRequest)],
+    ) -> Result<Vec<ValidatedCdkAuthorization>, cdk::Error> {
+        let mut fixed_results = Vec::with_capacity(items.len());
+        let mut all_fixed = true;
+        let mut any_fixed = false;
+        for (_, context, authorization) in items {
+            match self.fixed(context, authorization)? {
+                Some(validated) => {
+                    any_fixed = true;
+                    fixed_results.push(Some(validated));
+                }
+                None => {
+                    all_fixed = false;
+                    fixed_results.push(None);
+                }
+            }
+        }
+        if all_fixed {
+            return Ok(fixed_results.into_iter().flatten().collect());
+        }
+        if !any_fixed {
+            return validate_onchain_batch_authorization(mint, items).await;
+        }
+        let mut validated = Vec::with_capacity(items.len());
+        for ((_, context, authorization), maybe_fixed) in items.iter().zip(fixed_results) {
+            match maybe_fixed {
+                Some(fixed) => validated.push(fixed),
+                None => validated
+                    .push(validate_onchain_authorization(mint, context, authorization).await?),
+            }
+        }
+        Ok(validated)
     }
 
     #[cfg(feature = "federation-bark")]
@@ -1899,6 +2848,189 @@ async fn validate_cdk_authorization(
     Ok(ValidatedCdkAuthorization {
         derivation: derived.signing_derivation().clone(),
     })
+}
+
+fn validate_batch_item_shape(
+    items: &[(u32, &SigningSessionContext, &AuthorizationRequest)],
+) -> Result<(), cdk::Error> {
+    if items.is_empty() || items.len() > FEDERATION_MAX_FROST_SIGNING_BATCH_ITEMS {
+        return Err(frost_invalid("FROST signing batch length is invalid").into());
+    }
+    let mut previous_index: Option<u32> = None;
+    let mut seen_sessions = BTreeSet::new();
+    let mut seen_slots = BTreeSet::new();
+    let first_root_epoch = items[0].1.root_epoch();
+    let first_signers = items[0].1.signer_set();
+    for (input_index, context, _) in items {
+        if previous_index.is_some_and(|prev| prev >= *input_index) {
+            return Err(frost_invalid(
+                "FROST batch input indices are duplicated or not strictly ordered",
+            )
+            .into());
+        }
+        previous_index = Some(*input_index);
+        if !seen_sessions.insert(context.session_id()) || !seen_slots.insert(context.slot_id()) {
+            return Err(
+                frost_invalid("FROST batch contains duplicate signing sessions or slots").into(),
+            );
+        }
+        if context.root_epoch() != first_root_epoch {
+            return Err(frost_invalid("FROST batch items disagree on root key epoch").into());
+        }
+        if context.signer_set() != first_signers {
+            return Err(frost_invalid("FROST batch items disagree on signer set").into());
+        }
+    }
+    Ok(())
+}
+
+fn batch_root_epoch(mut epochs: impl Iterator<Item = u64>) -> Result<u64, cdk::Error> {
+    let first = epochs
+        .next()
+        .ok_or_else(|| frost_invalid("FROST signing batch cannot be empty"))?;
+    if epochs.any(|epoch| epoch != first) {
+        return Err(frost_invalid("FROST batch items disagree on root key epoch").into());
+    }
+    Ok(first)
+}
+
+#[cfg(feature = "federation-bdk")]
+async fn validate_cdk_batch_authorization(
+    mint: &Mint,
+    items: &[(u32, &SigningSessionContext, &AuthorizationRequest)],
+) -> Result<Vec<ValidatedCdkAuthorization>, cdk::Error> {
+    validate_batch_item_shape(items)?;
+
+    let mut typed_items = Vec::with_capacity(items.len());
+    for (input_index, context, request) in items {
+        let typed = FederationCdkOnchainFrostAuthorization::from_bytes(request.payload())?;
+        if typed.input_index != *input_index {
+            return Err(
+                frost_invalid("FROST batch item input index differs from authorization").into(),
+            );
+        }
+        typed_items.push((typed, *context, *request));
+    }
+
+    let proposal_id = typed_items[0].0.proposal_id;
+    let attempt = typed_items[0].1.attempt();
+    for (typed, context, _) in &typed_items[1..] {
+        if typed.proposal_id != proposal_id {
+            return Err(frost_invalid(
+                "FROST batch signing items span multiple accepted transactions",
+            )
+            .into());
+        }
+        if context.attempt() != attempt {
+            return Err(frost_invalid("FROST batch signing items disagree on attempt").into());
+        }
+    }
+
+    let accepted = mint
+        .federation_transaction_signing_authorization(proposal_id)
+        .await?;
+    let runtime = mint
+        .federation_config()
+        .ok_or_else(|| frost_invalid("federation configuration is unavailable"))?;
+    let wallet = runtime
+        .public_config()
+        .frost_wallet
+        .as_ref()
+        .ok_or_else(|| frost_invalid("FROST wallet configuration is unavailable"))?;
+    let application = wallet
+        .cdk_onchain_application
+        .as_ref()
+        .ok_or_else(|| frost_invalid("CDK on-chain application is unavailable"))?;
+    if application.application_id != accepted.proposal.scope.application_id
+        || application.application_key_epoch != accepted.proposal.scope.application_key_epoch
+        || application.root_key_epoch != accepted.proposal.scope.root_key_epoch
+    {
+        return Err(frost_invalid(
+            "accepted transaction application does not match the configured wallet",
+        )
+        .into());
+    }
+    let root = wallet
+        .root(application.root_key_epoch)
+        .ok_or_else(|| frost_invalid("accepted transaction root epoch is unavailable"))?;
+    let public = application.derived_public_package(runtime.public_config(), root)?;
+    let now_epoch_millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    if !cdk::federation::federation_wallet_signing_attempt_is_current(attempt, now_epoch_millis) {
+        return Err(
+            frost_invalid("FROST signing attempt is outside the active lease window").into(),
+        );
+    }
+    let plan = cdk::federation::FederationWalletLivenessSchedule::new(
+        proposal_id.to_bytes(),
+        runtime.public_config().members.keys().copied(),
+        application.threshold,
+    )?
+    .signing_plan(attempt)?;
+    let expected_signers = plan
+        .signer_set
+        .iter()
+        .map(|member| member.get())
+        .collect::<Vec<_>>();
+    let context_signers = typed_items[0]
+        .1
+        .signer_set()
+        .iter()
+        .map(|member| member.get())
+        .collect::<Vec<_>>();
+    if context_signers != expected_signers {
+        return Err(frost_invalid(
+            "FROST signer set differs from the deterministic active attempt",
+        )
+        .into());
+    }
+    let adapter = FrostBip32::new(public.clone(), application.network)
+        .map_err(|_| frost_invalid("FROST BIP32 adapter rejected the public package"))?;
+
+    let mut validated = Vec::with_capacity(typed_items.len());
+    for (typed, context, request) in typed_items {
+        let input_index = usize::try_from(typed.input_index)
+            .map_err(|_| frost_invalid("FROST input index does not fit usize"))?;
+        let selected = accepted
+            .proposal
+            .selected_inputs
+            .get(input_index)
+            .ok_or_else(|| frost_invalid("FROST input index is out of bounds"))?;
+        let branch = match selected.allocation.keychain {
+            cdk::federation::FederationAddressKeychain::External => WalletBranch::External,
+            cdk::federation::FederationAddressKeychain::Internal => WalletBranch::Internal,
+        };
+        let index = WalletIndex::new(selected.allocation.derivation_index)
+            .map_err(|_| frost_invalid("wallet derivation index is out of range"))?;
+        let derived = adapter
+            .derive(branch, index)
+            .map_err(|_| frost_invalid("wallet address derivation failed"))?;
+        let expected = FederationCdkOnchainFrostAuthorization::new(
+            &accepted,
+            input_index,
+            derived.signing_derivation(),
+        )?;
+        if typed != expected
+            || context.federation_id() != runtime.federation_id().to_bytes()
+            || context.root_epoch().get() != application.root_key_epoch
+            || context.registration() != public.registration()
+            || context.authorization_reference() != expected.authorization_reference
+            || context.message_commitment() != expected.message
+            || context.derivation_binding() != derived.signing_derivation().binding()
+            || request.session_id() != context.session_id()
+        {
+            return Err(frost_invalid(
+                "FROST batch request differs from locally revalidated accepted transaction",
+            )
+            .into());
+        }
+        validated.push(ValidatedCdkAuthorization {
+            derivation: derived.signing_derivation().clone(),
+        });
+    }
+    Ok(validated)
 }
 
 fn nonce_encryption_key(

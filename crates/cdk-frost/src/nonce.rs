@@ -646,6 +646,46 @@ pub enum NonceReservation {
     Existing(Box<NonceRecord>),
 }
 
+/// Validated multi-step lifecycle transition chain applied atomically in a batch write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NonceTransitionChain {
+    expected: NonceRecord,
+    final_record: NonceRecord,
+}
+
+impl NonceTransitionChain {
+    /// Construct and validate a sequence of single-step nonce transitions.
+    pub fn new(expected: NonceRecord, steps: Vec<NonceRecord>) -> Result<Self, Error> {
+        if steps.is_empty() {
+            return Err(Error::NoncePersistence(
+                "nonce transition chain cannot be empty".to_string(),
+            ));
+        }
+        let mut previous = &expected;
+        for step in &steps {
+            validate_nonce_transition(previous, step)?;
+            previous = step;
+        }
+        let final_record = steps.into_iter().last().ok_or_else(|| {
+            Error::NoncePersistence("nonce transition chain cannot be empty".to_string())
+        })?;
+        Ok(Self {
+            expected,
+            final_record,
+        })
+    }
+
+    /// Expected durable record revision matched by compare-and-swap.
+    pub fn expected(&self) -> &NonceRecord {
+        &self.expected
+    }
+
+    /// Validated terminal or intermediate replacement written by the batch transaction.
+    pub fn final_record(&self) -> &NonceRecord {
+        &self.final_record
+    }
+}
+
 /// Durable compare-and-swap boundary owned by one participant key manager.
 ///
 /// Implementations must not report success until the mutation is durable. All
@@ -662,8 +702,18 @@ pub trait DurableNonceStore: fmt::Debug + Send + Sync + 'static {
     /// Atomically reserve a new record, or return the exact existing session.
     fn reserve(&self, record: NonceRecord) -> Result<NonceReservation, Error>;
 
+    /// Atomically activate attempts, reserve, and publish commitments for a batch
+    /// of freshly generated records in one durable write transaction.
+    fn commit_batch(&self, records: Vec<NonceRecord>) -> Result<Vec<NonceReservation>, Error>;
+
     /// Load a detailed record by nonce identifier.
     fn load_nonce(&self, nonce_id: NonceId) -> Result<Option<NonceRecord>, Error>;
+
+    /// Load a batch of detailed records by nonce identifier in one read transaction.
+    fn load_nonces_batch(
+        &self,
+        nonce_ids: &[NonceId],
+    ) -> Result<Vec<Result<Option<NonceRecord>, Error>>, Error>;
 
     /// Load a detailed record by fully bound signing session identifier.
     fn load_session(&self, session_id: SigningSessionId) -> Result<Option<NonceRecord>, Error>;
@@ -673,6 +723,18 @@ pub trait DurableNonceStore: fmt::Debug + Send + Sync + 'static {
         &self,
         expected: &NonceRecord,
         replacement: NonceRecord,
+    ) -> Result<(), Error>;
+
+    /// Atomically apply a batch of validated nonce transition chains in one
+    /// durable write transaction.
+    fn apply_batch_transitions(&self, chains: Vec<NonceTransitionChain>) -> Result<(), Error>;
+
+    /// Atomically burn every nonterminal record for a batch of sessions in one
+    /// durable write transaction.
+    fn burn_sessions_batch(
+        &self,
+        sessions: &[SigningSessionId],
+        reason: NonceBurnReason,
     ) -> Result<(), Error>;
 
     /// Return every nonterminal detailed record for restart recovery.
@@ -713,8 +775,19 @@ impl DurableNonceStore for MemoryNonceStore {
         self.nonce_table().reserve(record)
     }
 
+    fn commit_batch(&self, records: Vec<NonceRecord>) -> Result<Vec<NonceReservation>, Error> {
+        self.nonce_table().commit_nonce_batch(records)
+    }
+
     fn load_nonce(&self, nonce_id: NonceId) -> Result<Option<NonceRecord>, Error> {
         self.nonce_table().load_key(nonce_id)
+    }
+
+    fn load_nonces_batch(
+        &self,
+        nonce_ids: &[NonceId],
+    ) -> Result<Vec<Result<Option<NonceRecord>, Error>>, Error> {
+        self.nonce_table().load_keys_batch(nonce_ids)
     }
 
     fn load_session(&self, session_id: SigningSessionId) -> Result<Option<NonceRecord>, Error> {
@@ -727,6 +800,19 @@ impl DurableNonceStore for MemoryNonceStore {
         replacement: NonceRecord,
     ) -> Result<(), Error> {
         self.nonce_table().compare_and_swap(expected, replacement)
+    }
+
+    fn apply_batch_transitions(&self, chains: Vec<NonceTransitionChain>) -> Result<(), Error> {
+        self.nonce_table().apply_nonce_batch_transitions(chains)
+    }
+
+    fn burn_sessions_batch(
+        &self,
+        sessions: &[SigningSessionId],
+        reason: NonceBurnReason,
+    ) -> Result<(), Error> {
+        self.nonce_table()
+            .burn_nonce_sessions_batch(sessions, reason)
     }
 
     fn nonterminal_records(&self) -> Result<Vec<NonceRecord>, Error> {
