@@ -618,9 +618,9 @@ pub struct Bdk {
     pub esplora_url: Option<String>,
     /// Number of parallel Esplora requests during wallet sync.
     ///
-    /// Public Esplora servers often rate-limit bursty clients, so the default
-    /// is conservative. Increase only when using a private or higher-limit
-    /// Esplora server.
+    /// Defaults to 4 to keep sync responsive while staying bounded for public
+    /// Esplora servers. Lower it for tightly rate-limited endpoints, or
+    /// increase up to `MAX_ESPLORA_PARALLEL_REQUESTS` for private servers.
     #[serde(default = "default_bdk_esplora_parallel_requests")]
     pub esplora_parallel_requests: usize,
     /// Electrum URL (when chain_source_type = "electrum")
@@ -803,12 +803,12 @@ fn default_bdk_min_send_amount_sat() -> u64 {
 
 #[cfg(any(feature = "bdk", feature = "federation"))]
 fn default_bdk_sync_interval_secs() -> u64 {
-    30
+    5
 }
 
 #[cfg(any(feature = "bdk", feature = "federation"))]
 fn default_bdk_esplora_parallel_requests() -> usize {
-    1
+    4
 }
 
 #[cfg(feature = "bdk")]
@@ -3592,4 +3592,36 @@ fn federated_bark_maintenance_defaults_to_refresh_without_exit() {
     let defaulted = FederationBarkWallet::default();
     assert!(defaulted.automatic_refresh);
     assert!(!defaulted.automatic_emergency_exit);
+}
+
+#[cfg(feature = "bdk")]
+#[test]
+fn bdk_config_defaults_use_tuned_sync_and_esplora_parallelism() {
+    let defaulted = Bdk::default();
+    assert_eq!(defaulted.esplora_parallel_requests, 4);
+    assert_eq!(defaulted.sync_interval_secs, 5);
+    assert!(
+        (1..=cdk_bdk::MAX_ESPLORA_PARALLEL_REQUESTS).contains(&defaulted.esplora_parallel_requests)
+    );
+    assert!(defaulted.validate().is_ok());
+
+    let deserialized =
+        serde_json::from_value::<Bdk>(serde_json::json!({})).expect("minimal BDK config");
+    assert_eq!(deserialized.esplora_parallel_requests, 4);
+    assert_eq!(deserialized.sync_interval_secs, 5);
+}
+
+#[cfg(feature = "federation")]
+#[test]
+fn federation_onchain_wallet_defaults_use_tuned_sync_and_esplora_parallelism() {
+    let defaulted = FederationOnchainWallet::default();
+    assert_eq!(defaulted.esplora_parallel_requests, 4);
+    assert_eq!(defaulted.sync_interval_secs, 5);
+
+    let deserialized = serde_json::from_value::<FederationOnchainWallet>(serde_json::json!({
+        "enabled": true
+    }))
+    .expect("minimal federation on-chain wallet config");
+    assert_eq!(deserialized.esplora_parallel_requests, 4);
+    assert_eq!(deserialized.sync_interval_secs, 5);
 }
