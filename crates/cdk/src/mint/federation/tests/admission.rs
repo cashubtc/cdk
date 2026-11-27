@@ -740,3 +740,196 @@ fn runtime_config_signs_accepted_swap_operations() {
         share.share.signature()
     );
 }
+
+#[test]
+fn runtime_config_batch_verification_uses_cutoff_of_two_for_small_batches() {
+    assert_eq!(
+        super::super::configuration_and_admission::FEDERATION_BLS_PROOF_BATCH_MIN,
+        2
+    );
+    let runtime_config = runtime_config();
+
+    for batch_len in [2usize, 3, 7] {
+        let proofs = (0..batch_len)
+            .map(|index| {
+                proof_for_runtime(&runtime_config, &format!("small-batch-{batch_len}-{index}"))
+            })
+            .collect::<Vec<_>>();
+
+        runtime_config
+            .verify_proofs(&proofs)
+            .expect("valid small batch should verify via batched pairings");
+
+        for corrupted_index in 0..batch_len {
+            let mut corrupted = proofs.clone();
+            corrupted[corrupted_index].c = PublicKey::from(BlsG1PublicKey::hash_to_curve(
+                format!("corrupted-small-batch-{batch_len}-{corrupted_index}").as_bytes(),
+            ));
+            assert!(
+                runtime_config.verify_proofs(&corrupted).is_err(),
+                "corrupted proof at index {corrupted_index} in batch of {batch_len} must fail"
+            );
+        }
+    }
+}
+
+#[test]
+fn verified_operation_cache_tracks_hits_misses_eviction_and_config_digest_invalidation() {
+    let runtime_config =
+        runtime_config_with_inactive_rotation_keyset().with_verified_operation_cache_capacity(2);
+    let proof_one = proof_for_runtime(&runtime_config, "cache-proof-1");
+    let proof_two = proof_for_runtime(&runtime_config, "cache-proof-2");
+    let proof_three = proof_for_runtime(&runtime_config, "cache-proof-3");
+    let swap_one = SwapRequest::new(
+        vec![proof_one.clone()],
+        vec![output_for_runtime(&runtime_config, b"cache-out-1")],
+    );
+    let envelope_one = runtime_config
+        .swap_operation(swap_one.clone())
+        .expect("swap one");
+    let op_one = envelope_one.operation_id().expect("op one");
+
+    // Local swap_operation populates both admission and proof verification cache.
+    assert!(runtime_config.is_operation_admission_verified(op_one, swap_one.inputs()));
+    assert!(runtime_config.is_operation_proofs_verified(op_one, swap_one.inputs()));
+    assert_eq!(runtime_config.verified_operation_cache_len(), 1);
+
+    // Mismatched proofs under the same operation_id must miss and be verified.
+    let mut tampered_proofs = swap_one.inputs().clone();
+    tampered_proofs[0].c = PublicKey::from(BlsG1PublicKey::hash_to_curve(b"forged-proof"));
+    assert!(!runtime_config.is_operation_proofs_verified(op_one, &tampered_proofs));
+    assert!(runtime_config
+        .verify_proofs_for_operation(op_one, &tampered_proofs)
+        .is_err());
+
+    // Bounded capacity (2) evicts the oldest entry on the 3rd distinct verified op.
+    let op_two = FederationOperationId::from_bytes([2; 32]);
+    let op_three = FederationOperationId::from_bytes([3; 32]);
+    runtime_config
+        .verify_proofs_for_operation(op_two, &vec![proof_two.clone()])
+        .expect("op two verifies");
+    assert_eq!(runtime_config.verified_operation_cache_len(), 2);
+    assert!(runtime_config.is_operation_proofs_verified(op_two, std::slice::from_ref(&proof_two)));
+    assert!(
+        !runtime_config.is_operation_admission_verified(op_two, std::slice::from_ref(&proof_two))
+    );
+
+    runtime_config
+        .verify_proofs_for_operation(op_three, &vec![proof_three.clone()])
+        .expect("op three verifies");
+    assert_eq!(runtime_config.verified_operation_cache_len(), 2);
+    assert!(!runtime_config.is_operation_proofs_verified(op_one, swap_one.inputs()));
+    assert!(runtime_config.is_operation_proofs_verified(op_two, std::slice::from_ref(&proof_two)));
+    assert!(
+        runtime_config.is_operation_proofs_verified(op_three, std::slice::from_ref(&proof_three))
+    );
+
+    // Keyset rotation changes config_digest and invalidates prior cached entries.
+    let mut next_keyset = runtime_config
+        .public_config()
+        .keysets
+        .iter()
+        .find(|keyset| !keyset.active)
+        .expect("inactive rotation keyset")
+        .clone();
+    next_keyset.active = true;
+    let rotated = runtime_config
+        .apply_keyset_rotation(&FederationKeysetRotationOperation {
+            keyset: next_keyset,
+        })
+        .expect("rotated runtime config");
+    assert_ne!(rotated.config_digest(), runtime_config.config_digest());
+    assert!(!rotated.is_operation_proofs_verified(op_two, std::slice::from_ref(&proof_two)));
+    assert!(!rotated.is_operation_proofs_verified(op_three, std::slice::from_ref(&proof_three)));
+}
+
+#[tokio::test]
+async fn preverify_journal_entries_batches_valid_ops_and_isolates_invalid_ops() {
+    let config = Arc::new(runtime_config());
+    let valid_proofs_a = vec![
+        proof_for_runtime(&config, "preverify-a-1"),
+        proof_for_runtime(&config, "preverify-a-2"),
+    ];
+    let valid_swap_a = SwapRequest::new(
+        valid_proofs_a.clone(),
+        vec![output_for_runtime(&config, b"preverify-out-a")],
+    );
+    let mut invalid_proof = proof_for_runtime(&config, "preverify-bad");
+    invalid_proof.c = PublicKey::from(BlsG1PublicKey::hash_to_curve(b"invalid-preverify-sig"));
+    let invalid_swap = SwapRequest::new(
+        vec![invalid_proof.clone()],
+        vec![output_for_runtime(&config, b"preverify-out-bad")],
+    );
+    let valid_proof_b = proof_for_runtime(&config, "preverify-b-1");
+    let valid_swap_b = SwapRequest::new(
+        vec![valid_proof_b.clone()],
+        vec![output_for_runtime(&config, b"preverify-out-b")],
+    );
+
+    // Construct directly via operation_envelope (simulating remote peer ops not yet verified).
+    let entry_a = accepted_entry_without_journal(
+        0,
+        config.operation_envelope(FederationOperation::Swap(FederationSwapOperation {
+            request: valid_swap_a.clone(),
+        })),
+    );
+    let entry_bad = accepted_entry_without_journal(
+        1,
+        config.operation_envelope(FederationOperation::Swap(FederationSwapOperation {
+            request: invalid_swap.clone(),
+        })),
+    );
+    let entry_b = accepted_entry_without_journal(
+        2,
+        config.operation_envelope(FederationOperation::Swap(FederationSwapOperation {
+            request: valid_swap_b.clone(),
+        })),
+    );
+
+    // Mixed unit: valid ops must be cached, invalid op must stay uncached and fail on verify.
+    config
+        .preverify_journal_entries(&[entry_a.clone(), entry_bad.clone(), entry_b.clone()])
+        .await
+        .expect("mixed unit preverify");
+    assert!(config.is_operation_proofs_verified(entry_a.operation_id, valid_swap_a.inputs()));
+    assert!(config.is_operation_proofs_verified(entry_b.operation_id, valid_swap_b.inputs()));
+    assert!(!config.is_operation_proofs_verified(entry_bad.operation_id, invalid_swap.inputs()));
+    assert!(config
+        .verify_proofs_for_operation(entry_bad.operation_id, invalid_swap.inputs())
+        .is_err());
+
+    // All-valid unit hits the single unit-wide batch verification fast path.
+    let fresh = Arc::new(runtime_config());
+    fresh
+        .preverify_journal_entries(&[entry_a.clone(), entry_b.clone()])
+        .await
+        .expect("all-valid unit preverify");
+    assert!(fresh.is_operation_proofs_verified(entry_a.operation_id, valid_swap_a.inputs()));
+    assert!(fresh.is_operation_proofs_verified(entry_b.operation_id, valid_swap_b.inputs()));
+}
+
+#[test]
+fn runtime_config_construction_rejects_mismatched_local_secret_share() {
+    let valid = runtime_config();
+    let public_config = valid.public_config().clone();
+    let keyset_id = public_config.keysets[0].id;
+    let mut private_config = valid.private_config().clone();
+    let wrong_secret = cdk_common::nuts::nut01::BlsSecretKeyShare::new(
+        private_config.member_id.to_bls_signer_id(),
+        BlsSecretKey::from_reduced_bytes(&[77; 32]),
+    );
+    private_config
+        .keyset_secret_shares
+        .get_mut(&keyset_id)
+        .expect("keyset secret shares")
+        .insert(Amount::from(1), wrong_secret);
+
+    assert!(matches!(
+        FederationRuntimeConfig::new(public_config, private_config),
+        Err(Error::Federation(FederationError::PrivateShareMismatch {
+            keyset_id: found_keyset_id,
+            amount,
+            ..
+        })) if found_keyset_id == keyset_id && amount == Amount::from(1)
+    ));
+}

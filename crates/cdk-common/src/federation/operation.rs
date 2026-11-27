@@ -8,6 +8,8 @@
 
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
+use std::hash::Hasher;
+use std::sync::{Arc, OnceLock};
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
@@ -1968,7 +1970,51 @@ struct FederationUnsignedOperationEnvelope<'a> {
     operation: &'a FederationOperation,
 }
 
+#[derive(Debug, Clone)]
+struct CachedCanonicalBytes {
+    version: u16,
+    federation_id: FederationId,
+    session: u64,
+    authorization: Option<FederationOperationAuthorization>,
+    bytes: Arc<[u8]>,
+}
+
+#[derive(Debug, Default)]
+struct EnvelopeCanonicalCache {
+    operation_id: OnceLock<(FederationId, FederationOperationId)>,
+    canonical_bytes: OnceLock<CachedCanonicalBytes>,
+}
+
+impl Clone for EnvelopeCanonicalCache {
+    fn clone(&self) -> Self {
+        // Start clones with a cold cache so callers that clone an envelope and
+        // mutate `pub` fields never observe stale cached encodings or IDs.
+        Self::default()
+    }
+}
+
+impl PartialEq for EnvelopeCanonicalCache {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for EnvelopeCanonicalCache {}
+
+impl std::hash::Hash for EnvelopeCanonicalCache {
+    fn hash<H>(&self, _state: &mut H)
+    where
+        H: Hasher,
+    {
+    }
+}
+
 /// Versioned envelope that binds an operation to one federation.
+///
+/// [`Self::operation_id`] and [`Self::canonical_bytes`] memoize their results
+/// in an internal `OnceLock` cache on immutable envelopes. Callers that mutate
+/// `pub` fields in place after hashing or encoding must call
+/// [`Self::invalidate_cache`] (or mutate via [`Self::operation_mut`]).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FederationOperationEnvelope {
@@ -1987,6 +2033,42 @@ pub struct FederationOperationEnvelope {
     /// Receiver-independent member authorization required at consensus admission.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authorization: Option<FederationOperationAuthorization>,
+    /// Memoized canonical encoding and operation ID, ignored for serde/eq/hash.
+    #[serde(skip)]
+    cache: EnvelopeCanonicalCache,
+}
+
+impl PartialEq for FederationOperationEnvelope {
+    fn eq(&self, other: &Self) -> bool {
+        if self.version != other.version
+            || self.federation_id != other.federation_id
+            || self.session != other.session
+            || self.authorization != other.authorization
+        {
+            return false;
+        }
+        match (canonical_json_bytes(self), canonical_json_bytes(other)) {
+            (Ok(left), Ok(right)) => left == right,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for FederationOperationEnvelope {}
+
+impl std::hash::Hash for FederationOperationEnvelope {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: Hasher,
+    {
+        std::hash::Hash::hash(&self.version, state);
+        std::hash::Hash::hash(&self.federation_id, state);
+        std::hash::Hash::hash(&self.session, state);
+        std::hash::Hash::hash(&self.authorization, state);
+        if let Ok(bytes) = canonical_json_bytes(self) {
+            std::hash::Hash::hash(&bytes, state);
+        }
+    }
 }
 
 impl FederationOperationEnvelope {
@@ -2000,7 +2082,22 @@ impl FederationOperationEnvelope {
             operation,
             session: 0,
             authorization: None,
+            cache: EnvelopeCanonicalCache::default(),
         }
+    }
+
+    /// Clear any memoized canonical encoding and operation ID.
+    ///
+    /// Call this after mutating `pub` fields in place on an envelope whose
+    /// [`Self::operation_id`] or [`Self::canonical_bytes`] was already computed.
+    pub fn invalidate_cache(&mut self) {
+        self.cache = EnvelopeCanonicalCache::default();
+    }
+
+    /// Mutably borrow the operation payload after clearing any memoized cache.
+    pub fn operation_mut(&mut self) -> &mut FederationOperation {
+        self.invalidate_cache();
+        &mut self.operation
     }
 
     /// Stamp the envelope with `session` and sign it as this member.
@@ -2032,7 +2129,8 @@ impl FederationOperationEnvelope {
             }
         }
         let author = private_config.member_id;
-        let transcript = self.authorization_transcript(author)?;
+        let unsigned = self.unsigned_canonical_bytes()?;
+        let transcript = self.authorization_transcript_for_unsigned(author, &unsigned);
         let signature = private_config
             .identity_secret_key
             .sign_no_aux_rand(&transcript)?;
@@ -2040,6 +2138,7 @@ impl FederationOperationEnvelope {
             author,
             signature: FederationOperationSignature(signature.serialize()),
         });
+        self.invalidate_cache();
         Ok(self)
     }
 
@@ -2060,6 +2159,8 @@ impl FederationOperationEnvelope {
                 .ok_or(FederationError::UnknownMember {
                     member_id: authorization.author,
                 })?;
+        // Always compute the transcript directly from the current fields so
+        // authorization verification can never rely on a stale cached hash.
         let transcript = self.authorization_transcript(authorization.author)?;
         let signature = authorization.signature.as_schnorr()?;
         member
@@ -2122,12 +2223,33 @@ impl FederationOperationEnvelope {
 
     /// Return canonical JSON bytes with all object keys sorted.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
-        canonical_json_bytes(self)
+        Ok(self.canonical_bytes_slice()?.to_vec())
+    }
+
+    fn canonical_bytes_slice(&self) -> Result<Arc<[u8]>> {
+        if let Some(cached) = self.cache.canonical_bytes.get() {
+            if cached.version == self.version
+                && cached.federation_id == self.federation_id
+                && cached.session == self.session
+                && cached.authorization == self.authorization
+            {
+                return Ok(Arc::clone(&cached.bytes));
+            }
+        }
+        let bytes: Arc<[u8]> = Arc::from(canonical_json_bytes(self)?);
+        let _ = self.cache.canonical_bytes.set(CachedCanonicalBytes {
+            version: self.version,
+            federation_id: self.federation_id,
+            session: self.session,
+            authorization: self.authorization,
+            bytes: Arc::clone(&bytes),
+        });
+        Ok(bytes)
     }
 
     /// Return the canonical operation envelope size in bytes.
     pub fn canonical_size(&self) -> Result<usize> {
-        Ok(self.canonical_bytes()?.len())
+        Ok(self.canonical_bytes_slice()?.len())
     }
 
     /// Reject this operation if its canonical envelope exceeds `max_bytes`.
@@ -2152,8 +2274,18 @@ impl FederationOperationEnvelope {
     /// Compute the domain-separated operation ID.
     pub fn operation_id(&self) -> Result<FederationOperationId> {
         self.ensure_supported_version()?;
+        if let Some((cached_federation_id, cached_operation_id)) = self.cache.operation_id.get() {
+            if *cached_federation_id == self.federation_id {
+                return Ok(*cached_operation_id);
+            }
+        }
         let canonical = self.unsigned_canonical_bytes()?;
-        Ok(operation_id_from_canonical(&canonical))
+        let operation_id = operation_id_from_canonical(&canonical);
+        let _ = self
+            .cache
+            .operation_id
+            .set((self.federation_id, operation_id));
+        Ok(operation_id)
     }
 
     /// Return true when another envelope has the same conflict key but different contents.
@@ -2179,12 +2311,23 @@ impl FederationOperationEnvelope {
     }
 
     fn authorization_transcript(&self, author: MemberId) -> Result<Vec<u8>> {
-        let mut transcript = Vec::new();
+        let unsigned = self.unsigned_canonical_bytes()?;
+        Ok(self.authorization_transcript_for_unsigned(author, &unsigned))
+    }
+
+    fn authorization_transcript_for_unsigned(
+        &self,
+        author: MemberId,
+        unsigned_canonical: &[u8],
+    ) -> Vec<u8> {
+        let mut transcript = Vec::with_capacity(
+            FEDERATION_OPERATION_AUTHORIZATION_VERSION.len() + unsigned_canonical.len() + 32,
+        );
         append_hash_bytes(&mut transcript, FEDERATION_OPERATION_AUTHORIZATION_VERSION);
         append_hash_bytes(&mut transcript, &author.get().to_be_bytes());
         append_hash_bytes(&mut transcript, &self.session.to_be_bytes());
-        append_hash_bytes(&mut transcript, &self.unsigned_canonical_bytes()?);
-        Ok(transcript)
+        append_hash_bytes(&mut transcript, unsigned_canonical);
+        transcript
     }
 }
 
@@ -4133,5 +4276,146 @@ mod tests {
             }) if assets == Amount::from(3) && liabilities == Amount::from(4)
         ));
         assert_eq!(journal.next_index(), 0);
+    }
+
+    #[test]
+    #[allow(clippy::mutable_key_type)]
+    fn operation_envelope_caches_canonical_bytes_and_operation_id_with_eq_and_hash() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::collections::HashSet;
+
+        let bundle = generate_trusted_dealer_configs(
+            ThresholdParams::with_bft_consensus(3, 2).expect("threshold params"),
+            vec![
+                trusted_dealer_member(member_id(1)),
+                trusted_dealer_member(member_id(2)),
+                trusted_dealer_member(member_id(3)),
+            ],
+            vec![rotation_keyset_spec(1)],
+        )
+        .expect("trusted dealer bundle");
+        let private_member = bundle
+            .private_configs
+            .get(&member_id(1))
+            .expect("private config");
+
+        let cold = FederationOperationEnvelope::new(
+            bundle.public_config.federation_id,
+            mint_operation(
+                "quote-cache",
+                vec![output(
+                    1,
+                    "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+                )],
+            ),
+        );
+        let warm = cold.clone();
+        let warm_id = warm.operation_id().expect("warm operation id");
+        let warm_bytes = warm.canonical_bytes().expect("warm canonical bytes");
+
+        // Cache state must not affect PartialEq/Eq or Hash.
+        assert_eq!(cold.cache, warm.cache);
+        let hash_of = |value: &FederationOperationEnvelope| {
+            let mut hasher = DefaultHasher::new();
+            std::hash::Hash::hash(value, &mut hasher);
+            hasher.finish()
+        };
+        assert_eq!(cold, warm);
+        assert_eq!(hash_of(&cold), hash_of(&warm));
+
+        let mut set = HashSet::new();
+        assert!(set.insert(cold.clone()));
+        assert!(!set.insert(warm.clone()));
+
+        // Repeated calls on the same envelope populate and reuse the OnceLock cache.
+        assert!(warm.cache.operation_id.get().is_some());
+        assert!(warm.cache.canonical_bytes.get().is_some());
+        assert_eq!(warm.operation_id().expect("repeat operation id"), warm_id);
+        assert_eq!(
+            warm.canonical_bytes().expect("repeat canonical bytes"),
+            warm_bytes
+        );
+        assert_eq!(
+            warm.canonical_size().expect("repeat canonical size"),
+            warm_bytes.len()
+        );
+
+        // Clones start with a cold cache so clone-then-mutate never sees stale values.
+        let mut cloned_mutated = warm.clone();
+        assert!(cloned_mutated.cache.operation_id.get().is_none());
+        assert!(cloned_mutated.cache.canonical_bytes.get().is_none());
+        cloned_mutated.operation = mint_operation(
+            "quote-cache-mutated",
+            vec![output(
+                1,
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            )],
+        );
+        assert_ne!(
+            cloned_mutated
+                .operation_id()
+                .expect("mutated clone operation id"),
+            warm_id
+        );
+        assert_ne!(
+            cloned_mutated
+                .canonical_bytes()
+                .expect("mutated clone canonical bytes"),
+            warm_bytes
+        );
+        assert_ne!(cloned_mutated, warm);
+
+        // In-place mutation via `operation_mut` clears the cache immediately.
+        let mut in_place = warm.clone();
+        let _ = in_place.operation_id().expect("prime in-place id");
+        let _ = in_place.canonical_bytes().expect("prime in-place bytes");
+        *in_place.operation_mut() = mint_operation(
+            "quote-cache-in-place",
+            vec![output(
+                1,
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            )],
+        );
+        assert_ne!(
+            in_place
+                .operation_id()
+                .expect("in-place mutated operation id"),
+            warm_id
+        );
+        assert_ne!(
+            in_place
+                .canonical_bytes()
+                .expect("in-place mutated canonical bytes"),
+            warm_bytes
+        );
+        assert_ne!(in_place, warm);
+
+        // Authorizing and re-stamping update canonical bytes while preserving operation_id.
+        let authorized = warm
+            .clone()
+            .authorize(private_member)
+            .expect("authorize envelope");
+        assert_eq!(
+            authorized.operation_id().expect("authorized operation id"),
+            warm_id
+        );
+        let authorized_bytes = authorized
+            .canonical_bytes()
+            .expect("authorized canonical bytes");
+        assert_ne!(authorized_bytes, warm_bytes);
+        assert_ne!(authorized, warm);
+
+        let stamped = authorized
+            .clone()
+            .for_session(4, private_member)
+            .expect("stamp session");
+        assert_eq!(
+            stamped.operation_id().expect("stamped operation id"),
+            warm_id
+        );
+        assert_ne!(
+            stamped.canonical_bytes().expect("stamped canonical bytes"),
+            authorized_bytes
+        );
     }
 }

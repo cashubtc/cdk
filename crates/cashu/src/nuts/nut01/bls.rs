@@ -753,17 +753,59 @@ pub fn aggregate_blind_signature_shares(
     threshold: usize,
     shares: &[BlsBlindSignatureShare],
 ) -> Result<BlsG1PublicKey, Error> {
-    validate_threshold_shares(
-        threshold,
-        shares.iter().map(BlsBlindSignatureShare::signer_id),
-    )?;
+    let signer_ids = shares
+        .iter()
+        .map(BlsBlindSignatureShare::signer_id)
+        .collect::<Vec<_>>();
+    validate_threshold_shares(threshold, signer_ids.iter().copied())?;
 
+    let coefficients = lagrange_coefficients_at_zero(&signer_ids)?;
+    aggregate_blind_signature_shares_with_coefficients(shares, &coefficients)
+}
+
+/// Aggregate multiple sets of threshold blind signature shares, reusing
+/// Lagrange coefficients whenever outputs share the same ordered signer set.
+pub fn aggregate_blind_signature_shares_batch(
+    threshold: usize,
+    share_batches: &[&[BlsBlindSignatureShare]],
+) -> Result<Vec<BlsG1PublicKey>, Error> {
+    let mut cached_signer_sets: Vec<(Vec<BlsSignerId>, Vec<Scalar>)> = Vec::new();
+    let mut aggregates = Vec::with_capacity(share_batches.len());
+
+    for shares in share_batches {
+        let signer_ids = shares
+            .iter()
+            .map(BlsBlindSignatureShare::signer_id)
+            .collect::<Vec<_>>();
+        let cached_index = match cached_signer_sets
+            .iter()
+            .position(|(cached_ids, _)| *cached_ids == signer_ids)
+        {
+            Some(index) => index,
+            None => {
+                validate_threshold_shares(threshold, signer_ids.iter().copied())?;
+                let coefficients = lagrange_coefficients_at_zero(&signer_ids)?;
+                cached_signer_sets.push((signer_ids, coefficients));
+                cached_signer_sets.len() - 1
+            }
+        };
+        let coefficients = cached_signer_sets[cached_index].1.as_slice();
+
+        aggregates.push(aggregate_blind_signature_shares_with_coefficients(
+            shares,
+            coefficients,
+        )?);
+    }
+
+    Ok(aggregates)
+}
+
+fn aggregate_blind_signature_shares_with_coefficients(
+    shares: &[BlsBlindSignatureShare],
+    coefficients: &[Scalar],
+) -> Result<BlsG1PublicKey, Error> {
     let mut aggregate = G1Projective::identity();
-    for share in shares {
-        let coefficient = lagrange_coefficient_at_zero(
-            share.signer_id,
-            shares.iter().map(BlsBlindSignatureShare::signer_id),
-        )?;
+    for (share, coefficient) in shares.iter().zip(coefficients) {
         aggregate += G1Projective::from(share.signature.point()) * coefficient;
     }
 
@@ -775,14 +817,15 @@ pub fn aggregate_public_key_shares(
     threshold: usize,
     shares: &[BlsPublicKeyShare],
 ) -> Result<BlsG2PublicKey, Error> {
-    validate_threshold_shares(threshold, shares.iter().map(BlsPublicKeyShare::signer_id))?;
+    let signer_ids = shares
+        .iter()
+        .map(BlsPublicKeyShare::signer_id)
+        .collect::<Vec<_>>();
+    validate_threshold_shares(threshold, signer_ids.iter().copied())?;
 
+    let coefficients = lagrange_coefficients_at_zero(&signer_ids)?;
     let mut aggregate = G2Projective::identity();
-    for share in shares {
-        let coefficient = lagrange_coefficient_at_zero(
-            share.signer_id,
-            shares.iter().map(BlsPublicKeyShare::signer_id),
-        )?;
+    for (share, coefficient) in shares.iter().zip(&coefficients) {
         aggregate += G2Projective::from(share.public_key.point()) * coefficient;
     }
 
@@ -923,28 +966,49 @@ fn reject_zero_secret_key(secret_key: &BlsSecretKey) -> Result<(), Error> {
     Ok(())
 }
 
-fn lagrange_coefficient_at_zero<I>(signer_id: BlsSignerId, signer_ids: I) -> Result<Scalar, Error>
-where
-    I: IntoIterator<Item = BlsSignerId>,
-{
-    let x_i = signer_id.scalar();
-    let mut numerator = Scalar::one();
-    let mut denominator = Scalar::one();
-
-    for other_id in signer_ids {
-        if other_id == signer_id {
-            continue;
-        }
-
-        let x_j = other_id.scalar();
-        numerator *= -x_j;
-        denominator *= x_i - x_j;
+/// Compute all Lagrange interpolation coefficients at `x = 0` for `signer_ids`
+/// using Montgomery's batch inversion (1 scalar inversion instead of `n`).
+fn lagrange_coefficients_at_zero(signer_ids: &[BlsSignerId]) -> Result<Vec<Scalar>, Error> {
+    let count = signer_ids.len();
+    if count == 0 {
+        return Ok(Vec::new());
     }
 
-    let denominator_inverse =
-        Option::<Scalar>::from(denominator.invert()).ok_or(Error::InvalidSecretKey)?;
+    let xs = signer_ids
+        .iter()
+        .map(|signer_id| signer_id.scalar())
+        .collect::<Vec<_>>();
+    let mut numerators = Vec::with_capacity(count);
+    let mut denominators = Vec::with_capacity(count);
+    let mut prefixes = Vec::with_capacity(count);
+    let mut running_product = Scalar::one();
 
-    Ok(numerator * denominator_inverse)
+    for (i, x_i) in xs.iter().enumerate() {
+        let mut numerator = Scalar::one();
+        let mut denominator = Scalar::one();
+        for (j, x_j) in xs.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            numerator *= -*x_j;
+            denominator *= *x_i - *x_j;
+        }
+        numerators.push(numerator);
+        denominators.push(denominator);
+        prefixes.push(running_product);
+        running_product *= denominator;
+    }
+
+    let mut inv_running =
+        Option::<Scalar>::from(running_product.invert()).ok_or(Error::InvalidSecretKey)?;
+    let mut coefficients = vec![Scalar::zero(); count];
+    for i in (0..count).rev() {
+        let inv_denominator = inv_running * prefixes[i];
+        inv_running *= denominators[i];
+        coefficients[i] = numerators[i] * inv_denominator;
+    }
+
+    Ok(coefficients)
 }
 
 fn g1_from_projective(point: G1Projective) -> Result<BlsG1PublicKey, Error> {
@@ -1964,6 +2028,56 @@ mod tests {
             &unblinded_signature,
             secret,
             &keyset.aggregate_public_key()
+        ));
+    }
+
+    #[test]
+    fn test_threshold_bls_batch_aggregation_matches_single_for_same_and_mixed_signers() {
+        let coefficients = vec![bls_key(31), bls_key(37), bls_key(41)];
+        let keyset =
+            trusted_dealer_keygen(&coefficients, &signer_ids(&[1, 2, 3, 4, 5])).expect("keyset");
+        let messages = [
+            BlsG1PublicKey::hash_to_curve(b"batch-agg-0"),
+            BlsG1PublicKey::hash_to_curve(b"batch-agg-1"),
+            BlsG1PublicKey::hash_to_curve(b"batch-agg-2"),
+            BlsG1PublicKey::hash_to_curve(b"batch-agg-3"),
+        ];
+        // Outputs 0, 1, 3 share signer subset [0, 1, 2]; output 2 uses [1, 3, 4].
+        let signer_subsets = [&[0usize, 1, 2][..], &[0, 1, 2], &[1, 3, 4], &[0, 1, 2]];
+        let share_sets = messages
+            .iter()
+            .zip(signer_subsets)
+            .map(|(message, subset)| {
+                subset
+                    .iter()
+                    .map(|&index| keyset.secret_shares()[index].blind_sign_share(message))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let share_slices = share_sets.iter().map(Vec::as_slice).collect::<Vec<_>>();
+
+        let batched = aggregate_blind_signature_shares_batch(keyset.threshold(), &share_slices)
+            .expect("batch aggregate");
+        assert_eq!(batched.len(), messages.len());
+        for (batch_sig, (shares, message)) in batched.iter().zip(share_sets.iter().zip(&messages)) {
+            let single_sig = aggregate_blind_signature_shares(keyset.threshold(), shares)
+                .expect("single aggregate");
+            assert_eq!(*batch_sig, single_sig);
+            assert!(verify_blind_signature_pairing(
+                batch_sig,
+                message,
+                &keyset.aggregate_public_key()
+            ));
+        }
+
+        // Insufficient shares in one batch entry must still fail.
+        let bad_slices = [share_sets[0].as_slice(), &share_sets[1][..2]];
+        assert!(matches!(
+            aggregate_blind_signature_shares_batch(keyset.threshold(), &bad_slices),
+            Err(Error::InsufficientThresholdShares {
+                threshold: 3,
+                found: 2
+            })
         ));
     }
 }

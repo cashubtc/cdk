@@ -59,11 +59,24 @@ impl FederationAcceptedSigningRequest {
     /// Build a signing capability from an accepted mint, swap, or melt entry.
     ///
     /// The public config must already have been validated at the runtime-config
-    /// boundary. This hot path only computes its deterministic digest; repeating
-    /// full validation here would interpolate every aggregate BLS key for every
-    /// signed operation.
+    /// boundary. Callers that already cache the validated config digest should
+    /// prefer [`Self::from_journal_entry_with_config_digest`] to avoid
+    /// re-serializing the full federation config on every signed operation.
     pub fn from_journal_entry(
         public_config: &FederationConfig,
+        entry: &FederationJournalEntry,
+        outputs: &[BlindedMessage],
+    ) -> Result<Self> {
+        let config_digest = public_config.config_digest_for_validated_config()?;
+        Self::from_journal_entry_with_config_digest(config_digest, entry, outputs)
+    }
+
+    /// Build a signing capability from an accepted entry using a cached config digest.
+    ///
+    /// `config_digest` must be the digest of the already-validated effective
+    /// [`FederationConfig`] (for example, `FederationRuntimeConfig::config_digest`).
+    pub fn from_journal_entry_with_config_digest(
+        config_digest: FederationConfigDigest,
         entry: &FederationJournalEntry,
         outputs: &[BlindedMessage],
     ) -> Result<Self> {
@@ -106,7 +119,7 @@ impl FederationAcceptedSigningRequest {
             operation_id: entry.operation_id,
             accepted_operation_index: entry.index,
             consensus_evidence: entry.consensus_evidence,
-            config_digest: public_config.config_digest_for_validated_config()?,
+            config_digest,
             outputs: outputs.to_vec(),
         })
     }
@@ -266,14 +279,35 @@ impl MemberConfigPrivate {
     /// Sign only outputs authorized by an accepted federation journal entry.
     ///
     /// The public config must already have been validated at the runtime-config
-    /// boundary. The digest comparison still binds the request to the exact
-    /// config, without repeating full aggregate-key validation while signing.
+    /// boundary. Callers that already cache the validated config digest should
+    /// prefer [`Self::sign_accepted_blinded_messages_with_config_digest`] to
+    /// avoid re-serializing the full federation config on every signed
+    /// operation.
     pub fn sign_accepted_blinded_messages(
         &self,
         public_config: &FederationConfig,
         request: &FederationAcceptedSigningRequest,
     ) -> Result<FederationBlindSignatureShareSet> {
         let config_digest = public_config.config_digest_for_validated_config()?;
+        self.sign_accepted_blinded_messages_with_config_digest(
+            public_config,
+            config_digest,
+            request,
+        )
+    }
+
+    /// Sign accepted outputs using the caller's cached validated config digest.
+    ///
+    /// `config_digest` must be the digest of `public_config` computed when the
+    /// runtime config was validated. This avoids serializing the full
+    /// [`FederationConfig`] on every signing call while still enforcing the
+    /// exact config-epoch binding against `request.config_digest()`.
+    pub fn sign_accepted_blinded_messages_with_config_digest(
+        &self,
+        public_config: &FederationConfig,
+        config_digest: FederationConfigDigest,
+        request: &FederationAcceptedSigningRequest,
+    ) -> Result<FederationBlindSignatureShareSet> {
         if config_digest != request.config_digest {
             return Err(FederationError::SigningConfigChanged {
                 expected: request.config_digest,
@@ -300,7 +334,75 @@ impl MemberConfigPrivate {
         self.sign_blinded_messages(public_config, operation_id, outputs)
     }
 
+    /// Verify every signature share in `share_set` against this member's
+    /// published public shares in `public_config`.
+    ///
+    /// Local key-share consistency is validated once at signer initialization
+    /// and keyset activation (`validate_against_public`), so the hot signing
+    /// path skips per-output BLS pairings. This helper exposes explicit
+    /// pairing verification for audits and tests.
+    pub fn verify_signature_share_set(
+        &self,
+        public_config: &FederationConfig,
+        share_set: &FederationBlindSignatureShareSet,
+    ) -> Result<()> {
+        for share in &share_set.shares {
+            let keyset = public_config
+                .keysets
+                .iter()
+                .find(|keyset| keyset.id == share.keyset_id)
+                .ok_or(FederationError::UnknownFederatedKeyset {
+                    keyset_id: share.keyset_id,
+                })?;
+            let public_share = keyset
+                .public_shares
+                .get(&share.member_id)
+                .ok_or(FederationError::MissingPublicShares {
+                    keyset_id: keyset.id,
+                    member_id: share.member_id,
+                })?
+                .get(&share.amount)
+                .ok_or(FederationError::MissingPublicShareAmount {
+                    keyset_id: keyset.id,
+                    member_id: share.member_id,
+                    amount: share.amount,
+                })?;
+            let blinded_secret = share.blinded_secret.as_bls_g1().map_err(|_| {
+                FederationError::InvalidFederationBlindedSecret {
+                    keyset_id: share.keyset_id,
+                    amount: share.amount,
+                }
+            })?;
+
+            #[cfg(feature = "prometheus")]
+            let verification_started_at = Instant::now();
+            let verification =
+                verify_blind_signature_share(&share.share, &blinded_secret, public_share);
+            #[cfg(feature = "prometheus")]
+            cdk_prometheus::METRICS.record_federation_performance_operation(
+                cdk_prometheus::FederationPerformanceOperation::MemberBlindedShareSelfVerification,
+                cdk_prometheus::FederationPerformanceOutcome::from_success(
+                    verification.as_ref().is_ok_and(|verified| *verified),
+                ),
+                verification_started_at.elapsed().as_secs_f64(),
+            );
+            if !verification? {
+                return Err(FederationError::SignatureShareVerificationFailed {
+                    keyset_id: keyset.id,
+                    member_id: share.member_id,
+                    amount: share.amount,
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Sign blinded outputs with this member's threshold BLS secret shares.
+    ///
+    /// Local secret-to-public share equivalence is enforced once at signer
+    /// construction and keyset rotation activation via
+    /// [`Self::validate_against_public`], avoiding per-output BLS12-381 pairing
+    /// self-checks inside the signing hot path.
     fn sign_blinded_messages(
         &self,
         public_config: &FederationConfig,
@@ -336,7 +438,7 @@ impl MemberConfigPrivate {
                     signer_id: secret_share.signer_id().get(),
                 });
             }
-            let public_share = keyset
+            let _public_share = keyset
                 .public_shares
                 .get(&self.member_id)
                 .ok_or(FederationError::MissingPublicShares {
@@ -363,25 +465,6 @@ impl MemberConfigPrivate {
                 cdk_prometheus::FederationPerformanceOutcome::Success,
                 signing_started_at.elapsed().as_secs_f64(),
             );
-
-            #[cfg(feature = "prometheus")]
-            let verification_started_at = Instant::now();
-            let verification = verify_blind_signature_share(&share, &blinded_secret, public_share);
-            #[cfg(feature = "prometheus")]
-            cdk_prometheus::METRICS.record_federation_performance_operation(
-                cdk_prometheus::FederationPerformanceOperation::MemberBlindedShareSelfVerification,
-                cdk_prometheus::FederationPerformanceOutcome::from_success(
-                    verification.as_ref().is_ok_and(|verified| *verified),
-                ),
-                verification_started_at.elapsed().as_secs_f64(),
-            );
-            if !verification? {
-                return Err(FederationError::SignatureShareVerificationFailed {
-                    keyset_id: keyset.id,
-                    member_id: self.member_id,
-                    amount: output.amount,
-                });
-            }
 
             shares.push(FederationBlindSignatureShare {
                 operation_id,
@@ -1036,6 +1119,119 @@ mod tests {
                 signer_id: 2,
                 ..
             }) if local_member_id == member_id(1)
+        ));
+    }
+
+    #[test]
+    fn cached_config_digest_signing_matches_and_detects_config_change() {
+        let bundle = bundle();
+        let keyset = &bundle.public_config.keysets[0];
+        let output = BlindedMessage::new(
+            Amount::from(1),
+            keyset.id,
+            PublicKey::from(BlsG1PublicKey::hash_to_curve(b"cached digest output")),
+        );
+        let entry = InMemoryFederationJournal::new()
+            .append(mint_envelope(
+                bundle.public_config.federation_id,
+                "cached-digest-signing",
+                vec![output.clone()],
+            ))
+            .expect("append accepted mint")
+            .entry()
+            .clone();
+        let cached_digest = bundle.public_config.config_digest().expect("config digest");
+        let request = FederationAcceptedSigningRequest::from_journal_entry_with_config_digest(
+            cached_digest,
+            &entry,
+            std::slice::from_ref(&output),
+        )
+        .expect("cached digest request");
+        let private = bundle
+            .private_configs
+            .get(&member_id(1))
+            .expect("private config");
+
+        let share_set = private
+            .sign_accepted_blinded_messages_with_config_digest(
+                &bundle.public_config,
+                cached_digest,
+                &request,
+            )
+            .expect("cached digest signing");
+        private
+            .verify_signature_share_set(&bundle.public_config, &share_set)
+            .expect("explicit share verification succeeds");
+
+        let different_digest = FederationConfigDigest::from_bytes([0xab; 32]);
+        assert!(matches!(
+            private.sign_accepted_blinded_messages_with_config_digest(
+                &bundle.public_config,
+                different_digest,
+                &request,
+            ),
+            Err(FederationError::SigningConfigChanged { expected, found })
+                if expected == cached_digest && found == different_digest
+        ));
+    }
+
+    #[test]
+    fn keyset_share_mismatch_is_rejected_at_validation_and_corrupted_share_is_detected() {
+        let bundle = bundle();
+        let keyset = &bundle.public_config.keysets[0];
+        let mut private = bundle
+            .private_configs
+            .get(&member_id(1))
+            .expect("private config")
+            .clone();
+        let mismatched_secret = crate::nuts::nut01::BlsSecretKeyShare::new(
+            member_id(1).to_bls_signer_id(),
+            bls_key(99),
+        );
+        private
+            .keyset_secret_shares
+            .get_mut(&keyset.id)
+            .expect("member keyset shares")
+            .insert(Amount::from(1), mismatched_secret);
+
+        assert!(matches!(
+            private.validate_against_public(&bundle.public_config),
+            Err(FederationError::PrivateShareMismatch {
+                keyset_id,
+                member_id: local_member_id,
+                amount,
+            }) if keyset_id == keyset.id
+                && local_member_id == member_id(1)
+                && amount == Amount::from(1)
+        ));
+
+        let valid_private = bundle
+            .private_configs
+            .get(&member_id(1))
+            .expect("valid private config");
+        let output = BlindedMessage::new(
+            Amount::from(1),
+            keyset.id,
+            PublicKey::from(BlsG1PublicKey::hash_to_curve(b"corrupted share check")),
+        );
+        let mut share_set = valid_private
+            .sign_blinded_messages(
+                &bundle.public_config,
+                FederationOperationId::from_bytes([7; 32]),
+                &[output],
+            )
+            .expect("valid share set");
+        valid_private
+            .verify_signature_share_set(&bundle.public_config, &share_set)
+            .expect("valid share set verifies");
+
+        share_set.shares[0].share = BlsBlindSignatureShare::new(
+            member_id(1).to_bls_signer_id(),
+            BlsG1PublicKey::hash_to_curve(b"forged signature point"),
+        );
+        assert!(matches!(
+            valid_private.verify_signature_share_set(&bundle.public_config, &share_set),
+            Err(FederationError::SignatureShareVerificationFailed { .. })
         ));
     }
 }
