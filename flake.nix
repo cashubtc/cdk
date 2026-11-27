@@ -930,6 +930,7 @@
         clippyAndTestChecks = {
           "core-cashu" = [
             "-p cashu"
+            "-p cashu-ffi"
             "-p cashu --no-default-features"
             "-p cashu --no-default-features --features wallet"
             "-p cashu --no-default-features --features mint"

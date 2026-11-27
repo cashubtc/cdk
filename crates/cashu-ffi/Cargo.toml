@@ -1,0 +1,19 @@
+[package]
+name = "cashu-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "UniFFI bindings for Cashu protocol cryptography"
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+cashu = { workspace = true, features = ["wallet"] }
+thiserror.workspace = true
+uniffi.workspace = true
+
+[lints]
+workspace = true
