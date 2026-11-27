@@ -19,7 +19,8 @@ use cdk::cdk_payment::{
 use cdk::federation::{
     generate_trusted_dealer_configs, FederationAlephBftActivityRequest,
     FederationAlephBftBackupRequest, FederationAlephBftBackupResponse, FederationAlephBftError,
-    FederationAlephBftFinalizedItemStatus, FederationAlephBftNetworkMessageRequest,
+    FederationAlephBftFinalizedItemStatus, FederationAlephBftNetworkMessageBatchRequest,
+    FederationAlephBftNetworkMessageBatchResponse, FederationAlephBftNetworkMessageRequest,
     FederationAlephBftNetworkMessageResponse, FederationAlephBftPendingOperationRecord,
     FederationAlephBftUnitPayload, FederationApplicationState, FederationCheckpoint,
     FederationCheckpointAuditRequest, FederationCheckpointBoundary, FederationCheckpointKind,

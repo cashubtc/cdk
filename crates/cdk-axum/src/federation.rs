@@ -46,7 +46,9 @@ mod setup;
 mod state_transfer_routes;
 mod status_routes;
 
-use self::aleph_bft_routes::{post_aleph_bft_activity, post_aleph_bft_network_message};
+use self::aleph_bft_routes::{
+    post_aleph_bft_activity, post_aleph_bft_network_message, post_aleph_bft_network_message_batch,
+};
 use self::backup_routes::post_aleph_bft_backup;
 #[cfg(feature = "federation-bark")]
 use self::bark_custody_routes::{
@@ -166,6 +168,12 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
         .route("/operations", post(post_operation))
         .route("/aleph-bft/activity", post(post_aleph_bft_activity))
         .route("/aleph-bft/messages", post(post_aleph_bft_network_message))
+        .route(
+            "/aleph-bft/messages/batch",
+            post(post_aleph_bft_network_message_batch).layer(DefaultBodyLimit::max(
+                cdk::federation::FEDERATION_MAX_ALEPH_BFT_NETWORK_BATCH_REQUEST_BYTES,
+            )),
+        )
         .route(
             "/aleph-bft/backup",
             post(post_aleph_bft_backup).layer(DefaultBodyLimit::max(

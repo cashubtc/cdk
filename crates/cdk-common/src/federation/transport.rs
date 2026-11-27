@@ -123,6 +123,8 @@ pub enum FederationRestMessageKind {
     AlephBftActivity,
     /// Deliver one opaque AlephBFT network message to a peer.
     AlephBftNetworkMessage,
+    /// Deliver a batch of opaque AlephBFT network messages to a peer.
+    AlephBftNetworkMessageBatch,
     /// Request one bounded opaque page of the active AlephBFT session backup.
     AlephBftBackup,
     /// Request missing journal entries from a peer.
@@ -185,6 +187,7 @@ impl FederationRestMessageKind {
             Self::SubmitOperation => b"submit_operation",
             Self::AlephBftActivity => b"aleph_bft_activity",
             Self::AlephBftNetworkMessage => b"aleph_bft_network_message",
+            Self::AlephBftNetworkMessageBatch => b"aleph_bft_network_message_batch",
             Self::AlephBftBackup => b"aleph_bft_backup",
             Self::CatchUp => b"catch_up",
             Self::StateTransfer => b"state_transfer",
@@ -3449,6 +3452,158 @@ impl FederationAlephBftNetworkMessageResponse {
     }
 }
 
+/// Maximum number of opaque AlephBFT network messages carried in one batch request.
+pub const FEDERATION_MAX_ALEPH_BFT_NETWORK_BATCH_MESSAGES: usize = 128;
+
+/// Maximum total decoded SCALE bytes carried in one AlephBFT network-message batch request.
+pub const FEDERATION_MAX_ALEPH_BFT_NETWORK_BATCH_BYTES: usize =
+    FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES;
+
+/// Maximum JSON request body accepted by the batched AlephBFT network-message route.
+pub const FEDERATION_MAX_ALEPH_BFT_NETWORK_BATCH_REQUEST_BYTES: usize =
+    FEDERATION_MAX_ALEPH_BFT_NETWORK_BATCH_BYTES * 2 + 64 * 1024;
+
+/// Request to deliver a batch of opaque AlephBFT network messages to a federation peer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationAlephBftNetworkMessageBatchRequest {
+    /// AlephBFT session these messages belong to.
+    pub session_id: u64,
+    /// SCALE-encoded upstream AlephBFT network messages as hex, in delivery order.
+    pub encoded_messages: Vec<String>,
+}
+
+impl FederationAlephBftNetworkMessageBatchRequest {
+    /// Create a batched AlephBFT network-message request from raw SCALE payloads.
+    #[must_use]
+    pub fn new(session_id: u64, encoded_messages: Vec<Vec<u8>>) -> Self {
+        Self {
+            session_id,
+            encoded_messages: encoded_messages
+                .into_iter()
+                .map(crate::util::hex::encode)
+                .collect(),
+        }
+    }
+
+    /// Create a batched AlephBFT network-message request from pre-encoded hex strings.
+    #[must_use]
+    pub fn from_encoded_hex(session_id: u64, encoded_messages: Vec<String>) -> Self {
+        Self {
+            session_id,
+            encoded_messages,
+        }
+    }
+
+    /// Decode and validate all SCALE-encoded AlephBFT network messages in this batch.
+    pub fn decoded_messages(&self) -> Result<Vec<Vec<u8>>> {
+        if self.encoded_messages.is_empty() {
+            return Err(FederationAlephBftError::InvalidNetworkMessage {
+                reason: "AlephBFT network-message batch must not be empty",
+            }
+            .into());
+        }
+        if self.encoded_messages.len() > FEDERATION_MAX_ALEPH_BFT_NETWORK_BATCH_MESSAGES {
+            return Err(FederationAlephBftError::InvalidNetworkMessage {
+                reason: "AlephBFT network-message batch exceeds message limit",
+            }
+            .into());
+        }
+
+        let mut decoded = Vec::with_capacity(self.encoded_messages.len());
+        let mut total_bytes = 0usize;
+        for encoded in &self.encoded_messages {
+            let bytes = crate::util::hex::decode(encoded)?;
+            let actual = bytes.len();
+            if actual > FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES {
+                return Err(FederationError::ConsensusItemTooLarge {
+                    actual,
+                    max: FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
+                });
+            }
+            total_bytes = total_bytes.saturating_add(actual);
+            if total_bytes > FEDERATION_MAX_ALEPH_BFT_NETWORK_BATCH_BYTES {
+                return Err(FederationError::ConsensusItemTooLarge {
+                    actual: total_bytes,
+                    max: FEDERATION_MAX_ALEPH_BFT_NETWORK_BATCH_BYTES,
+                });
+            }
+            decoded.push(bytes);
+        }
+
+        Ok(decoded)
+    }
+
+    /// Reject this batch request if empty, malformed, or over the bounded message/byte caps.
+    pub fn ensure_admissible_size(&self) -> Result<usize> {
+        let messages = self.decoded_messages()?;
+        Ok(messages.iter().map(Vec::len).sum())
+    }
+}
+
+/// Response to a batched opaque AlephBFT network-message delivery request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationAlephBftNetworkMessageBatchResponse {
+    /// Private REST payload version.
+    pub version: u16,
+    /// Federation addressed by this response.
+    pub federation_id: FederationId,
+    /// AlephBFT session that accepted the batch.
+    pub session_id: u64,
+    /// Number of messages accepted from the batch.
+    pub accepted_count: usize,
+}
+
+impl FederationAlephBftNetworkMessageBatchResponse {
+    /// Create a response for an accepted batch of AlephBFT network messages.
+    #[must_use]
+    pub fn new(federation_id: FederationId, session_id: u64, accepted_count: usize) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            federation_id,
+            session_id,
+            accepted_count,
+        }
+    }
+
+    /// Verify this response belongs to the expected federation, session, and batch size.
+    pub fn validate(
+        &self,
+        expected_federation_id: FederationId,
+        expected_session_id: u64,
+        expected_accepted_count: usize,
+    ) -> Result<()> {
+        if self.version != FEDERATION_REST_API_VERSION {
+            return Err(FederationError::RestVersionMismatch {
+                expected: FEDERATION_REST_API_VERSION,
+                found: self.version,
+            });
+        }
+        if self.federation_id != expected_federation_id {
+            return Err(FederationError::RestFederationMismatch {
+                expected: expected_federation_id,
+                found: self.federation_id,
+            });
+        }
+        if self.session_id != expected_session_id {
+            return Err(FederationAlephBftError::UnitSessionMismatch {
+                expected: expected_session_id,
+                found: self.session_id,
+            }
+            .into());
+        }
+        if self.accepted_count != expected_accepted_count {
+            return Err(FederationAlephBftError::InvalidNetworkMessage {
+                reason: "AlephBFT network-message batch accepted count mismatch",
+            }
+            .into());
+        }
+
+        Ok(())
+    }
+}
+
 /// Request journal entries starting at the next missing index.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -5827,6 +5982,7 @@ mod tests {
             FederationRestMessageKind::SubmitOperation,
             FederationRestMessageKind::AlephBftActivity,
             FederationRestMessageKind::AlephBftNetworkMessage,
+            FederationRestMessageKind::AlephBftNetworkMessageBatch,
             FederationRestMessageKind::ApplicationEvidenceAttestation,
         ] {
             tracker
@@ -5946,6 +6102,7 @@ mod tests {
             FederationRestMessageKind::SubmitOperation,
             FederationRestMessageKind::AlephBftActivity,
             FederationRestMessageKind::AlephBftNetworkMessage,
+            FederationRestMessageKind::AlephBftNetworkMessageBatch,
             FederationRestMessageKind::FrostSigningCommitment,
             FederationRestMessageKind::FrostSigningPackage,
             FederationRestMessageKind::FrostSigningAbort,
@@ -6033,5 +6190,59 @@ mod tests {
         assert!(cross_attempt
             .decode(federation_id(), roster_member_id(1))
             .is_err());
+    }
+
+    #[test]
+    fn aleph_bft_network_message_batch_request_enforces_count_and_byte_limits() {
+        let empty = FederationAlephBftNetworkMessageBatchRequest::new(7, Vec::new());
+        assert!(matches!(
+            empty.decoded_messages(),
+            Err(FederationError::AlephBft(
+                FederationAlephBftError::InvalidNetworkMessage { .. }
+            ))
+        ));
+
+        let too_many = FederationAlephBftNetworkMessageBatchRequest::new(
+            7,
+            vec![vec![1u8]; FEDERATION_MAX_ALEPH_BFT_NETWORK_BATCH_MESSAGES + 1],
+        );
+        assert!(matches!(
+            too_many.decoded_messages(),
+            Err(FederationError::AlephBft(
+                FederationAlephBftError::InvalidNetworkMessage { .. }
+            ))
+        ));
+
+        let oversized_batch = FederationAlephBftNetworkMessageBatchRequest::new(
+            7,
+            vec![
+                vec![0u8; FEDERATION_MAX_ALEPH_BFT_NETWORK_BATCH_BYTES / 2 + 1],
+                vec![0u8; FEDERATION_MAX_ALEPH_BFT_NETWORK_BATCH_BYTES / 2 + 1],
+            ],
+        );
+        assert!(matches!(
+            oversized_batch.ensure_admissible_size(),
+            Err(FederationError::ConsensusItemTooLarge { max, .. })
+                if max == FEDERATION_MAX_ALEPH_BFT_NETWORK_BATCH_BYTES
+        ));
+
+        let valid =
+            FederationAlephBftNetworkMessageBatchRequest::new(7, vec![vec![1, 2], vec![3, 4, 5]]);
+        assert_eq!(
+            valid.decoded_messages().expect("decoded"),
+            vec![vec![1, 2], vec![3, 4, 5]]
+        );
+        assert_eq!(valid.ensure_admissible_size().expect("size"), 5);
+
+        let response = FederationAlephBftNetworkMessageBatchResponse::new(federation_id(), 7, 2);
+        response
+            .validate(federation_id(), 7, 2)
+            .expect("matching batch response");
+        assert!(matches!(
+            response.validate(federation_id(), 7, 1),
+            Err(FederationError::AlephBft(
+                FederationAlephBftError::InvalidNetworkMessage { .. }
+            ))
+        ));
     }
 }

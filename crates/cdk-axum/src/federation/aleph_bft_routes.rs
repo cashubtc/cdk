@@ -4,6 +4,7 @@ use axum::response::IntoResponse;
 use axum::response::Response;
 use cdk::federation::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
+    FederationAlephBftNetworkMessageBatchRequest, FederationAlephBftNetworkMessageBatchResponse,
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
     FederationRestMessageKind, FederationSignedRequest,
 };
@@ -91,5 +92,54 @@ pub(super) async fn post_aleph_bft_network_message(
     Ok(Json(FederationAlephBftNetworkMessageResponse::new(
         federation_id,
         payload.payload.session_id,
+    )))
+}
+
+#[instrument(skip_all)]
+pub(super) async fn post_aleph_bft_network_message_batch(
+    State(state): State<MintState>,
+    Json(payload): Json<FederationSignedRequest<FederationAlephBftNetworkMessageBatchRequest>>,
+) -> Result<Json<FederationAlephBftNetworkMessageBatchResponse>, Response> {
+    let verified = admit_private_request(
+        &state,
+        &payload,
+        FederationRestMessageKind::AlephBftNetworkMessageBatch,
+    )
+    .await?;
+    payload
+        .payload
+        .ensure_admissible_size()
+        .map_err(federation_error_response)?;
+    let runtime_config = federation_runtime_config(&state)?;
+    let federation_id = runtime_config.federation_id();
+    let inbound = state
+        .federation
+        .aleph_bft_network_inbound
+        .read()
+        .await
+        .clone();
+    let Some(inbound) = inbound else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "AlephBFT network message receiver is not available",
+        )
+            .into_response());
+    };
+    let (accepted_count, _) = inbound
+        .queue_batch_request(&payload.payload)
+        .map_err(cdk_error_response)?;
+
+    state
+        .record_federation_sequence(
+            FederationRestMessageKind::AlephBftNetworkMessageBatch,
+            verified.sender(),
+            verified.sequence(),
+        )
+        .await;
+
+    Ok(Json(FederationAlephBftNetworkMessageBatchResponse::new(
+        federation_id,
+        payload.payload.session_id,
+        accepted_count,
     )))
 }

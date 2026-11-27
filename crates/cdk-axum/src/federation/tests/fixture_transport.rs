@@ -889,6 +889,60 @@ impl Transport for MockFederationTransport {
     where
         P: Serialize + Send + Sync,
     {
+        if url
+            .path()
+            .ends_with("/federation/v1/aleph-bft/messages/batch")
+        {
+            let request = serde_json::from_value::<
+                FederationSignedRequest<FederationAlephBftNetworkMessageBatchRequest>,
+            >(serde_json::to_value(payload)?)?;
+            let batch_len = request.payload.encoded_messages.len();
+            let (response, status_error, delay) = {
+                let mut state = self.state.lock().expect("mock transport lock");
+                for encoded_message in &request.payload.encoded_messages {
+                    state
+                        .aleph_bft_network_message_requests
+                        .push(FederationSignedRequest {
+                            version: request.version,
+                            federation_id: request.federation_id,
+                            sender: request.sender,
+                            receiver: request.receiver,
+                            sequence: request.sequence,
+                            kind: FederationRestMessageKind::AlephBftNetworkMessage,
+                            body_hash: request.body_hash,
+                            payload: FederationAlephBftNetworkMessageRequest {
+                                session_id: request.payload.session_id,
+                                encoded_message: encoded_message.clone(),
+                            },
+                            signature: request.signature,
+                        });
+                }
+                (
+                    state.aleph_bft_network_message_response.clone(),
+                    state.aleph_bft_network_message_status_error.clone(),
+                    state
+                        .aleph_bft_network_message_delays
+                        .pop_front()
+                        .unwrap_or_default(),
+                )
+            };
+            self.aleph_bft_network_message_changed.notify_waiters();
+            if !delay.is_zero() {
+                time::sleep(delay).await;
+            }
+            if let Some((status, message)) = status_error {
+                return Err(HttpError::Status { status, message });
+            }
+            let response = response.ok_or_else(|| {
+                HttpError::Other("missing AlephBFT network-message response".to_string())
+            })?;
+            return json_response(FederationAlephBftNetworkMessageBatchResponse::new(
+                response.federation_id,
+                response.session_id,
+                batch_len,
+            ));
+        }
+
         if url.path().ends_with("/federation/v1/aleph-bft/messages") {
             let request = serde_json::from_value::<
                 FederationSignedRequest<FederationAlephBftNetworkMessageRequest>,
@@ -1176,7 +1230,12 @@ impl Transport for RouterFederationTransportRegistry {
         let endpoint = url.origin().ascii_serialization();
         let path = url.path().to_string();
         let is_aleph_bft_activity = path.ends_with("/federation/v1/aleph-bft/activity");
-        let is_aleph_bft_network_message = path.ends_with("/federation/v1/aleph-bft/messages");
+        let is_aleph_bft_network_message_single =
+            path.ends_with("/federation/v1/aleph-bft/messages");
+        let is_aleph_bft_network_message_batch =
+            path.ends_with("/federation/v1/aleph-bft/messages/batch");
+        let is_aleph_bft_network_message =
+            is_aleph_bft_network_message_single || is_aleph_bft_network_message_batch;
         let is_dkg_readiness = path.ends_with("/federation/v1/dkg/readiness");
         let deadline = tokio::time::Instant::now() + self.missing_router_wait;
         let router = loop {
@@ -1219,7 +1278,7 @@ impl Transport for RouterFederationTransportRegistry {
                 .push(signed_request);
         }
         let mut aleph_bft_message_contains_data = false;
-        if is_aleph_bft_network_message {
+        if is_aleph_bft_network_message_single {
             let signed_request = serde_json::from_slice::<
                 FederationSignedRequest<FederationAlephBftNetworkMessageRequest>,
             >(&payload_bytes)?;
@@ -1238,6 +1297,42 @@ impl Transport for RouterFederationTransportRegistry {
                 .lock()
                 .expect("router transport network-message requests lock")
                 .push(signed_request);
+            self.aleph_bft_network_message_changed.notify_waiters();
+        } else if is_aleph_bft_network_message_batch {
+            let signed_request = serde_json::from_slice::<
+                FederationSignedRequest<FederationAlephBftNetworkMessageBatchRequest>,
+            >(&payload_bytes)?;
+            if let Ok(decoded_messages) = signed_request.payload.decoded_messages() {
+                aleph_bft_message_contains_data = decoded_messages.iter().any(|bytes| {
+                    let mut input = bytes.as_slice();
+                    CdkAlephBftNetworkData::decode(&mut input)
+                        .ok()
+                        .filter(|_| input.is_empty())
+                        .is_some_and(|message| !message.included_data().is_empty())
+                });
+            }
+            {
+                let mut recorded = self
+                    .aleph_bft_network_message_requests
+                    .lock()
+                    .expect("router transport network-message requests lock");
+                for encoded_message in &signed_request.payload.encoded_messages {
+                    recorded.push(FederationSignedRequest {
+                        version: signed_request.version,
+                        federation_id: signed_request.federation_id,
+                        sender: signed_request.sender,
+                        receiver: signed_request.receiver,
+                        sequence: signed_request.sequence,
+                        kind: FederationRestMessageKind::AlephBftNetworkMessage,
+                        body_hash: signed_request.body_hash,
+                        payload: FederationAlephBftNetworkMessageRequest {
+                            session_id: signed_request.payload.session_id,
+                            encoded_message: encoded_message.clone(),
+                        },
+                        signature: signed_request.signature,
+                    });
+                }
+            }
             self.aleph_bft_network_message_changed.notify_waiters();
         }
         if self.federation_link_is_blocked(signed_request.sender, signed_request.receiver) {

@@ -219,7 +219,7 @@ async fn aleph_bft_network_pump_broadcasts_everyone_to_remote_members() {
     );
     assert!(outcome.remote_failed_members.is_empty());
     assert!(outcome.remote_skipped_members.is_empty());
-    assert!(!outcome.reached_idle);
+    assert!(outcome.reached_idle);
     let requests = transport.aleph_bft_network_message_requests();
     assert_eq!(requests.len(), 4);
     assert_eq!(
