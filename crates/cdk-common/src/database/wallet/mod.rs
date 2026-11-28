@@ -208,6 +208,20 @@ where
     /// must preserve spent proofs and proofs owned by another operation.
     async fn release_proofs(&self, operation_id: &uuid::Uuid) -> Result<(), Err>;
 
+    /// Undo the pending rows an operation wrote over its input proofs.
+    ///
+    /// Only rows that are still [`State::Pending`] and owned by
+    /// `operation_id` are changed: those listed in `restored` are overwritten
+    /// with the given row, and those in `removed_ys` are deleted. Rows that
+    /// are missing, in another state or owned by another operation are left
+    /// as they are. The check and the change must happen atomically.
+    async fn restore_pending_proofs(
+        &self,
+        operation_id: &uuid::Uuid,
+        restored: Vec<ProofInfo>,
+        removed_ys: Vec<PublicKey>,
+    ) -> Result<(), Err>;
+
     /// Get proofs reserved by an operation
     async fn get_reserved_proofs(&self, operation_id: &uuid::Uuid) -> Result<Vec<ProofInfo>, Err>;
 

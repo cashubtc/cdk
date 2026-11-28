@@ -272,6 +272,19 @@ pub trait WalletDatabase: Send + Sync {
     /// be preserved.
     async fn release_proofs(&self, operation_id: String) -> Result<(), FfiError>;
 
+    /// Undo the pending rows an operation wrote over its input proofs.
+    ///
+    /// Implementations must only change rows that are still Pending and owned
+    /// by `operation_id`: those in `restored` are overwritten with the given
+    /// row and those in `removed_ys` are deleted, checked atomically with the
+    /// change. Every other row must be left as it is.
+    async fn restore_pending_proofs(
+        &self,
+        operation_id: String,
+        restored: Vec<ProofInfo>,
+        removed_ys: Vec<PublicKey>,
+    ) -> Result<(), FfiError>;
+
     /// Get proofs reserved by an operation
     async fn get_reserved_proofs(&self, operation_id: String) -> Result<Vec<ProofInfo>, FfiError>;
 
@@ -946,6 +959,20 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
     ) -> Result<(), cdk::cdk_database::Error> {
         self.ffi_db
             .release_proofs(operation_id.to_string())
+            .await
+            .map_err(into_database_error)
+    }
+
+    async fn restore_pending_proofs(
+        &self,
+        operation_id: &uuid::Uuid,
+        restored: Vec<cdk::types::ProofInfo>,
+        removed_ys: Vec<cdk::nuts::PublicKey>,
+    ) -> Result<(), cdk::cdk_database::Error> {
+        let ffi_restored: Vec<ProofInfo> = restored.into_iter().map(Into::into).collect();
+        let ffi_removed_ys: Vec<PublicKey> = removed_ys.into_iter().map(Into::into).collect();
+        self.ffi_db
+            .restore_pending_proofs(operation_id.to_string(), ffi_restored, ffi_removed_ys)
             .await
             .map_err(into_database_error)
     }
@@ -1717,6 +1744,26 @@ where
             .map_err(FfiError::internal)
     }
 
+    async fn restore_pending_proofs(
+        &self,
+        operation_id: String,
+        restored: Vec<ProofInfo>,
+        removed_ys: Vec<PublicKey>,
+    ) -> Result<(), FfiError> {
+        let operation_id = uuid::Uuid::parse_str(&operation_id).map_err(FfiError::internal)?;
+        let cdk_restored: Result<Vec<cdk::types::ProofInfo>, FfiError> =
+            restored.into_iter().map(TryInto::try_into).collect();
+        let cdk_restored = cdk_restored?;
+        let cdk_removed_ys: Result<Vec<cdk::nuts::PublicKey>, FfiError> =
+            removed_ys.into_iter().map(|pk| pk.try_into()).collect();
+        let cdk_removed_ys = cdk_removed_ys?;
+        self.inner
+            .restore_pending_proofs(&operation_id, cdk_restored, cdk_removed_ys)
+            .compat()
+            .await
+            .map_err(FfiError::internal)
+    }
+
     async fn get_reserved_proofs(&self, operation_id: String) -> Result<Vec<ProofInfo>, FfiError> {
         let operation_id = uuid::Uuid::parse_str(&operation_id).map_err(FfiError::internal)?;
         let result = self
@@ -2107,6 +2154,17 @@ macro_rules! impl_ffi_wallet_database {
 
             async fn release_proofs(&self, operation_id: String) -> Result<(), FfiError> {
                 self.inner.release_proofs(operation_id).await
+            }
+
+            async fn restore_pending_proofs(
+                &self,
+                operation_id: String,
+                restored: Vec<ProofInfo>,
+                removed_ys: Vec<PublicKey>,
+            ) -> Result<(), FfiError> {
+                self.inner
+                    .restore_pending_proofs(operation_id, restored, removed_ys)
+                    .await
             }
 
             async fn get_reserved_proofs(

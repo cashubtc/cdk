@@ -553,6 +553,8 @@ pub struct MockMintConnector {
     pub post_swap_responses: Mutex<std::collections::VecDeque<Result<SwapResponse, Error>>>,
     /// Captured post_swap requests for test verification.
     pub captured_swap_requests: Mutex<Vec<SwapRequest>>,
+    /// Holds the next post_swap call until the test releases it.
+    pub post_swap_gate: Mutex<Option<CallGate>>,
     /// Response for post_melt calls
     pub post_melt_response: Mutex<Option<Result<MeltQuoteResponse<String>, Error>>>,
     /// Queue of responses for successive post_melt_quote calls.
@@ -579,6 +581,15 @@ pub struct MockMintConnector {
     pub payment_request_deliverability: Mutex<PaymentRequestDeliverability>,
     /// Fail keyset and key requests as if the mint were unreachable
     pub keysets_unavailable: Mutex<bool>,
+}
+
+/// Pauses a mocked call so a test can change state while the caller waits.
+#[derive(Debug, Clone, Default)]
+pub struct CallGate {
+    /// Notified once the call has been reached
+    pub reached: Arc<tokio::sync::Notify>,
+    /// Notify to let the call return
+    pub release: Arc<tokio::sync::Notify>,
 }
 
 /// What a [`MockMintConnector`] reports for a NUT-18 receiver URL.
@@ -627,6 +638,7 @@ impl MockMintConnector {
             post_swap_response: Mutex::new(None),
             post_swap_responses: Mutex::new(std::collections::VecDeque::new()),
             captured_swap_requests: Mutex::new(Vec::new()),
+            post_swap_gate: Mutex::new(None),
             post_melt_response: Mutex::new(None),
             post_melt_quote_responses: Mutex::new(std::collections::VecDeque::new()),
             post_melt_quote_requests: Mutex::new(Vec::new()),
@@ -867,6 +879,13 @@ impl MockMintConnector {
         self.post_swap_responses.lock().unwrap().push_back(response);
     }
 
+    /// Hold the next `post_swap` call until the returned gate is released.
+    pub fn pause_post_swap(&self) -> CallGate {
+        let gate = CallGate::default();
+        *self.post_swap_gate.lock().unwrap() = Some(gate.clone());
+        gate
+    }
+
     /// Get all captured swap requests.
     pub fn captured_swap_requests(&self) -> Vec<SwapRequest> {
         self.captured_swap_requests.lock().unwrap().clone()
@@ -1091,6 +1110,11 @@ impl MintConnector for MockMintConnector {
     }
 
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error> {
+        let gate = self.post_swap_gate.lock().unwrap().take();
+        if let Some(gate) = gate {
+            gate.reached.notify_one();
+            gate.release.notified().await;
+        }
         let queued = self.post_swap_responses.lock().unwrap().pop_front();
         if let Some(response) = queued {
             self.captured_swap_requests.lock().unwrap().push(request);
